@@ -1,0 +1,17 @@
+{
+  "name": "@base/workspace",
+  "private": true,
+  "description": "Shared packages workspace for the @base ecosystem",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r dev",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "publish:all": "pnpm -r publish --access public"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  }
+}

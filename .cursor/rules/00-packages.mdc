@@ -1,0 +1,34 @@
+---
+description: Rules for authoring and maintaining @base packages in the SHARED workspace
+alwaysApply: true
+---
+
+# @base Package Authoring
+
+## Workspace Context
+This is the `SHARED/` pnpm workspace — home of all `@base/*` infrastructure packages.
+- `@base/engine-core` — mount contract, EventBus, BaseModule (foundational — change carefully)
+- `@base/ui` — Vue 3 component library
+- `@base/pwa-core` — PWA service worker and offline utilities
+
+Consumer projects (forks of `pwa-platform`) install these via GitHub Packages.
+
+## Package Rules
+- Every package is `"type": "module"` — no CommonJS
+- Every package has `exports` field in package.json — no direct `dist/` path imports by consumers
+- `peerDependencies` for Vue, not `dependencies` — consumers provide their own Vue
+- Never add cross-dependencies between packages unless engine-core is the source — avoid circular deps
+
+## Breaking Changes
+- `@base/engine-core` interfaces (`EngineModule`, `ShellContext`, `EngineContext`) are the system contract
+- Any change to these interfaces is a BREAKING CHANGE — bump major version and document migration
+- All other packages: additive changes are minor, removals are major
+
+## Publishing
+- Target registry: GitHub Packages (`https://npm.pkg.github.com`)
+- Scope: `@base`
+- Run `pnpm build` in the package before `pnpm publish`
+- Tag releases: `@base/engine-core@0.2.0`, not just `v0.2.0`
+
+## Testing a Package Locally Before Publishing
+Use `pnpm link` from within the package, then `pnpm link @base/<name>` in the consumer project.
