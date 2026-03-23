@@ -8,10 +8,34 @@ importers:
 
   .: {}
 
+  packages/audio:
+    devDependencies:
+      '@base/engine-core':
+        specifier: link:../engine-core
+        version: link:../engine-core
+      '@types/three':
+        specifier: ^0.172.0
+        version: 0.172.0
+      three:
+        specifier: ^0.172.0
+        version: 0.172.0
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
   packages/engine-core:
     devDependencies:
       typescript:
         specifier: ^5.4.0
+        version: 5.9.3
+
+  packages/input:
+    devDependencies:
+      '@base/engine-core':
+        specifier: link:../engine-core
+        version: link:../engine-core
+      typescript:
+        specifier: ^5.6.0
         version: 5.9.3
 
   packages/pwa-core:

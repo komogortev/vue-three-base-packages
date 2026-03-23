@@ -1,0 +1,33 @@
+{
+  "name": "@base/audio",
+  "version": "0.1.0",
+  "description": "Audio module for the @base ecosystem — Web Audio API, music crossfade, spatial audio via Three.js AudioListener",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@base/engine-core": ">=0.1.0",
+    "three": ">=0.160.0"
+  },
+  "devDependencies": {
+    "@base/engine-core": "link:../engine-core",
+    "@types/three": "^0.172.0",
+    "three": "^0.172.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  }
+}

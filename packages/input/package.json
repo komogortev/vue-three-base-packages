@@ -1,0 +1,30 @@
+{
+  "name": "@base/input",
+  "version": "0.1.0",
+  "description": "Abstract input module for the @base ecosystem — keyboard, gamepad, and touch mapped to game-agnostic actions",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@base/engine-core": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@base/engine-core": "link:../engine-core",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  }
+}
