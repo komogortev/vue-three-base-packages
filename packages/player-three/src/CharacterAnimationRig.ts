@@ -20,24 +20,33 @@ function pickClip(
 type LocoActions = {
   idle: THREE.AnimationAction | null
   walkFwd: THREE.AnimationAction | null
+  runSlowFwd: THREE.AnimationAction | null
+  runSprintFwd: THREE.AnimationAction | null
   walkBack: THREE.AnimationAction | null
   strafeL: THREE.AnimationAction | null
   strafeR: THREE.AnimationAction | null
 }
 
 /**
- * Third-person locomotion: stand + crouch clip sets, sprint tightens walk blend.
+ * Third-person locomotion: stand + crouch; jog vs sprint run clips; jump rise / fall overlays.
  * Clips in `root.userData.gltfAnimations` (from `SceneBuilder`).
  */
 export class CharacterAnimationRig {
   private readonly mixer: THREE.AnimationMixer | null = null
   private readonly stand: LocoActions
   private readonly crouch: LocoActions
+  private jumpRise: THREE.AnimationAction | null = null
+  private jumpFall: THREE.AnimationAction | null = null
 
   /** 0 = idle, 1 = full locomotion layer */
   private moveBlend = 0
   /** 0 = stand poses, 1 = crouch poses */
   private crouchBlend = 0
+  /** Smoothed jog / slow-run (explicit input only, not speed-based). */
+  private jogGate = 0
+  /** Forward sprint run clip blend. */
+  private sprintRunGate = 0
+  private lastGrounded = true
 
   private readonly _worldFwd = new THREE.Vector3()
   private readonly _worldRight = new THREE.Vector3()
@@ -54,7 +63,6 @@ export class CharacterAnimationRig {
       return
     }
 
-    // Retargeted Mixamo clips use `.bones[name].*` tracks and need the SkinnedMesh as root.
     this.mixer = new THREE.AnimationMixer(skinned)
 
     const idleStand =
@@ -65,6 +73,26 @@ export class CharacterAnimationRig {
       pickClip(clips, /^walking$/i) ??
       pickClip(clips, /^walking \(\d+\)$/i) ??
       pickClip(clips, /start walking/i)
+
+    let runSlowStand = pickClip(clips, /running slow/i)
+    let runSprintStand = pickClip(clips, /running sprint/i)
+    if (!runSlowStand && runSprintStand) runSlowStand = runSprintStand
+    if (!runSprintStand && runSlowStand) runSprintStand = runSlowStand
+    if (!runSlowStand) {
+      runSlowStand =
+        pickClip(clips, /^running$/i) ??
+        pickClip(clips, /^running \(\d+\)$/i) ??
+        pickClip(clips, /\bjog\b/i) ??
+        pickClip(clips, /^sprint/i)
+    }
+    if (!runSprintStand) runSprintStand = runSlowStand
+    if (runSprintStand && walkFwdStand && runSprintStand === walkFwdStand) {
+      runSprintStand = undefined
+      if (runSlowStand === walkFwdStand) runSlowStand = undefined
+    } else if (runSlowStand && walkFwdStand && runSlowStand === walkFwdStand) {
+      runSlowStand = undefined
+    }
+
     const walkBackStand = pickClip(clips, /walking backwards|backwards/i)
     const strafeLStand = pickClip(clips, /left strafe/i)
     const strafeRStand = pickClip(clips, /right strafe/i)
@@ -78,34 +106,61 @@ export class CharacterAnimationRig {
     const strafeLCrouch = pickClip(clips, /crouched sneaking left/i)
     const strafeRCrouch = pickClip(clips, /crouched sneaking right/i)
 
-    const play = (clip: THREE.AnimationClip | undefined, w: number): THREE.AnimationAction | null => {
+    const jumpClip =
+      pickClip(clips, /^jumping$/i) ??
+      pickClip(clips, /^jumping \(\d+\)$/i)
+    let jumpDownClip = pickClip(clips, /jumping down/i)
+    if (!jumpDownClip) jumpDownClip = pickClip(clips, /\bfall/i)
+
+    const playLoop = (clip: THREE.AnimationClip | undefined, w: number): THREE.AnimationAction | null => {
       if (!clip || !this.mixer) return null
       const a = this.mixer.clipAction(clip)
+      a.setLoop(THREE.LoopRepeat, Infinity)
+      a.clampWhenFinished = false
+      a.play()
+      a.setEffectiveWeight(w)
+      return a
+    }
+
+    const playOnce = (clip: THREE.AnimationClip | undefined, w: number): THREE.AnimationAction | null => {
+      if (!clip || !this.mixer) return null
+      const a = this.mixer.clipAction(clip)
+      a.setLoop(THREE.LoopOnce, 1)
+      a.clampWhenFinished = true
       a.play()
       a.setEffectiveWeight(w)
       return a
     }
 
     this.stand = {
-      idle: play(idleStand, 1),
-      walkFwd: play(walkFwdStand, 0),
-      walkBack: play(walkBackStand, 0),
-      strafeL: play(strafeLStand, 0),
-      strafeR: play(strafeRStand, 0),
+      idle: playLoop(idleStand, 1),
+      walkFwd: playLoop(walkFwdStand, 0),
+      runSlowFwd: playLoop(runSlowStand, 0),
+      runSprintFwd: playLoop(runSprintStand, 0),
+      walkBack: playLoop(walkBackStand, 0),
+      strafeL: playLoop(strafeLStand, 0),
+      strafeR: playLoop(strafeRStand, 0),
     }
     this.crouch = {
-      idle: play(idleCrouch, 0),
-      walkFwd: play(walkCrouch, 0),
+      idle: playLoop(idleCrouch, 0),
+      walkFwd: playLoop(walkCrouch, 0),
+      runSlowFwd: null,
+      runSprintFwd: null,
       walkBack: null,
-      strafeL: play(strafeLCrouch, 0),
-      strafeR: play(strafeRCrouch, 0),
+      strafeL: playLoop(strafeLCrouch, 0),
+      strafeR: playLoop(strafeRCrouch, 0),
     }
+
+    this.jumpRise = playOnce(jumpClip, 0)
+    this.jumpFall = playOnce(jumpDownClip, 0)
   }
 
   private emptyLoco(): LocoActions {
     return {
       idle: null,
       walkFwd: null,
+      runSlowFwd: null,
+      runSprintFwd: null,
       walkBack: null,
       strafeL: null,
       strafeR: null,
@@ -120,15 +175,47 @@ export class CharacterAnimationRig {
     wL: number,
     wR: number,
     moveLayer: number,
+    jogMix: number,
+    sprintMix: number,
+    locoSuppress: number,
   ): void {
-    const m = moveLayer
+    const m = moveLayer * locoSuppress
     set.idle?.setEffectiveWeight(idleW)
-    const crouchWalkBack = !set.walkBack && set.walkFwd
+    const j = THREE.MathUtils.clamp(jogMix, 0, 1)
+    const sp = THREE.MathUtils.clamp(sprintMix, 0, 1)
+    let wfWalk = wF
+    let wfSlow = 0
+    let wfSprint = 0
+    if (sp > 1e-4 && set.runSprintFwd) {
+      wfSprint = wF * sp
+      wfWalk = wF * (1 - sp)
+    } else if (j > 1e-4 && set.runSlowFwd) {
+      wfSlow = wF * j
+      wfWalk = wF * (1 - j)
+    }
+    if (!set.runSprintFwd && wfSprint > 0) {
+      wfWalk += wfSprint
+      wfSprint = 0
+    }
+    if (!set.runSlowFwd && wfSlow > 0) {
+      wfWalk += wfSlow
+      wfSlow = 0
+    }
+    if (!set.walkFwd) {
+      wfSlow += wfWalk
+      wfWalk = 0
+    }
+    const crouchWalkBack =
+      !set.walkBack && set.walkFwd && !set.runSlowFwd && !set.runSprintFwd
     if (crouchWalkBack) {
-      const fwdBack = (wF + wB) * m
+      const fwdBack = (wfWalk + wfSlow + wfSprint + wB) * m
       set.walkFwd?.setEffectiveWeight(fwdBack)
+      set.runSlowFwd?.setEffectiveWeight(0)
+      set.runSprintFwd?.setEffectiveWeight(0)
     } else {
-      set.walkFwd?.setEffectiveWeight(wF * m)
+      set.walkFwd?.setEffectiveWeight(wfWalk * m)
+      set.runSlowFwd?.setEffectiveWeight(wfSlow * m)
+      set.runSprintFwd?.setEffectiveWeight(wfSprint * m)
       set.walkBack?.setEffectiveWeight(wB * m)
     }
     set.strafeL?.setEffectiveWeight(wL * m)
@@ -136,27 +223,43 @@ export class CharacterAnimationRig {
   }
 
   /**
-   * @param velocity — world-space XZ velocity (m/s).
-   * @param opts.crouch — Ctrl held: crouch clip set.
-   * @param opts.sprint — Shift held: faster gate into full walk (no run clip required).
+   * @param velocity — world-space velocity (m/s); **y** used for jump rise vs fall blend.
+   * @param opts.grounded — false while airborne (jump arc).
+   * @param opts.jog — hold jog / slow-run input (`locomotion` axis `z`); does not replace walk unless held.
    */
   update(
     delta: number,
     root: THREE.Object3D,
-    velocity: { x: number; z: number },
-    opts: { crouch?: boolean; sprint?: boolean } = {},
+    velocity: { x: number; y: number; z: number },
+    opts: { crouch?: boolean; sprint?: boolean; grounded?: boolean; jog?: boolean } = {},
   ): void {
     if (!this.mixer) return
     this.mixer.update(delta)
 
+    const grounded = opts.grounded !== false
     const crouchHeld = opts.crouch ?? false
     const sprintHeld = (opts.sprint ?? false) && !crouchHeld
+
+    const takeoff = grounded === false && this.lastGrounded
+    const land = grounded === true && !this.lastGrounded
+    this.lastGrounded = grounded
+
+    if (takeoff) {
+      this.jumpRise?.reset().play()
+      this.jumpFall?.reset().play()
+    }
+    if (land) {
+      this.jumpRise?.stop()
+      this.jumpFall?.stop()
+    }
 
     const k = 1 - Math.exp(-delta * 10)
     this.crouchBlend = THREE.MathUtils.lerp(this.crouchBlend, crouchHeld ? 1 : 0, k)
 
     const hasStandLoco =
       this.stand.walkFwd ||
+      this.stand.runSlowFwd ||
+      this.stand.runSprintFwd ||
       this.stand.walkBack ||
       this.stand.strafeL ||
       this.stand.strafeR
@@ -169,6 +272,7 @@ export class CharacterAnimationRig {
 
     this._vel.set(velocity.x, 0, velocity.z)
     const speed = this._vel.length()
+    const vy = velocity.y
 
     const walkThreshold = (sprintHeld ? 1.35 : 2.2) * (crouchHeld ? 1.15 : 1)
     const targetBlend = speed < 0.08 ? 0 : THREE.MathUtils.clamp(speed / walkThreshold, 0, 1)
@@ -178,18 +282,19 @@ export class CharacterAnimationRig {
     let wB = 0
     let wL = 0
     let wR = 0
+    let forwardSpeed = 0
 
     if (hasStandLoco || hasCrouchLoco) {
-      root.getWorldDirection(this._worldFwd)
+      root.getWorldDirection(this._worldFwd).negate()
       this._worldFwd.y = 0
       if (this._worldFwd.lengthSq() < 1e-8) {
         this._worldFwd.set(0, 0, -1)
       } else {
         this._worldFwd.normalize()
       }
-      this._worldRight.crossVectors(THREE.Object3D.DEFAULT_UP, this._worldFwd).normalize()
+      this._worldRight.crossVectors(this._worldFwd, THREE.Object3D.DEFAULT_UP).normalize()
 
-      const forwardSpeed = this._vel.dot(this._worldFwd)
+      forwardSpeed = this._vel.dot(this._worldFwd)
       const strafeSpeed = this._vel.dot(this._worldRight)
 
       wF = Math.max(0, forwardSpeed)
@@ -204,7 +309,7 @@ export class CharacterAnimationRig {
 
       let locSum = wF + wB + wL + wR
       if (locSum < 1e-6 && speed > 0.08) {
-        if (this.stand.walkFwd || this.crouch.walkFwd) {
+        if (this.stand.walkFwd || this.stand.runSlowFwd || this.stand.runSprintFwd || this.crouch.walkFwd) {
           wF = 1
           wB = wL = wR = 0
           locSum = 1
@@ -216,6 +321,52 @@ export class CharacterAnimationRig {
         wR /= locSum
       }
     }
+
+    const wantJogAnim =
+      (opts.jog ?? false) &&
+      !!this.stand.runSlowFwd &&
+      !crouchHeld &&
+      grounded &&
+      speed > 0.08 &&
+      forwardSpeed > 0.02 &&
+      this.moveBlend > 0.12
+    this.jogGate = THREE.MathUtils.lerp(this.jogGate, wantJogAnim ? 1 : 0, k)
+
+    const wantSprintRun =
+      !!this.stand.runSprintFwd &&
+      sprintHeld &&
+      speed > 0.12 &&
+      forwardSpeed > 0.04 &&
+      this.moveBlend > 0.2
+    this.sprintRunGate = THREE.MathUtils.lerp(this.sprintRunGate, wantSprintRun ? 1 : 0, k)
+
+    let riseW = 0
+    let fallW = 0
+    if (!grounded && (this.jumpRise || this.jumpFall)) {
+      if (vy > 0.35) {
+        riseW = Math.min(1, vy / 3.5)
+        fallW = 1 - riseW
+      } else if (vy < -0.4) {
+        fallW = Math.min(1, -vy / 6)
+        riseW = 1 - fallW
+      } else {
+        riseW = fallW = 0.5
+      }
+      const s = riseW + fallW
+      if (s > 1e-6) {
+        riseW /= s
+        fallW /= s
+      }
+      const airMag = Math.min(1, Math.abs(vy) / 1.2 + 0.35)
+      riseW *= airMag
+      fallW *= airMag
+    }
+
+    const jumpMax = Math.max(riseW, fallW)
+    const locoSuppress = 1 - 0.82 * jumpMax
+
+    this.jumpRise?.setEffectiveWeight(riseW)
+    this.jumpFall?.setEffectiveWeight(fallW)
 
     const maskRenorm = (
       f: number,
@@ -243,7 +394,7 @@ export class CharacterAnimationRig {
     }
 
     const standHas = {
-      hf: !!this.stand.walkFwd,
+      hf: !!(this.stand.walkFwd || this.stand.runSlowFwd || this.stand.runSprintFwd),
       hb: !!this.stand.walkBack,
       hl: !!this.stand.strafeL,
       hr: !!this.stand.strafeR,
@@ -262,24 +413,54 @@ export class CharacterAnimationRig {
     const standLayer = 1 - cb
     const crouchLayer = cb
 
-    const idleStandW = (1 - mb) * standLayer
-    const idleCrouchW = (1 - mb) * crouchLayer
+    const dStand = ws.f + ws.b + ws.l + ws.r
+    const dCrouch = wc.f + wc.b + wc.l + wc.r
+    const idleStandW = standLayer * (1 - mb * dStand * locoSuppress)
+    const idleCrouchW = crouchLayer * (1 - mb * dCrouch * locoSuppress)
 
-    this.applyLocoWeights(this.stand, idleStandW, ws.f, ws.b, ws.l, ws.r, mb * standLayer)
-    this.applyLocoWeights(this.crouch, idleCrouchW, wc.f, wc.b, wc.l, wc.r, mb * crouchLayer)
+    this.applyLocoWeights(
+      this.stand,
+      idleStandW,
+      ws.f,
+      ws.b,
+      ws.l,
+      ws.r,
+      mb * standLayer,
+      this.jogGate,
+      this.sprintRunGate,
+      locoSuppress,
+    )
+    this.applyLocoWeights(
+      this.crouch,
+      idleCrouchW,
+      wc.f,
+      wc.b,
+      wc.l,
+      wc.r,
+      mb * crouchLayer,
+      0,
+      0,
+      locoSuppress,
+    )
   }
 
   dispose(): void {
     this.mixer?.stopAllAction()
     this.stand.idle = null
     this.stand.walkFwd = null
+    this.stand.runSlowFwd = null
+    this.stand.runSprintFwd = null
     this.stand.walkBack = null
     this.stand.strafeL = null
     this.stand.strafeR = null
     this.crouch.idle = null
     this.crouch.walkFwd = null
+    this.crouch.runSlowFwd = null
+    this.crouch.runSprintFwd = null
     this.crouch.walkBack = null
     this.crouch.strafeL = null
     this.crouch.strafeR = null
+    this.jumpRise = null
+    this.jumpFall = null
   }
 }

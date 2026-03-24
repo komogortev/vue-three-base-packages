@@ -1,6 +1,7 @@
 export type { TerrainSurfaceSampler } from './terrainSurface'
 export {
   PlayerController,
+  DEFAULT_SKINNED_CROUCH_TERRAIN_Y_DELTA,
   PLAYER_CAPSULE_HALF_HEIGHT,
   sampleTerrainFootprintY,
   type PlayerControllerConfig,

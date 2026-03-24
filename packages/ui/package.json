@@ -12,14 +12,15 @@
     }
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && vue-tsc -p tsconfig.build.json",
     "dev": "vite build --watch",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
     "vue": "^3.4.0"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.0",
     "typescript": "^5.4.0",
     "vite": "^5.0.0",
     "vue": "^3.4.0",

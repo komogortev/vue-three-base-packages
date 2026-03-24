@@ -1,6 +1,18 @@
 import type { KeyboardBindings, ButtonAction, InputEmitter } from './types'
 
 /**
+ * Ctrl/Meta + WASD: bookmark, close tab, save page, select all.
+ * **Chromium ignores `preventDefault()` for Ctrl+W** (and several others); default crouch is **KeyC** in `DEFAULT_BINDINGS`.
+ * This still helps some chords in other browsers and when users add Ctrl to crouch binds.
+ */
+const BROWSER_CHORD_CODES_CROUCH_WASD = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD'])
+
+function isBrowserChordOverridingCrouchMove(e: KeyboardEvent): boolean {
+  if (!e.ctrlKey && !e.metaKey) return false
+  return BROWSER_CHORD_CODES_CROUCH_WASD.has(e.code)
+}
+
+/**
  * Maps keyboard events to abstract InputActions and move-axis values.
  *
  * - Button actions (interact, pause, confirm, cancel, jump) fire on keydown/keyup.
@@ -18,6 +30,9 @@ export class KeyboardProvider {
 
   mount(): void {
     const onKeyDown = (e: KeyboardEvent): void => {
+      if (isBrowserChordOverridingCrouchMove(e)) {
+        e.preventDefault()
+      }
       if (e.repeat) return
       this.held.add(e.code)
       this.checkButton(e.code, 'pressed')
@@ -28,12 +43,13 @@ export class KeyboardProvider {
       this.checkButton(e.code, 'released')
     }
 
-    window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
+    const opts: AddEventListenerOptions = { capture: true }
+    window.addEventListener('keydown', onKeyDown, opts)
+    window.addEventListener('keyup', onKeyUp, opts)
 
     this.cleanup.push(
-      () => window.removeEventListener('keydown', onKeyDown),
-      () => window.removeEventListener('keyup', onKeyUp),
+      () => window.removeEventListener('keydown', onKeyDown, opts),
+      () => window.removeEventListener('keyup', onKeyUp, opts),
     )
   }
 
@@ -63,7 +79,8 @@ export class KeyboardProvider {
     const kb = this.bindings
     const sprint = kb.sprint.some((k) => this.held.has(k)) ? 1 : 0
     const crouch = kb.crouch.some((k) => this.held.has(k)) ? 1 : 0
-    this.emit({ axis: 'locomotion', value: { x: sprint, y: crouch } })
+    const jog = (kb.jog ?? []).some((k) => this.held.has(k)) ? 1 : 0
+    this.emit({ axis: 'locomotion', value: { x: sprint, y: crouch, z: jog } })
   }
 
   unmount(): void {

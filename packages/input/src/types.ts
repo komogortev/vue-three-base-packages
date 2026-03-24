@@ -8,7 +8,7 @@ export type ButtonAction = 'interact' | 'pause' | 'confirm' | 'cancel' | 'jump'
  * Abstract axis names. Each axis carries a normalized { x, y } value in [-1, 1].
  * - move:  primary movement direction (WASD / left stick / touch joystick)
  * - look:  camera / aim direction (mouse delta / right stick)
- * - locomotion: modifiers — `x` = sprint intent (1 held), `y` = crouch intent (1 held)
+ * - locomotion: modifiers — `x` = sprint, `y` = crouch, optional `z` = jog / slow-run (hold)
  */
 export type AxisAction = 'move' | 'look' | 'locomotion'
 
@@ -19,7 +19,8 @@ export interface InputActionEvent {
 
 export interface InputAxisEvent {
   axis: AxisAction
-  value: { x: number; y: number }
+  /** `z` is used only for `locomotion` (jog / slow run); omit on other axes. */
+  value: { x: number; y: number; z?: number }
 }
 
 export type InputEvent = InputActionEvent | InputAxisEvent
@@ -40,8 +41,13 @@ export interface KeyboardBindings {
   move: KeyboardMoveBindings
   /** Keys held = sprint (e.g. Shift). Emitted on `locomotion` axis `x`. */
   sprint: string[]
-  /** Keys held = crouch (e.g. Ctrl). Emitted on `locomotion` axis `y`. */
+  /**
+   * Keys held = crouch. Default {@link DEFAULT_BINDINGS} uses **C** so Chromium cannot trap **Ctrl+W** (close tab) / **Ctrl+D** (bookmark) with WASD.
+   * You may add `ControlLeft`/`ControlRight` here, but browsers will still honor those OS-level chords.
+   */
   crouch: string[]
+  /** Keys held = jog / slow run (forward locomotion clip); not automatic from speed. */
+  jog?: string[]
   interact: string[]
   pause: string[]
   confirm: string[]
@@ -63,6 +69,8 @@ export interface GamepadBindings {
   sprintHold: number[]
   /** Button indices held = crouch (e.g. B). Empty = never crouch from pad. */
   crouchHold: number[]
+  /** Buttons held = jog / slow run. Empty = never jog from pad. */
+  jogHold?: number[]
   /** Button indices that map to each action */
   interact: number[]
   pause: number[]
@@ -89,7 +97,8 @@ export const DEFAULT_BINDINGS: InputBindings = {
       right: ['KeyD', 'ArrowRight'],
     },
     sprint: ['ShiftLeft', 'ShiftRight'],
-    crouch: ['ControlLeft', 'ControlRight'],
+    crouch: ['KeyC'],
+    jog: ['KeyV'],
     interact: ['KeyE'],
     pause:    ['Escape', 'KeyP'],
     confirm:  ['Enter', 'Space'],
@@ -101,6 +110,7 @@ export const DEFAULT_BINDINGS: InputBindings = {
     lookAxis: { x: 2, y: 3 },  // right stick
     sprintHold: [10],           // L3 (common sprint bind)
     crouchHold: [],             // map in your game if needed
+    jogHold: [],                // e.g. R3 = [11] on standard mapping
     interact: [0],              // A / Cross
     pause:    [9],              // Start / Options
     confirm:  [0],              // A / Cross

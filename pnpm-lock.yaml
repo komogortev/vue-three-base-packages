@@ -76,6 +76,9 @@ importers:
 
   packages/ui:
     devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^5.2.0
+        version: 5.2.4(vite@5.4.21)(vue@3.5.30(typescript@5.9.3))
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
@@ -401,6 +404,13 @@ packages:
 
   '@types/webxr@0.5.24':
     resolution: {integrity: sha512-h8fgEd/DpoS9CBrjEQXR+dIDraopAEfu4wYVNY2tEPwk60stPWhvZMf4Foo5FakuQ7HFZoa8WceaWFervK2Ovg==}
+
+  '@vitejs/plugin-vue@5.2.4':
+    resolution: {integrity: sha512-7Yx/SXSOcQq5HiiV3orevHUFn+pmMB4cgbEkDYgnkUWb0WfeQ/wa2yFv6D5ICiCQOVpjA7vYDXrC7AGO8yjDHA==}
+    engines: {node: ^18.0.0 || >=20.0.0}
+    peerDependencies:
+      vite: ^5.0.0 || ^6.0.0
+      vue: ^3.2.25
 
   '@vitest/expect@2.1.9':
     resolution: {integrity: sha512-UJCIkTBenHeKT1TTlKMJWy1laZewsRIzYighyYiJKZreqtdxSos/S1t+ktRMQWu2CKqaarrkeszJx1cgC5tGZw==}
@@ -906,6 +916,11 @@ snapshots:
       meshoptimizer: 0.18.1
 
   '@types/webxr@0.5.24': {}
+
+  '@vitejs/plugin-vue@5.2.4(vite@5.4.21)(vue@3.5.30(typescript@5.9.3))':
+    dependencies:
+      vite: 5.4.21
+      vue: 3.5.30(typescript@5.9.3)
 
   '@vitest/expect@2.1.9':
     dependencies:
