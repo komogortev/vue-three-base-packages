@@ -16,7 +16,7 @@ import type { InputBindings, InputEvent } from './types'
  *
  * Emits on context.eventBus:
  * - `input:action`  — { action: ButtonAction, type: 'pressed' | 'released' }
- * - `input:axis`    — { axis: AxisAction, value: { x: number, y: number } }
+ * - `input:axis`    — { axis: AxisAction, value: { x: number, y: number } } (`locomotion`: sprint=x, crouch=y)
  *
  * Both keyboard move-axis and gamepad axes fire every frame via the poll loop.
  * Button events fire only on state transitions (pressed / released).

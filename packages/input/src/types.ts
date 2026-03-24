@@ -8,8 +8,9 @@ export type ButtonAction = 'interact' | 'pause' | 'confirm' | 'cancel' | 'jump'
  * Abstract axis names. Each axis carries a normalized { x, y } value in [-1, 1].
  * - move:  primary movement direction (WASD / left stick / touch joystick)
  * - look:  camera / aim direction (mouse delta / right stick)
+ * - locomotion: modifiers — `x` = sprint intent (1 held), `y` = crouch intent (1 held)
  */
-export type AxisAction = 'move' | 'look'
+export type AxisAction = 'move' | 'look' | 'locomotion'
 
 export interface InputActionEvent {
   action: ButtonAction
@@ -37,6 +38,10 @@ export interface KeyboardMoveBindings {
 
 export interface KeyboardBindings {
   move: KeyboardMoveBindings
+  /** Keys held = sprint (e.g. Shift). Emitted on `locomotion` axis `x`. */
+  sprint: string[]
+  /** Keys held = crouch (e.g. Ctrl). Emitted on `locomotion` axis `y`. */
+  crouch: string[]
   interact: string[]
   pause: string[]
   confirm: string[]
@@ -54,6 +59,10 @@ export interface GamepadAxisBindings {
 export interface GamepadBindings {
   moveAxis: GamepadAxisBindings
   lookAxis: GamepadAxisBindings
+  /** Button indices held = sprint (e.g. L3). Empty = never sprint from pad. */
+  sprintHold: number[]
+  /** Button indices held = crouch (e.g. B). Empty = never crouch from pad. */
+  crouchHold: number[]
   /** Button indices that map to each action */
   interact: number[]
   pause: number[]
@@ -79,6 +88,8 @@ export const DEFAULT_BINDINGS: InputBindings = {
       left:  ['KeyA', 'ArrowLeft'],
       right: ['KeyD', 'ArrowRight'],
     },
+    sprint: ['ShiftLeft', 'ShiftRight'],
+    crouch: ['ControlLeft', 'ControlRight'],
     interact: ['KeyE'],
     pause:    ['Escape', 'KeyP'],
     confirm:  ['Enter', 'Space'],
@@ -88,6 +99,8 @@ export const DEFAULT_BINDINGS: InputBindings = {
   gamepad: {
     moveAxis: { x: 0, y: 1 },  // left stick
     lookAxis: { x: 2, y: 3 },  // right stick
+    sprintHold: [10],           // L3 (common sprint bind)
+    crouchHold: [],             // map in your game if needed
     interact: [0],              // A / Cross
     pause:    [9],              // Start / Options
     confirm:  [0],              // A / Cross

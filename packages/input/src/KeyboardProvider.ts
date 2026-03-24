@@ -59,6 +59,11 @@ export class KeyboardProvider {
     }
 
     this.emit({ axis: 'move', value: { x, y } })
+
+    const kb = this.bindings
+    const sprint = kb.sprint.some((k) => this.held.has(k)) ? 1 : 0
+    const crouch = kb.crouch.some((k) => this.held.has(k)) ? 1 : 0
+    this.emit({ axis: 'locomotion', value: { x: sprint, y: crouch } })
   }
 
   unmount(): void {

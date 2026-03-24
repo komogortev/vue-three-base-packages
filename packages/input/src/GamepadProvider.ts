@@ -50,6 +50,10 @@ export class GamepadProvider {
     const my = this.applyDeadzone(-(gp.axes[b.moveAxis.y] ?? 0)) // invert Y: stick up → positive
     this.emit({ axis: 'move', value: { x: mx, y: my } })
 
+    const sprint = (b.sprintHold ?? []).some((i) => gp.buttons[i]?.pressed) ? 1 : 0
+    const crouch = (b.crouchHold ?? []).some((i) => gp.buttons[i]?.pressed) ? 1 : 0
+    this.emit({ axis: 'locomotion', value: { x: sprint, y: crouch } })
+
     const lx = this.applyDeadzone(gp.axes[b.lookAxis.x] ?? 0)
     const ly = this.applyDeadzone(-(gp.axes[b.lookAxis.y] ?? 0))
     this.emit({ axis: 'look', value: { x: lx, y: ly } })

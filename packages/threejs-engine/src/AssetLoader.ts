@@ -1,11 +1,18 @@
 import * as THREE from 'three'
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import type { EventBus } from '@base/engine-core'
 
 export type { GLTF }
+
+/** Result of {@link AssetLoader.loadFBX} — Mixamo and other FBX sources. */
+export interface FBXRoot {
+  group: THREE.Group
+  animations: THREE.AnimationClip[]
+}
 
 /**
  * Draco decoder served by Google — matches what three.js examples use.
@@ -14,9 +21,37 @@ export type { GLTF }
 const DRACO_DECODER_URL = 'https://www.gstatic.com/draco/versioned/decoders/1.5.7/'
 
 /**
+ * {@link FBXLoader} warns on almost every Mixamo file; behaviour is already handled (truncate weights,
+ * skip unsupported Phong maps). Filter only these templates so other FBX warnings still show.
+ */
+const FBX_LOADER_WARN_SUPPRESS = [
+  /^THREE\.FBXLoader: Vertex has more than 4 skinning weights/i,
+  /^THREE\.FBXLoader: %s map is not supported in three\.js, skipping texture\./i,
+] as const
+
+function shouldSuppressFbxLoaderWarn(args: unknown[]): boolean {
+  const head = args[0]
+  if (typeof head !== 'string') return false
+  return FBX_LOADER_WARN_SUPPRESS.some((re) => re.test(head))
+}
+
+/** Runs `fn` while filtering the two noisy warnings above from `console.warn`. */
+function withFbxLoaderWarnFilter<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = console.warn
+  console.warn = (...args: unknown[]) => {
+    if (shouldSuppressFbxLoaderWarn(args)) return
+    prev.apply(console, args as Parameters<typeof console.warn>)
+  }
+  return fn().finally(() => {
+    console.warn = prev
+  })
+}
+
+/**
  * Centralized asset loader for the Three.js engine.
  *
  * - GLTF: loaded on demand, not cached (GLTF scenes are mutable — cache the clone, not the original)
+ * - FBX: via `FBXLoader` (Mixamo default) — returns a `Group` + `animations`; not cached
  * - GLTFLoader is wired with **Draco** + **Meshopt** decoders (lazy init on first GLTF load)
  * - Textures: cached by URL — safe to share across materials
  * - Emits `assets:progress` during loading and `assets:complete` on success
@@ -26,6 +61,7 @@ const DRACO_DECODER_URL = 'https://www.gstatic.com/draco/versioned/decoders/1.5.
 export class AssetLoader {
   private readonly textureCache = new Map<string, THREE.Texture>()
   private readonly gltfLoader = new GLTFLoader()
+  private readonly fbxLoader = new FBXLoader()
   private readonly textureLoader = new THREE.TextureLoader()
 
   private dracoLoader: DRACOLoader | null = null
@@ -75,6 +111,38 @@ export class AssetLoader {
         },
       )
     })
+  }
+
+  /**
+   * Load FBX (e.g. Mixamo). Materials are often Phong/Lambert; consider converting to glTF
+   * in Blender for smaller files and PBR — this path is for direct web use.
+   */
+  async loadFBX(url: string): Promise<FBXRoot> {
+    return withFbxLoaderWarnFilter(
+      () =>
+        new Promise<FBXRoot>((resolve, reject) => {
+          this.fbxLoader.load(
+            url,
+            (group) => {
+              const animations = [...(group.animations ?? [])]
+              this.eventBus.emit('assets:complete', { url, type: 'fbx' })
+              resolve({ group, animations })
+            },
+            (event) => {
+              this.eventBus.emit('assets:progress', {
+                url,
+                type: 'fbx',
+                loaded: event.loaded,
+                total: event.total,
+              })
+            },
+            (error) => {
+              console.error(`[AssetLoader] Failed to load FBX: ${url}`, error)
+              reject(error)
+            },
+          )
+        }),
+    )
   }
 
   /**
