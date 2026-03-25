@@ -46,7 +46,7 @@ pnpm typecheck
 | Concern | This repo |
 |--------|-----------|
 | **GitHub Pages** | **Not used** — libraries only, no static site. |
-| **GitHub Actions** | CI workflow runs **install + build** on push/PR to validate the workspace (see `.github/workflows/ci.yml`). |
+| **GitHub Actions** | CI workflow runs **install + build** on push/PR to validate the workspace (see `.github/workflows/ci.yml`). Uses **GitHub-hosted** `ubuntu-latest` (no self-hosted runner required). Workflow sets `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` per [GitHub’s Node 20 deprecation on Actions](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/). |
 | **Publishing** | Use `pnpm publish` / GitHub Packages per package; bump versions and follow your release process. |
 
 ---
