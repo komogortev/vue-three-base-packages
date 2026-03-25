@@ -1,0 +1,37 @@
+{
+  "name": "@base/scene-builder",
+  "version": "0.1.0",
+  "description": "SceneDescriptor → Three.js terrain, scatter, GLTF placement, character spawn, and environment runtime helpers",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@base/player-three": ">=0.1.0",
+    "@base/threejs-engine": ">=0.1.0",
+    "three": ">=0.160.0"
+  },
+  "dependencies": {
+    "@base/player-three": "workspace:*",
+    "@base/threejs-engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/three": "^0.172.0",
+    "three": "^0.172.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  }
+}
