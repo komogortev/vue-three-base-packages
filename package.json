@@ -3,7 +3,7 @@
   "private": true,
   "description": "Shared packages workspace for the @base ecosystem",
   "scripts": {
-    "build": "pnpm -r build",
+    "build": "pnpm -r --sort run build",
     "dev": "pnpm -r dev",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",

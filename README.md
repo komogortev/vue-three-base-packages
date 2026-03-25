@@ -34,7 +34,7 @@ Each package has its own `package.json`, `tsconfig`, and **`dist/`** produced by
 
 ```bash
 pnpm install
-pnpm build      # pnpm -r build — all packages
+pnpm build      # pnpm -r --sort run build — topological order (engine-core before input, etc.)
 pnpm test       # where configured per package
 pnpm typecheck
 ```

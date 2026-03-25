@@ -19,8 +19,10 @@
   "peerDependencies": {
     "@base/engine-core": ">=0.1.0"
   },
+  "dependencies": {
+    "@base/engine-core": "workspace:*"
+  },
   "devDependencies": {
-    "@base/engine-core": "link:../engine-core",
     "typescript": "^5.6.0"
   },
   "publishConfig": {

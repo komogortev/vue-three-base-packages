@@ -9,10 +9,11 @@ importers:
   .: {}
 
   packages/audio:
-    devDependencies:
+    dependencies:
       '@base/engine-core':
-        specifier: link:../engine-core
+        specifier: workspace:*
         version: link:../engine-core
+    devDependencies:
       '@types/three':
         specifier: ^0.172.0
         version: 0.172.0
@@ -45,10 +46,11 @@ importers:
         version: 5.9.3
 
   packages/input:
-    devDependencies:
+    dependencies:
       '@base/engine-core':
-        specifier: link:../engine-core
+        specifier: workspace:*
         version: link:../engine-core
+    devDependencies:
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -75,10 +77,11 @@ importers:
         version: 5.9.3
 
   packages/threejs-engine:
-    devDependencies:
+    dependencies:
       '@base/engine-core':
-        specifier: link:../engine-core
+        specifier: workspace:*
         version: link:../engine-core
+    devDependencies:
       '@types/three':
         specifier: ^0.172.0
         version: 0.172.0
