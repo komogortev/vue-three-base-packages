@@ -218,6 +218,14 @@ export class PlayerController {
     this.crouchTerrainYOffsetDelta = worldY
   }
 
+  /**
+   * Switch XZ move basis: **`facing`** with follow cams behind the body; **`camera`** with orbit / free cam
+   * (e.g. editor author views).
+   */
+  setMovementBasis(basis: 'facing' | 'camera'): void {
+    this.cfg.movementBasis = basis
+  }
+
   /** Smoothed crouch amount; safe to use for camera rig after {@link tick}. */
   getCrouchGroundBlend(): number {
     return this.crouchGroundBlend
@@ -290,7 +298,7 @@ export class PlayerController {
 
       if (basisMode === 'facing') {
         // Same XZ frame as typical “behind + lateral” rigs: forward = opposite of camera back offset
-        // (sin/cos facing), right = (cos, −sin) — matches {@link ThirdPersonSceneModule.placeCamera}.
+        // (sin/cos facing), right = (cos, −sin) — matches `@base/camera-three` chase rig math.
         const f = this.facing
         this._camDir.set(-Math.sin(f), 0, -Math.cos(f))
         this._camRight.crossVectors(this._camDir, THREE.Object3D.DEFAULT_UP).normalize()

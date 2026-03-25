@@ -23,6 +23,21 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
+  packages/camera-three:
+    devDependencies:
+      '@types/three':
+        specifier: ^0.172.0
+        version: 0.172.0
+      three:
+        specifier: ^0.172.0
+        version: 0.172.0
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9
+
   packages/engine-core:
     devDependencies:
       typescript:

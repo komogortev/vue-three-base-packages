@@ -6,6 +6,16 @@ import { TouchProvider } from './TouchProvider'
 import { DEFAULT_BINDINGS } from './types'
 import type { InputBindings, InputEvent } from './types'
 
+/** Optional behaviour for {@link InputModule}. */
+export interface InputModuleOptions {
+  /**
+   * When false, the full-screen touch overlay is not mounted.
+   * Use in desktop editors: the overlay sits above the canvas and blocks mouse events (e.g. OrbitControls).
+   * Default **true** (unchanged for game views).
+   */
+  enableTouchOverlay?: boolean
+}
+
 /**
  * Input child module. Mount as a child of ThreeModule (or any EngineModule host).
  *
@@ -36,10 +46,13 @@ export class InputModule extends BaseModule {
 
   private keyboard!: KeyboardProvider
   private gamepad!: GamepadProvider
-  private touch!: TouchProvider
+  private touch: TouchProvider | null = null
   private rafId = 0
 
-  constructor(private readonly bindings: InputBindings = DEFAULT_BINDINGS) {
+  constructor(
+    private readonly bindings: InputBindings = DEFAULT_BINDINGS,
+    private readonly moduleOptions: InputModuleOptions = {},
+  ) {
     super()
   }
 
@@ -57,8 +70,10 @@ export class InputModule extends BaseModule {
 
     this.gamepad = new GamepadProvider(this.bindings.gamepad, this.bindings.deadzone, emit)
 
-    this.touch = new TouchProvider(emit)
-    this.touch.mount(container)
+    if (this.moduleOptions.enableTouchOverlay !== false) {
+      this.touch = new TouchProvider(emit)
+      this.touch.mount(container)
+    }
 
     this.pollLoop()
   }
@@ -66,7 +81,8 @@ export class InputModule extends BaseModule {
   protected async onUnmount(): Promise<void> {
     cancelAnimationFrame(this.rafId)
     this.keyboard.unmount()
-    this.touch.unmount()
+    this.touch?.unmount()
+    this.touch = null
     this.gamepad.reset()
   }
 
