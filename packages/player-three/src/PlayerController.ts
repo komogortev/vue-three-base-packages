@@ -398,13 +398,13 @@ export class PlayerController {
         cfg.backwardWithoutBodyTurn !== false ? y >= 0 : true
       const hFace = Math.hypot(this._moveDir.x, this._moveDir.z)
       let targetFacing: number | null = null
-      if (rotateTowardMove && hFace > 1e-8) {
+      // Camera-relative FPS: do not swing the body toward the strafe vector — only mouse/gamepad look changes facing.
+      if (rotateTowardMove && hFace > 1e-8 && basisMode === 'facing') {
         const nx = this._moveDir.x / hFace
         const nz = this._moveDir.z / hFace
         targetFacing = Math.atan2(-nx, -nz)
         this.facing = lerpAngle(this.facing, targetFacing, facingLerp * delta)
       }
-      character.rotation.y = this.facing
 
       vx = this._moveDir.x
       vz = this._moveDir.z
@@ -517,11 +517,20 @@ export class PlayerController {
     this.velocity.set(vx, this.verticalVelocity, vz)
 
     this.lastCharacterPos.copy(character.position)
+    character.rotation.y = this.facing
   }
 
   /** Facing used by camera rig (radians, Y). */
   getFacing(): number {
     return this.facing
+  }
+
+  /** Add yaw (radians) for first-person mouse/gamepad look; angle is wrapped to (−π, π]. */
+  addFacingDelta(radianDelta: number): void {
+    if (radianDelta === 0) return
+    this.facing += radianDelta
+    while (this.facing > Math.PI) this.facing -= 2 * Math.PI
+    while (this.facing <= -Math.PI) this.facing += 2 * Math.PI
   }
 
   /** Reset facing and intent (e.g. when swapping character mesh). */

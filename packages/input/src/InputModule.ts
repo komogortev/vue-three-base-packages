@@ -3,6 +3,7 @@ import type { ShellContext } from '@base/engine-core'
 import { KeyboardProvider } from './KeyboardProvider'
 import { GamepadProvider } from './GamepadProvider'
 import { TouchProvider } from './TouchProvider'
+import { PointerLookProvider, type PointerLookProviderOptions } from './PointerLookProvider'
 import { DEFAULT_BINDINGS } from './types'
 import type { InputBindings, InputEvent } from './types'
 
@@ -14,6 +15,13 @@ export interface InputModuleOptions {
    * Default **true** (unchanged for game views).
    */
   enableTouchOverlay?: boolean
+  /**
+   * When true, click the mount `container` to use pointer lock and emit `look` from mouse movement.
+   * Disable in scene editors that rely on OrbitControls. Default **false**.
+   */
+  enablePointerLook?: boolean
+  /** Passed through to {@link PointerLookProvider}. */
+  pointerLookOptions?: PointerLookProviderOptions
 }
 
 /**
@@ -23,6 +31,7 @@ export interface InputModuleOptions {
  * - KeyboardProvider: keydown/keyup → button actions + move axis (via tick)
  * - GamepadProvider:  Gamepad API poll → button actions + move/look axes
  * - TouchProvider:    touch events → move axis + interact action
+ * - PointerLookProvider (optional): pointer lock on mount container → `look` axis (desktop FPS)
  *
  * Emits on context.eventBus:
  * - `input:action`  — { action: ButtonAction, type: 'pressed' | 'released' }
@@ -47,7 +56,9 @@ export class InputModule extends BaseModule {
   private keyboard!: KeyboardProvider
   private gamepad!: GamepadProvider
   private touch: TouchProvider | null = null
+  private pointerLook: PointerLookProvider | null = null
   private rafId = 0
+  private lastPollMs = 0
 
   constructor(
     private readonly bindings: InputBindings = DEFAULT_BINDINGS,
@@ -75,6 +86,12 @@ export class InputModule extends BaseModule {
       this.touch.mount(container)
     }
 
+    if (this.moduleOptions.enablePointerLook === true) {
+      this.pointerLook = new PointerLookProvider(container, emit, this.moduleOptions.pointerLookOptions)
+      this.pointerLook.mount()
+    }
+
+    this.lastPollMs = performance.now()
     this.pollLoop()
   }
 
@@ -83,12 +100,20 @@ export class InputModule extends BaseModule {
     this.keyboard.unmount()
     this.touch?.unmount()
     this.touch = null
+    this.pointerLook?.unmount()
+    this.pointerLook = null
     this.gamepad.reset()
   }
 
   private pollLoop(): void {
     this.rafId = requestAnimationFrame(() => this.pollLoop())
+    const now = performance.now()
+    const dt = this.lastPollMs > 0 ? Math.min(0.05, (now - this.lastPollMs) / 1000) : 1 / 60
+    this.lastPollMs = now
+
     this.keyboard.tick()
-    this.gamepad.poll()
+    const skipGamepadLook = this.pointerLook?.isLocked() ?? false
+    this.gamepad.poll(dt, skipGamepadLook)
+    this.pointerLook?.flush()
   }
 }

@@ -1,5 +1,10 @@
 import type { GamepadBindings, ButtonAction, InputEmitter } from './types'
 
+/** ~rad/s at full stick deflection for look yaw (horizontal). */
+const GAMEPAD_LOOK_YAW_RATE = 2.4
+/** ~rad/s at full stick deflection for look pitch (vertical). */
+const GAMEPAD_LOOK_PITCH_RATE = 1.75
+
 /**
  * Polls the Gamepad API each frame and maps axes/buttons to abstract InputActions.
  *
@@ -23,12 +28,15 @@ export class GamepadProvider {
   /**
    * Called every frame by InputModule's poll loop.
    * Reads gamepad state, emits axis and button events.
+   *
+   * @param dtSeconds  Frame delta (seconds) — scales right-stick look to rad/frame.
+   * @param skipLook   When true (e.g. pointer lock for mouse look), do not emit `look`.
    */
-  poll(): void {
+  poll(dtSeconds: number, skipLook = false): void {
     const gp = this.findActiveGamepad()
     if (!gp) return
 
-    this.pollAxes(gp)
+    this.pollAxes(gp, dtSeconds, skipLook)
     this.pollButtons(gp)
   }
 
@@ -43,7 +51,7 @@ export class GamepadProvider {
     return null
   }
 
-  private pollAxes(gp: Gamepad): void {
+  private pollAxes(gp: Gamepad, dtSeconds: number, skipLook: boolean): void {
     const b = this.bindings
 
     const mx = this.applyDeadzone(gp.axes[b.moveAxis.x] ?? 0)
@@ -55,9 +63,19 @@ export class GamepadProvider {
     const jog = (b.jogHold ?? []).some((i) => gp.buttons[i]?.pressed) ? 1 : 0
     this.emit({ axis: 'locomotion', value: { x: sprint, y: crouch, z: jog } })
 
+    if (skipLook) return
+
     const lx = this.applyDeadzone(gp.axes[b.lookAxis.x] ?? 0)
     const ly = this.applyDeadzone(-(gp.axes[b.lookAxis.y] ?? 0))
-    this.emit({ axis: 'look', value: { x: lx, y: ly } })
+    const dt = Math.max(0, dtSeconds)
+    this.emit({
+      axis: 'look',
+      value: {
+        // Stick right (lx > 0) → negative yaw delta; matches pointer look + body `rotation.y` / facing.
+        x: -lx * GAMEPAD_LOOK_YAW_RATE * dt,
+        y: ly * GAMEPAD_LOOK_PITCH_RATE * dt,
+      },
+    })
   }
 
   private pollButtons(gp: Gamepad): void {

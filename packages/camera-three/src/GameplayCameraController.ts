@@ -137,7 +137,12 @@ export class GameplayCameraController {
     const cb = Math.min(1, Math.max(0, crouchBlend))
     const p = character.position
     const eyeY = p.y + this.fp.eyeOffsetY - this.fp.crouchEyeDrop * cb
-    camera.position.set(p.x, eyeY, p.z)
+    const pull = this.fp.eyePullback
+    // Body / view forward in XZ matches PlayerController walk dir: (−sin f, −cos f). Positive pull
+    // shifts the eye from locomotion root toward the nose (outside the skull vs pelvis-centred XZ).
+    const bx = pull !== 0 ? -Math.sin(facing) * pull : 0
+    const bz = pull !== 0 ? -Math.cos(facing) * pull : 0
+    camera.position.set(p.x + bx, eyeY, p.z + bz)
     camera.rotation.order = 'YXZ'
     camera.rotation.y = facing
     camera.rotation.x = pitch

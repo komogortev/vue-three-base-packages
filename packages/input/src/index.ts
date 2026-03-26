@@ -3,6 +3,8 @@ export type { InputModuleOptions } from './InputModule'
 export { KeyboardProvider } from './KeyboardProvider'
 export { GamepadProvider } from './GamepadProvider'
 export { TouchProvider } from './TouchProvider'
+export { PointerLookProvider } from './PointerLookProvider'
+export type { PointerLookProviderOptions } from './PointerLookProvider'
 export { DEFAULT_BINDINGS } from './types'
 export type {
   ButtonAction,
