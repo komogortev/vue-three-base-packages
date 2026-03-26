@@ -76,6 +76,25 @@ importers:
         specifier: ^5.4.0
         version: 5.9.3
 
+  packages/scene-builder:
+    dependencies:
+      '@base/player-three':
+        specifier: workspace:*
+        version: link:../player-three
+      '@base/threejs-engine':
+        specifier: workspace:*
+        version: link:../threejs-engine
+    devDependencies:
+      '@types/three':
+        specifier: ^0.172.0
+        version: 0.172.0
+      three:
+        specifier: ^0.172.0
+        version: 0.172.0
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
   packages/threejs-engine:
     dependencies:
       '@base/engine-core':
