@@ -125,6 +125,11 @@ export interface TerrainDescriptor {
   seaLevel?: number        // default 0
   /** Base terrain mesh colour. */
   baseColor?: number       // default 0x1a2a14
+  /**
+   * Terrain mesh opacity [0–1]. Default 1 (opaque).
+   * Values below 1 blend the displaced ground with GLB scenery underneath (heightmap still drives collision/sampling).
+   */
+  baseOpacity?: number
   /** Water surface colour. */
   waterColor?: number      // default 0x0a2040
   /** Water surface opacity [0–1]. */
@@ -368,6 +373,16 @@ export interface GltfObject {
   scale?: number
   /** Y-axis rotation in radians. Default 0. */
   rotationY?: number
+  /**
+   * World Y for the model pivot. When set, overrides terrain sampling for height and skips
+   * the “below seaLevel” placement rejection.
+   */
+  y?: number
+  /**
+   * When true, place the model even if {@link TerrainSampler} is below `seaLevel` at (x,z)
+   * (e.g. heightmap dips). Uses sampled Y. Default false — props underwater are skipped.
+   */
+  allowBelowSeaLevel?: boolean
 }
 
 export type SceneObject = PlacedObject | ScatterField | GltfObject

@@ -208,7 +208,9 @@ export class SceneBuilder {
   private static buildTerrain(sampler: TerrainSampler, terrain: TerrainDescriptor): THREE.Mesh {
     const radius = terrain.radius     ?? 50
     const res    = terrain.resolution ?? 160
-    const color  = terrain.baseColor  ?? 0x1a2a14
+    const color   = terrain.baseColor   ?? 0x1a2a14
+    const opacity = terrain.baseOpacity ?? 1
+    const transparent = opacity < 1
 
     const geo = new THREE.PlaneGeometry(radius * 2, radius * 2, res, res)
     geo.rotateX(-Math.PI / 2)
@@ -228,6 +230,10 @@ export class SceneBuilder {
       color,
       roughness: 0.88,
       metalness: 0.04,
+      transparent,
+      opacity,
+      // Transparent terrain: avoid writing depth so island GLB behind reads more consistently through the tint.
+      depthWrite: !transparent,
     })
 
     return new THREE.Mesh(geo, mat)
@@ -619,7 +625,10 @@ export class SceneBuilder {
     resolvePublicUrl: ResolvePublicUrl,
   ): Promise<void> {
     const terrainY = sampler.sample(obj.x, obj.z)
-    if (terrainY < seaLevel) {
+    const useExplicitY = obj.y !== undefined
+    const placeY = useExplicitY ? obj.y! : terrainY
+
+    if (!useExplicitY && terrainY < seaLevel && !obj.allowBelowSeaLevel) {
       console.warn(
         `[SceneBuilder] GLTF skipped (terrain below seaLevel=${seaLevel}) at x=${obj.x} z=${obj.z} → y=${terrainY.toFixed(2)} — move the object or raise seaLevel.`,
       )
@@ -631,9 +640,10 @@ export class SceneBuilder {
     try {
       const gltf  = await ctx.assets.loadGLTF(resolvePublicUrl(obj.url))
       const model = gltf.scene.clone(true)
+      convertUnlitToPbrRough(model)
       model.scale.setScalar(scale)
       model.rotation.y  = obj.rotationY ?? 0
-      model.position.set(obj.x, terrainY, obj.z)
+      model.position.set(obj.x, placeY, obj.z)
       ctx.scene.add(model)
     } catch (err) {
       // Typical causes: 404 (missing scene.bin / textures next to a .gltf), wrong path
@@ -643,7 +653,7 @@ export class SceneBuilder {
         new THREE.BoxGeometry(1, 2, 1),
         new THREE.MeshStandardMaterial({ color: 0xff2222, wireframe: true }),
       )
-      box.position.set(obj.x, terrainY + 1, obj.z)
+      box.position.set(obj.x, placeY + 1, obj.z)
       ctx.scene.add(box)
     }
   }

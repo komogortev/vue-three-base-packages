@@ -63,7 +63,9 @@ export class CharacterAnimationRig {
       return
     }
 
-    this.mixer = new THREE.AnimationMixer(skinned)
+    // Drive the whole imported rig so every SkinnedMesh that shares these bones animates.
+    // Mixer on a single mesh leaves extra skinned parts (when pruneExtraSkinnedMeshes is false) in T-pose.
+    this.mixer = new THREE.AnimationMixer(rigRoot)
 
     const idleStand =
       pickClip(clips, /neutral idle/i) ??
