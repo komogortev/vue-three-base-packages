@@ -381,4 +381,107 @@ describe('PlayerController', () => {
 
     expect(landed).toBe(true)
   })
+
+  it('blocks steep step-up while grounded', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? 2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const ctrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      maxStepUpHeight: 0.4,
+    })
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+
+    expect(character.position.z).toBeCloseTo(0, 5)
+    expect(ctrl.getSnapshot().grounded).toBe(true)
+  })
+
+  it('catches at cliff edge while walking but falls while sprinting', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const walker = new THREE.Mesh()
+    walker.position.set(0, 0, 0)
+    const walkCtrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+    })
+    walkCtrl.setMoveIntent(0, 1)
+    walkCtrl.tick(0.1, {
+      camera,
+      character: walker,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(walker.position.z).toBeCloseTo(0, 5)
+    expect(walkCtrl.getSnapshot().grounded).toBe(true)
+
+    const sprinter = new THREE.Mesh()
+    sprinter.position.set(0, 0, 0)
+    const sprintCtrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+    })
+    sprintCtrl.setMoveIntent(0, 1)
+    sprintCtrl.tick(0.1, {
+      camera,
+      character: sprinter,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: true,
+      crouchHeld: false,
+    })
+    expect(sprinter.position.z).toBeLessThan(-0.5)
+    expect(sprintCtrl.getSnapshot().grounded).toBe(false)
+  })
+
+  it('emits edge_catch when walk movement is blocked by cliff drop', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const ctrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+    })
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+
+    const events = ctrl.consumeEvents()
+    expect(events.some((e) => e.type === 'edge_catch')).toBe(true)
+  })
 })

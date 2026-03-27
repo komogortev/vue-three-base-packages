@@ -17,6 +17,22 @@ function pickClip(
   return clips.find((c) => re.test(c.name))
 }
 
+function normalizeClipName(name: string): string {
+  return name.toLowerCase().replace(/\s*\(\d+\)\s*$/, '').trim()
+}
+
+function dedupeClipsByName(clips: THREE.AnimationClip[]): THREE.AnimationClip[] {
+  const seen = new Set<string>()
+  const out: THREE.AnimationClip[] = []
+  for (const clip of clips) {
+    const key = normalizeClipName(clip.name)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(clip)
+  }
+  return out
+}
+
 type LocoActions = {
   idle: THREE.AnimationAction | null
   walkFwd: THREE.AnimationAction | null
@@ -38,7 +54,9 @@ export class CharacterAnimationRig {
   private jumpRise: THREE.AnimationAction | null = null
   private jumpFall: THREE.AnimationAction | null = null
   private jumpSecond: THREE.AnimationAction | null = null
+  private reaction: THREE.AnimationAction | null = null
   private secondJumpBurstSeconds = 0
+  private reactionBurstSeconds = 0
 
   /** 0 = idle, 1 = full locomotion layer */
   private moveBlend = 0
@@ -55,7 +73,8 @@ export class CharacterAnimationRig {
   private readonly _vel = new THREE.Vector3()
 
   constructor(root: THREE.Object3D) {
-    const clips = (root.userData['gltfAnimations'] as THREE.AnimationClip[] | undefined) ?? []
+    const allClips = (root.userData['gltfAnimations'] as THREE.AnimationClip[] | undefined) ?? []
+    const clips = dedupeClipsByName(allClips)
     const rigRoot = animationRigRoot(root)
     const skinned = largestSkinnedMesh(rigRoot)
     if (!skinned || clips.length === 0) {
@@ -118,6 +137,7 @@ export class CharacterAnimationRig {
       jumpClip
     let jumpDownClip = pickClip(clips, /jumping down/i)
     if (!jumpDownClip) jumpDownClip = pickClip(clips, /\bfall/i)
+    const reactionClip = pickClip(clips, /\breaction\b/i)
 
     const playLoop = (clip: THREE.AnimationClip | undefined, w: number): THREE.AnimationAction | null => {
       if (!clip || !this.mixer) return null
@@ -161,6 +181,7 @@ export class CharacterAnimationRig {
     this.jumpRise = playOnce(jumpClip, 0)
     this.jumpFall = playOnce(jumpDownClip, 0)
     this.jumpSecond = playOnce(jumpSecondClip, 0)
+    this.reaction = playOnce(reactionClip, 0)
   }
 
   private emptyLoco(): LocoActions {
@@ -246,6 +267,8 @@ export class CharacterAnimationRig {
       jog?: boolean
       /** Set true for the frame where a second jump is triggered. */
       secondJumpTrigger?: boolean
+      /** Set true for the frame where ledge catch blocks movement. */
+      edgeCatchTrigger?: boolean
     } = {},
   ): void {
     if (!this.mixer) return
@@ -268,11 +291,17 @@ export class CharacterAnimationRig {
       this.jumpRise?.stop()
       this.jumpFall?.stop()
       this.jumpSecond?.stop()
+      this.reaction?.stop()
       this.secondJumpBurstSeconds = 0
+      this.reactionBurstSeconds = 0
     }
     if (opts.secondJumpTrigger) {
       this.secondJumpBurstSeconds = 0.2
       this.jumpSecond?.reset().play()
+    }
+    if (opts.edgeCatchTrigger) {
+      this.reactionBurstSeconds = 0.28
+      this.reaction?.reset().play()
     }
 
     const k = 1 - Math.exp(-delta * 10)
@@ -388,13 +417,20 @@ export class CharacterAnimationRig {
         secondW = Math.min(1, this.secondJumpBurstSeconds / 0.2)
       }
     }
+    let reactionW = 0
+    if (this.reactionBurstSeconds > 0) {
+      this.reactionBurstSeconds = Math.max(0, this.reactionBurstSeconds - delta)
+      reactionW = Math.min(1, this.reactionBurstSeconds / 0.28)
+    }
 
     const jumpMax = Math.max(riseW, fallW, secondW)
-    const locoSuppress = 1 - 0.82 * jumpMax
+    const motionOverlay = Math.max(jumpMax, reactionW)
+    const locoSuppress = 1 - 0.82 * motionOverlay
 
     this.jumpRise?.setEffectiveWeight(riseW)
     this.jumpFall?.setEffectiveWeight(fallW)
     this.jumpSecond?.setEffectiveWeight(secondW)
+    this.reaction?.setEffectiveWeight(reactionW)
 
     const maskRenorm = (
       f: number,
@@ -491,5 +527,6 @@ export class CharacterAnimationRig {
     this.jumpRise = null
     this.jumpFall = null
     this.jumpSecond = null
+    this.reaction = null
   }
 }
