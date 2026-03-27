@@ -710,4 +710,239 @@ describe('PlayerController', () => {
     const events = ctrl.consumeEvents()
     expect(events.some((e) => e.type === 'wall_stumble')).toBe(true)
   })
+
+  it('consequence resolver: pit walk warns, sprint falls, bypass falls', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const walkChar = new THREE.Mesh()
+    walkChar.position.set(0, 0, 0)
+    const walkCtrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+      useConsequenceResolver: true,
+    })
+    walkCtrl.setMoveIntent(0, 1)
+    walkCtrl.tick(0.1, {
+      camera,
+      character: walkChar,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(walkChar.position.z).toBeCloseTo(0, 5)
+    expect(walkCtrl.consumeEvents().some((e) => e.type === 'edge_catch')).toBe(true)
+
+    const sprintChar = new THREE.Mesh()
+    sprintChar.position.set(0, 0, 0)
+    const sprintCtrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+      useConsequenceResolver: true,
+    })
+    sprintCtrl.setMoveIntent(0, 1)
+    sprintCtrl.tick(0.1, {
+      camera,
+      character: sprintChar,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: true,
+      crouchHeld: false,
+    })
+    expect(sprintChar.position.z).toBeLessThan(-0.5)
+    expect(sprintCtrl.getSnapshot().grounded).toBe(false)
+
+    const bypassChar = new THREE.Mesh()
+    bypassChar.position.set(0, 0, 0)
+    const bypassCtrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+      cliffEdgeReleaseBypassSeconds: 2,
+      useConsequenceResolver: true,
+    })
+    bypassCtrl.setMoveIntent(0, 1)
+    bypassCtrl.tick(0.1, {
+      camera,
+      character: bypassChar,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    bypassCtrl.consumeEvents()
+    bypassCtrl.setMoveIntent(0, 0)
+    bypassCtrl.tick(0.1, {
+      camera,
+      character: bypassChar,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    bypassCtrl.setMoveIntent(0, 1)
+    bypassCtrl.tick(0.1, {
+      camera,
+      character: bypassChar,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(bypassChar.position.z).toBeLessThan(-0.5)
+    expect(bypassCtrl.getSnapshot().grounded).toBe(false)
+  })
+
+  it('consequence resolver emits debug severity events when debugMovement is enabled', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const walkChar = new THREE.Mesh()
+    walkChar.position.set(0, 0, 0)
+    const walkCtrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+      useConsequenceResolver: true,
+      debugMovement: true,
+    })
+    walkCtrl.setMoveIntent(0, 1)
+    walkCtrl.tick(0.1, {
+      camera,
+      character: walkChar,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    const walkDebug = walkCtrl
+      .consumeEvents()
+      .find((e) => e.type === 'hazard_consequence_debug' && e.hazardType === 'pit')
+    expect(walkDebug).toBeTruthy()
+    expect((walkDebug as any).severity).toBe('L1')
+
+    const sprintChar = new THREE.Mesh()
+    sprintChar.position.set(0, 0, 0)
+    const sprintCtrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+      useConsequenceResolver: true,
+      debugMovement: true,
+    })
+    sprintCtrl.setMoveIntent(0, 1)
+    sprintCtrl.tick(0.1, {
+      camera,
+      character: sprintChar,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: true,
+      crouchHeld: false,
+    })
+    const sprintDebug = sprintCtrl
+      .consumeEvents()
+      .find((e) => e.type === 'hazard_consequence_debug' && e.hazardType === 'pit')
+    expect(sprintDebug).toBeTruthy()
+    expect((sprintDebug as any).severity).toBe('L3')
+  })
+
+  it('maintains grounded/mode mutual exclusion invariant across frames', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = { sample: () => 0 } satisfies TerrainSurfaceSampler
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+
+    const ctrl = new PlayerController({
+      characterSpeed: 8,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      jumpVelocity: 7,
+      gravity: 20,
+    })
+
+    ctrl.notifyJumpPressed()
+    for (let i = 0; i < 120; i += 1) {
+      ctrl.tick(1 / 60, {
+        camera,
+        character,
+        sampler,
+        playableRadius: 50,
+        sprintHeld: false,
+        crouchHeld: false,
+      })
+      const snap = ctrl.getSnapshot()
+      const mode = (ctrl as any).state.mode as 'grounded' | 'airborne' | 'recovery_locked'
+      if (snap.grounded) {
+        expect(mode).not.toBe('airborne')
+      } else {
+        expect(mode).toBe('airborne')
+      }
+      ctrl.consumeEvents()
+    }
+  })
+
+  it('keeps transition timers non-negative with large delta ticks', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+    const ctrl = new PlayerController({
+      characterSpeed: 8,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+      cliffEdgeReleaseBypassSeconds: 2,
+    })
+
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    ctrl.setMoveIntent(0, 0)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+
+    ctrl.tick(10, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+
+    const state = (ctrl as any).state as {
+      pitWarningRepeatTimer: number
+      pitBypassRemaining: number
+      recoveryLockRemaining: number
+    }
+    expect(state.pitWarningRepeatTimer).toBeGreaterThanOrEqual(0)
+    expect(state.pitBypassRemaining).toBeGreaterThanOrEqual(0)
+    expect(state.recoveryLockRemaining).toBeGreaterThanOrEqual(0)
+  })
 })

@@ -1,5 +1,12 @@
 import * as THREE from 'three'
 import type { TerrainSurfaceSampler } from './terrainSurface'
+import {
+  resolveConsequence,
+  type ConsequenceAction,
+  type ConsequenceHazardType,
+  type ConsequenceLocomotionClass,
+  type ConsequenceSeverity,
+} from './consequencePolicy'
 
 /** Pivot-centre-to-ground distance for the default CapsuleGeometry(0.35, 1.0). Keep in sync with SceneBuilder. */
 export const PLAYER_CAPSULE_HALF_HEIGHT = 0.85
@@ -38,7 +45,86 @@ export type PlayerControllerEvent =
   | { type: 'edge_catch' }
   | { type: 'wall_stumble' }
   | { type: 'jump_failed_high_ledge' }
+  | {
+      type: 'hazard_consequence_debug'
+      hazardType: ConsequenceHazardType
+      locomotionClass: ConsequenceLocomotionClass
+      bypassActive: boolean
+      action: ConsequenceAction
+      severity: ConsequenceSeverity
+    }
   | { type: 'landed'; airTimeSeconds: number; fallDistance: number }
+
+export type PlayerMode = 'grounded' | 'airborne' | 'recovery_locked'
+export type HazardMode = 'none' | 'pit_warning' | 'pit_bypass_window' | 'wall_stumble'
+export type AirMode = 'jump_rise' | 'jump_fall' | 'failed_high_ledge'
+export type RecoveryMode = 'from_failed_jump' | 'from_wall_stumble'
+
+interface PlayerControllerInternalState {
+  mode: PlayerMode
+  hazardMode: HazardMode
+  airMode: AirMode | null
+  recoveryMode: RecoveryMode | null
+  pitWarningRepeatTimer: number
+  pitBypassRemaining: number
+  recoveryLockRemaining: number
+  takeoffGroundY: number
+  airborneTimeSeconds: number
+  airApexY: number
+}
+
+interface HazardSample {
+  stepUp: number
+  dropAhead: number
+  pitAhead: boolean
+  wallAhead: boolean
+}
+
+interface GroundedHazardTransitionContext {
+  inputActive: boolean
+  sprintHeld: boolean
+  crouchHeld: boolean
+  sampler: TerrainSurfaceSampler | undefined
+  character: THREE.Object3D
+  moveDir: THREE.Vector3
+  delta: number
+}
+
+interface AirborneTransitionContext {
+  sampler: TerrainSurfaceSampler
+  character: THREE.Object3D
+  crouchHeld: boolean
+  playableRadius: number
+  edgeMargin: number
+  baseYOffset: number
+  groundY: number
+  targetGroundY: number
+  gravity: number
+  jumpV: number
+  delta: number
+}
+
+interface PlayerTransitionSnapshot {
+  mode: PlayerMode
+  hazardMode: HazardMode
+  airMode: AirMode | null
+  recoveryMode: RecoveryMode | null
+}
+
+interface TransitionEventMeta {
+  jumpStarted?: { jumpIndex: number }
+  extraJumpUsed?: { jumpIndex: number; remainingExtraJumps: number }
+  pitWarningPulse?: boolean
+  wallStumblePulse?: boolean
+  landed?: { airTimeSeconds: number; fallDistance: number }
+  consequenceDebug?: {
+    hazardType: ConsequenceHazardType
+    locomotionClass: ConsequenceLocomotionClass
+    bypassActive: boolean
+    action: ConsequenceAction
+    severity: ConsequenceSeverity
+  }
+}
 
 export interface PlayerControllerConfig {
   characterSpeed: number
@@ -141,6 +227,11 @@ export interface PlayerControllerConfig {
    * Return false to reject the buffered jump attempt.
    */
   canUseExtraJump?: () => boolean
+  /**
+   * Opt-in consequence resolver for grounded wall/pit reactions.
+   * Default false to preserve legacy branching semantics unless explicitly enabled.
+   */
+  useConsequenceResolver?: boolean
 }
 
 const DEFAULT_CFG: PlayerControllerConfig = {
@@ -164,6 +255,7 @@ const DEFAULT_CFG: PlayerControllerConfig = {
   gravity: 30,
   movementBasis: 'facing',
   extraJumps: 0,
+  useConsequenceResolver: false,
 }
 
 export interface PlayerControllerTickContext {
@@ -239,15 +331,19 @@ export class PlayerController {
 
   private debugMovementLogAcc = 0
   private readonly pendingEvents: PlayerControllerEvent[] = []
-  private airborneTimeSeconds = 0
-  private airStartY = 0
-  private airStartGroundY = 0
-  private airApexY = 0
-  private edgeCatchCooldownSeconds = 0
+  private readonly state: PlayerControllerInternalState = {
+    mode: 'grounded',
+    hazardMode: 'none',
+    airMode: null,
+    recoveryMode: null,
+    pitWarningRepeatTimer: 0,
+    pitBypassRemaining: 0,
+    recoveryLockRemaining: 0,
+    takeoffGroundY: 0,
+    airborneTimeSeconds: 0,
+    airApexY: 0,
+  }
   private wallStumbleCooldownSeconds = 0
-  private edgeWarningActive = false
-  private edgeBypassSecondsRemaining = 0
-  private failedJumpRecoveryRemaining = 0
 
   private readonly _camDir = new THREE.Vector3()
   private readonly _camRight = new THREE.Vector3()
@@ -272,6 +368,46 @@ export class PlayerController {
 
   private getFeetToHipsLengthEstimate(): number {
     return Math.max(0.6, Math.abs(this.terrainYOffset))
+  }
+
+  private isInputActive(intent: { x: number; y: number }): boolean {
+    return Math.abs(intent.x) > 0.01 || Math.abs(intent.y) > 0.01
+  }
+
+  private isPitAhead(dropAhead: number, feetToHips: number): boolean {
+    const cliffDropCatch = this.cfg.cliffDropCatchThreshold ?? feetToHips * (2 / 3)
+    return dropAhead > cliffDropCatch
+  }
+
+  private isWallAhead(stepUp: number, feetToHips: number): boolean {
+    const maxStepUp = this.cfg.maxStepUpHeight ?? feetToHips * 0.55
+    return stepUp > maxStepUp
+  }
+
+  private canBypassPit(): boolean {
+    return this.state.pitBypassRemaining > 0
+  }
+
+  private canStartJump(crouchHeld: boolean): boolean {
+    return this.jumpBufferTime > 0 && !crouchHeld
+  }
+
+  private canUseExtraJump(crouchHeld: boolean): boolean {
+    return (
+      this.jumpBufferTime > 0 &&
+      this.availableExtraJumps > 0 &&
+      !crouchHeld &&
+      (this.cfg.canUseExtraJump?.() ?? true)
+    )
+  }
+
+  private isLandingTooHigh(landingGroundY: number, feetToHips: number): boolean {
+    const maxLandingGroundY = this.state.takeoffGroundY + feetToHips
+    return landingGroundY > maxLandingGroundY + 1e-4
+  }
+
+  private isRecoveryLocked(): boolean {
+    return this.state.recoveryLockRemaining > 0
   }
 
   private sampleGroundDropAhead(
@@ -308,12 +444,238 @@ export class PlayerController {
     }
   }
 
+  private computeHazards(
+    sampler: TerrainSurfaceSampler,
+    character: THREE.Object3D,
+    moveDirX: number,
+    moveDirZ: number,
+    delta: number,
+  ): HazardSample {
+    const feetToHips = this.getFeetToHipsLengthEstimate()
+    const speed = Math.hypot(moveDirX, moveDirZ)
+    const stepDistance = speed * delta
+    const dirLen = speed
+    const dirX = dirLen > 1e-8 ? moveDirX / dirLen : 0
+    const dirZ = dirLen > 1e-8 ? moveDirZ / dirLen : 0
+    const { stepUp, dropAhead } = this.sampleGroundDropAhead(
+      sampler,
+      character.position.x,
+      character.position.z,
+      dirX,
+      dirZ,
+      stepDistance,
+    )
+    const maxStepUp = this.cfg.maxStepUpHeight ?? feetToHips * 0.55
+    const cliffDropCatch = this.cfg.cliffDropCatchThreshold ?? feetToHips * (2 / 3)
+    return {
+      stepUp,
+      dropAhead,
+      pitAhead: this.isPitAhead(dropAhead, feetToHips),
+      wallAhead: this.isWallAhead(stepUp, feetToHips),
+    }
+  }
+
+  private resolveGroundedHazardTransition(ctx: GroundedHazardTransitionContext): {
+    forceLeaveGround: boolean
+  } {
+    const prev = this.captureTransitionSnapshot()
+    const {
+      inputActive,
+      sprintHeld,
+      crouchHeld,
+      sampler,
+      character,
+      moveDir,
+      delta,
+    } = ctx
+
+    // pit_warning -> pit_bypass_window on release.
+    if (!inputActive && this.state.hazardMode === 'pit_warning') {
+      this.state.hazardMode = 'pit_bypass_window'
+      this.state.pitBypassRemaining = Math.max(0, this.cfg.cliffEdgeReleaseBypassSeconds ?? 2)
+    }
+
+    // pit_bypass_window -> none on timer expiry.
+    if (this.state.hazardMode === 'pit_bypass_window' && this.state.pitBypassRemaining <= 0) {
+      this.state.hazardMode = 'none'
+    }
+
+    if (!inputActive || !sampler || !this.grounded) {
+      return { forceLeaveGround: false }
+    }
+
+    const dirLen = Math.hypot(moveDir.x, moveDir.z)
+    const dirX = dirLen > 1e-8 ? moveDir.x / dirLen : 0
+    const dirZ = dirLen > 1e-8 ? moveDir.z / dirLen : 0
+    const hazards = this.computeHazards(sampler, character, moveDir.x, moveDir.z, delta)
+    const locomotionClass: ConsequenceLocomotionClass =
+      sprintHeld && !crouchHeld ? 'sprint' : 'walk_like'
+
+    if (hazards.wallAhead) {
+      if (this.cfg.useConsequenceResolver) {
+        const resolution = resolveConsequence({
+          hazardType: 'wall',
+          locomotionClass,
+          bypassActive: this.canBypassPit(),
+        })
+        if (resolution.action !== 'wall_stumble') return { forceLeaveGround: false }
+      }
+      this.state.hazardMode = 'wall_stumble'
+      const backstep = Math.max(0.4, this.cfg.wallStumbleBackstepDistance ?? 0.9)
+      character.position.x -= dirX * backstep
+      character.position.z -= dirZ * backstep
+      moveDir.set(0, 0, 0)
+      if (this.wallStumbleCooldownSeconds <= 0) {
+        this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
+          wallStumblePulse: true,
+          consequenceDebug: this.cfg.useConsequenceResolver
+            ? {
+                hazardType: 'wall',
+                locomotionClass,
+                bypassActive: this.canBypassPit(),
+                action: 'wall_stumble',
+                severity: 'L1',
+              }
+            : undefined,
+        })
+        this.wallStumbleCooldownSeconds = 0.25
+      }
+      return { forceLeaveGround: false }
+    }
+
+    if (hazards.pitAhead) {
+      if (this.cfg.useConsequenceResolver) {
+        const resolution = resolveConsequence({
+          hazardType: 'pit',
+          locomotionClass,
+          bypassActive: this.canBypassPit(),
+        })
+        if (resolution.action === 'pit_fall' || resolution.action === 'pit_bypass_fall') {
+          if (resolution.action === 'pit_bypass_fall') this.state.hazardMode = 'pit_bypass_window'
+          this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
+            consequenceDebug: {
+              hazardType: 'pit',
+              locomotionClass,
+              bypassActive: this.canBypassPit(),
+              action: resolution.action,
+              severity: resolution.severity,
+            },
+          })
+          return { forceLeaveGround: true }
+        }
+        this.state.hazardMode = 'pit_warning'
+        moveDir.set(0, 0, 0)
+        if (this.state.pitWarningRepeatTimer <= 0) {
+          this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
+            pitWarningPulse: true,
+            consequenceDebug: {
+              hazardType: 'pit',
+              locomotionClass,
+              bypassActive: this.canBypassPit(),
+              action: resolution.action,
+              severity: resolution.severity,
+            },
+          })
+          this.state.pitWarningRepeatTimer = 0.18
+        }
+        return { forceLeaveGround: false }
+      }
+      if (sprintHeld && !crouchHeld) {
+        return { forceLeaveGround: true }
+      }
+      const bypassActive = this.canBypassPit()
+      if (bypassActive) {
+        this.state.hazardMode = 'pit_bypass_window'
+        return { forceLeaveGround: true }
+      }
+      this.state.hazardMode = 'pit_warning'
+      moveDir.set(0, 0, 0)
+      if (this.state.pitWarningRepeatTimer <= 0) {
+        this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), { pitWarningPulse: true })
+        this.state.pitWarningRepeatTimer = 0.18
+      }
+      return { forceLeaveGround: false }
+    }
+
+    this.state.hazardMode = 'none'
+    return { forceLeaveGround: false }
+  }
+
+  private beginAirborne(airMode: AirMode, character: THREE.Object3D): void {
+    this.grounded = false
+    this.state.mode = 'airborne'
+    this.state.airMode = airMode
+    this.state.airborneTimeSeconds = 0
+    this.state.takeoffGroundY = character.position.y - this.terrainYOffset
+    this.state.airApexY = character.position.y
+  }
+
+  private resolveAirborneTransition(ctx: AirborneTransitionContext): void {
+    const prev = this.captureTransitionSnapshot()
+    const {
+      sampler,
+      character,
+      crouchHeld,
+      playableRadius,
+      edgeMargin,
+      baseYOffset,
+      groundY,
+      targetGroundY,
+      gravity,
+      jumpV,
+      delta,
+    } = ctx
+
+    if (this.canUseExtraJump(crouchHeld)) {
+      this.verticalVelocity = jumpV
+      this.jumpBufferTime = 0
+      this.availableExtraJumps -= 1
+      this.state.airMode = 'jump_rise'
+      const totalJumpIndex = (this.cfg.extraJumps ?? 0) - this.availableExtraJumps + 1
+      this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
+        extraJumpUsed: {
+          jumpIndex: totalJumpIndex,
+          remainingExtraJumps: this.availableExtraJumps,
+        },
+      })
+    }
+
+    this.verticalVelocity -= gravity * delta
+    if (this.verticalVelocity <= 0) this.state.airMode = 'jump_fall'
+    character.position.y += this.verticalVelocity * delta
+    this.state.airborneTimeSeconds += Math.max(0, delta)
+    if (character.position.y > this.state.airApexY) this.state.airApexY = character.position.y
+
+    if (this.verticalVelocity > 0 || character.position.y > targetGroundY) return
+
+    const feetToHips = this.getFeetToHipsLengthEstimate()
+    if (this.isLandingTooHigh(groundY, feetToHips)) {
+      this.state.airMode = 'failed_high_ledge'
+      this.triggerFailedJumpHighLedge(
+        character,
+        sampler,
+        playableRadius,
+        edgeMargin,
+        baseYOffset,
+        prev,
+      )
+      return
+    }
+
+    character.position.y = targetGroundY
+    this.verticalVelocity = 0
+    this.grounded = true
+    this.state.mode = 'grounded'
+    this.state.airMode = null
+  }
+
   private triggerFailedJumpHighLedge(
     character: THREE.Object3D,
     sampler: TerrainSurfaceSampler,
     playableRadius: number,
     edgeMargin: number,
     baseYOffset: number,
+    prev: PlayerTransitionSnapshot,
   ): void {
     const backstep = Math.max(0.4, this.cfg.failedJumpBackstepDistance ?? 0.9)
     const hVel = Math.hypot(this.velocity.x, this.velocity.z)
@@ -342,11 +704,68 @@ export class PlayerController {
     this.grounded = true
     this.verticalVelocity = 0
     this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
-    this.failedJumpRecoveryRemaining = Math.max(0, this.cfg.failedJumpRecoverySeconds ?? 1.1)
+    this.state.recoveryLockRemaining = Math.max(0, this.cfg.failedJumpRecoverySeconds ?? 1.1)
+    this.state.recoveryMode = 'from_failed_jump'
+    this.state.mode = 'recovery_locked'
+    this.state.airMode = 'failed_high_ledge'
     this.jumpBufferTime = 0
-    this.edgeWarningActive = false
-    this.edgeBypassSecondsRemaining = 0
-    this.pendingEvents.push({ type: 'jump_failed_high_ledge' })
+    this.state.hazardMode = 'none'
+    this.state.pitBypassRemaining = 0
+    this.emitTransitionEvents(prev, this.captureTransitionSnapshot())
+  }
+
+  private captureTransitionSnapshot(): PlayerTransitionSnapshot {
+    return {
+      mode: this.state.mode,
+      hazardMode: this.state.hazardMode,
+      airMode: this.state.airMode,
+      recoveryMode: this.state.recoveryMode,
+    }
+  }
+
+  private emitTransitionEvents(
+    prev: PlayerTransitionSnapshot,
+    next: PlayerTransitionSnapshot,
+    meta: TransitionEventMeta = {},
+  ): void {
+    if (meta.jumpStarted) {
+      this.pendingEvents.push({ type: 'jump_started', jumpIndex: meta.jumpStarted.jumpIndex })
+    }
+    if (meta.extraJumpUsed) {
+      this.pendingEvents.push({
+        type: 'extra_jump_used',
+        jumpIndex: meta.extraJumpUsed.jumpIndex,
+        remainingExtraJumps: meta.extraJumpUsed.remainingExtraJumps,
+      })
+    }
+    if (
+      next.hazardMode === 'pit_warning' &&
+      (prev.hazardMode !== 'pit_warning' || meta.pitWarningPulse === true)
+    ) {
+      this.pendingEvents.push({ type: 'edge_catch' })
+    }
+    if (
+      next.hazardMode === 'wall_stumble' &&
+      (prev.hazardMode !== 'wall_stumble' || meta.wallStumblePulse === true)
+    ) {
+      this.pendingEvents.push({ type: 'wall_stumble' })
+    }
+    if (prev.airMode !== 'failed_high_ledge' && next.airMode === 'failed_high_ledge') {
+      this.pendingEvents.push({ type: 'jump_failed_high_ledge' })
+    }
+    if (prev.mode === 'airborne' && next.mode === 'grounded' && meta.landed) {
+      this.pendingEvents.push({
+        type: 'landed',
+        airTimeSeconds: meta.landed.airTimeSeconds,
+        fallDistance: meta.landed.fallDistance,
+      })
+    }
+    if (meta.consequenceDebug && this.cfg.debugMovement) {
+      this.pendingEvents.push({
+        type: 'hazard_consequence_debug',
+        ...meta.consequenceDebug,
+      })
+    }
   }
 
   /** Drain pending semantic movement events since the previous call. */
@@ -389,7 +808,7 @@ export class PlayerController {
 
   /** Call on `input:action` `jump` `pressed` — consumed on next grounded tick within the buffer. */
   notifyJumpPressed(bufferSeconds = 0.14): void {
-    if (this.failedJumpRecoveryRemaining > 0) return
+    if (this.state.recoveryLockRemaining > 0) return
     this.jumpBufferTime = Math.max(this.jumpBufferTime, bufferSeconds)
   }
 
@@ -435,22 +854,32 @@ export class PlayerController {
     if (this.jumpBufferTime > 0) {
       this.jumpBufferTime = Math.max(0, this.jumpBufferTime - delta)
     }
-    this.edgeCatchCooldownSeconds = Math.max(0, this.edgeCatchCooldownSeconds - delta)
+    this.state.pitWarningRepeatTimer = Math.max(0, this.state.pitWarningRepeatTimer - delta)
     this.wallStumbleCooldownSeconds = Math.max(0, this.wallStumbleCooldownSeconds - delta)
-    this.edgeBypassSecondsRemaining = Math.max(0, this.edgeBypassSecondsRemaining - delta)
-    this.failedJumpRecoveryRemaining = Math.max(0, this.failedJumpRecoveryRemaining - delta)
+    this.state.pitBypassRemaining = Math.max(0, this.state.pitBypassRemaining - delta)
+    this.state.recoveryLockRemaining = Math.max(0, this.state.recoveryLockRemaining - delta)
 
     const { x, y } = this.moveIntent
-    const recoveryLocked = this.failedJumpRecoveryRemaining > 0
+    const recoveryLocked = this.isRecoveryLocked()
+    if (recoveryLocked) {
+      this.state.mode = 'recovery_locked'
+      this.state.recoveryMode = this.state.recoveryMode ?? 'from_failed_jump'
+    } else {
+      this.state.recoveryMode = null
+    }
     const inputX = recoveryLocked ? 0 : x
     const inputY = recoveryLocked ? 0 : y
-    const inputActive = Math.abs(inputX) > 0.01 || Math.abs(inputY) > 0.01
-    if (!inputActive && this.edgeWarningActive) {
-      this.edgeWarningActive = false
-      this.edgeBypassSecondsRemaining = Math.max(
-        0,
-        this.cfg.cliffEdgeReleaseBypassSeconds ?? 2,
-      )
+    const inputActive = this.isInputActive({ x: inputX, y: inputY })
+    if (!inputActive) {
+      this.resolveGroundedHazardTransition({
+        inputActive,
+        sprintHeld,
+        crouchHeld,
+        sampler,
+        character,
+        moveDir: this._moveDir,
+        delta,
+      })
     }
     let vx = 0
     let vz = 0
@@ -550,53 +979,16 @@ export class PlayerController {
         }
       }
 
-      if (sampler && this.grounded) {
-        const feetToHips = this.getFeetToHipsLengthEstimate()
-        const maxStepUp = this.cfg.maxStepUpHeight ?? feetToHips * 0.55
-        const cliffDropCatch = this.cfg.cliffDropCatchThreshold ?? feetToHips * (2 / 3)
-        const stepDistance = Math.hypot(this._moveDir.x, this._moveDir.z) * delta
-        const dirLen = Math.hypot(this._moveDir.x, this._moveDir.z)
-        const dirX = dirLen > 1e-8 ? this._moveDir.x / dirLen : 0
-        const dirZ = dirLen > 1e-8 ? this._moveDir.z / dirLen : 0
-        const { stepUp, dropAhead } = this.sampleGroundDropAhead(
-          sampler,
-          character.position.x,
-          character.position.z,
-          dirX,
-          dirZ,
-          stepDistance,
-        )
-
-        if (stepUp > maxStepUp) {
-          const backstep = Math.max(0.4, this.cfg.wallStumbleBackstepDistance ?? 0.9)
-          character.position.x -= dirX * backstep
-          character.position.z -= dirZ * backstep
-          this._moveDir.set(0, 0, 0)
-          if (this.wallStumbleCooldownSeconds <= 0) {
-            this.pendingEvents.push({ type: 'wall_stumble' })
-            this.wallStumbleCooldownSeconds = 0.25
-          }
-        } else if (dropAhead > cliffDropCatch) {
-          if (sprintHeld && !crouchHeld) {
-            forceLeaveGround = true
-          } else {
-            const bypassActive = this.edgeBypassSecondsRemaining > 0
-            if (bypassActive) {
-              forceLeaveGround = true
-              this.edgeWarningActive = false
-            } else {
-              this.edgeWarningActive = true
-              this._moveDir.set(0, 0, 0)
-              if (this.edgeCatchCooldownSeconds <= 0) {
-                this.pendingEvents.push({ type: 'edge_catch' })
-                this.edgeCatchCooldownSeconds = 0.18
-              }
-            }
-          }
-        } else {
-          this.edgeWarningActive = false
-        }
-      }
+      const groundedHazardTransition = this.resolveGroundedHazardTransition({
+        inputActive,
+        sprintHeld,
+        crouchHeld,
+        sampler,
+        character,
+        moveDir: this._moveDir,
+        delta,
+      })
+      forceLeaveGround = groundedHazardTransition.forceLeaveGround
 
       character.position.x += this._moveDir.x * delta
       character.position.z += this._moveDir.z * delta
@@ -713,61 +1105,36 @@ export class PlayerController {
 
       if (this.grounded) {
         if (forceLeaveGround) {
-          this.grounded = false
-          this.airborneTimeSeconds = 0
-          this.airStartY = character.position.y
-          this.airStartGroundY = character.position.y - this.terrainYOffset
-          this.airApexY = character.position.y
+          this.beginAirborne('jump_fall', character)
           this.verticalVelocity = Math.min(this.verticalVelocity, 0)
         } else {
           character.position.y = targetGroundY
           this.verticalVelocity = 0
           this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
-          if (this.jumpBufferTime > 0 && !crouchHeld) {
+          if (this.canStartJump(crouchHeld)) {
+            const prev = this.captureTransitionSnapshot()
             this.verticalVelocity = jumpV
-            this.grounded = false
+            this.beginAirborne('jump_rise', character)
             this.jumpBufferTime = 0
-            this.pendingEvents.push({ type: 'jump_started', jumpIndex: 1 })
-            this.airborneTimeSeconds = 0
-            this.airStartY = character.position.y
-            this.airStartGroundY = character.position.y - this.terrainYOffset
-            this.airApexY = character.position.y
+            this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
+              jumpStarted: { jumpIndex: 1 },
+            })
           }
         }
       } else {
-        if (
-          this.jumpBufferTime > 0 &&
-          this.availableExtraJumps > 0 &&
-          !crouchHeld &&
-          (this.cfg.canUseExtraJump?.() ?? true)
-        ) {
-          this.verticalVelocity = jumpV
-          this.jumpBufferTime = 0
-          this.availableExtraJumps -= 1
-          const totalJumpIndex = (this.cfg.extraJumps ?? 0) - this.availableExtraJumps + 1
-          this.pendingEvents.push({ type: 'extra_jump_used', jumpIndex: totalJumpIndex, remainingExtraJumps: this.availableExtraJumps })
-        }
-        this.verticalVelocity -= gravity * delta
-        character.position.y += this.verticalVelocity * delta
-        this.airborneTimeSeconds += Math.max(0, delta)
-        if (character.position.y > this.airApexY) this.airApexY = character.position.y
-        if (this.verticalVelocity <= 0 && character.position.y <= targetGroundY) {
-          const feetToHips = this.getFeetToHipsLengthEstimate()
-          const maxLandingGroundY = this.airStartGroundY + feetToHips
-          if (groundY > maxLandingGroundY + 1e-4) {
-            this.triggerFailedJumpHighLedge(
-              character,
-              sampler,
-              playableRadius,
-              edgeMargin,
-              baseYOffset,
-            )
-          } else {
-            character.position.y = targetGroundY
-            this.verticalVelocity = 0
-            this.grounded = true
-          }
-        }
+        this.resolveAirborneTransition({
+          sampler,
+          character,
+          crouchHeld,
+          playableRadius,
+          edgeMargin,
+          baseYOffset,
+          groundY,
+          targetGroundY,
+          gravity,
+          jumpV,
+          delta,
+        })
       }
     } else {
       this.grounded = true
@@ -776,17 +1143,25 @@ export class PlayerController {
     }
 
     if (!wasGrounded && this.grounded) {
-      const fallDistance = Math.max(0, this.airApexY - character.position.y)
-      this.pendingEvents.push({
-        type: 'landed',
-        airTimeSeconds: this.airborneTimeSeconds,
-        fallDistance,
+      const fallDistance = Math.max(0, this.state.airApexY - character.position.y)
+      const prev = {
+        ...this.captureTransitionSnapshot(),
+        mode: 'airborne' as PlayerMode,
+      }
+      this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
+        landed: {
+          airTimeSeconds: this.state.airborneTimeSeconds,
+          fallDistance,
+        },
       })
-      this.airborneTimeSeconds = 0
-      this.airStartY = character.position.y
-      this.airStartGroundY = character.position.y - this.terrainYOffset
-      this.airApexY = character.position.y
+      this.state.airborneTimeSeconds = 0
+      this.state.takeoffGroundY = character.position.y - this.terrainYOffset
+      this.state.airApexY = character.position.y
+      this.state.mode = 'grounded'
+      this.state.airMode = null
     }
+    if (!this.grounded && this.state.mode !== 'recovery_locked') this.state.mode = 'airborne'
+    if (this.grounded && this.state.mode !== 'recovery_locked') this.state.mode = 'grounded'
 
     this.velocity.set(vx, this.verticalVelocity, vz)
 
@@ -818,15 +1193,17 @@ export class PlayerController {
     this.crouchGroundBlend = 0
     this.verticalVelocity = 0
     this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
-    this.airborneTimeSeconds = 0
-    this.airStartY = 0
-    this.airStartGroundY = 0
-    this.airApexY = 0
-    this.edgeCatchCooldownSeconds = 0
+    this.state.mode = 'grounded'
+    this.state.hazardMode = 'none'
+    this.state.airMode = null
+    this.state.recoveryMode = null
+    this.state.pitWarningRepeatTimer = 0
+    this.state.pitBypassRemaining = 0
+    this.state.recoveryLockRemaining = 0
+    this.state.takeoffGroundY = 0
+    this.state.airborneTimeSeconds = 0
+    this.state.airApexY = 0
     this.wallStumbleCooldownSeconds = 0
-    this.edgeWarningActive = false
-    this.edgeBypassSecondsRemaining = 0
-    this.failedJumpRecoveryRemaining = 0
     this.pendingEvents.length = 0
   }
 }

@@ -9,6 +9,15 @@ export {
   type PlayerControllerState,
   type PlayerControllerTickContext,
 } from './PlayerController'
+export {
+  resolveConsequence,
+  type ConsequenceAction,
+  type ConsequenceContext,
+  type ConsequenceHazardType,
+  type ConsequenceLocomotionClass,
+  type ConsequenceResolution,
+  type ConsequenceSeverity,
+} from './consequencePolicy'
 export { CharacterAnimationRig } from './CharacterAnimationRig'
 export {
   stripMixamoHipsPositionTracks,

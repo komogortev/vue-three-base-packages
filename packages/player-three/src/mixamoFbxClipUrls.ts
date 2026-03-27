@@ -1,15 +1,11 @@
 const FBX_NAMES = [
-  'Climbing.fbx',
-  'Crouch To Stand.fbx',
   'Crouched Sneaking Left.fbx',
   'Crouched Sneaking Right.fbx',
-  'Crouched To Standing.fbx',
   'Crouched Walking.fbx',
   'Crouching Idle.fbx',
   'Falling.fbx',
   'Falling Flat Impact.fbx',
   'Falling From Losing Balance.fbx',
-  'Falling Into Pool.fbx',
   'Falling To Landing.fbx',
   'Falling To Roll.fbx',
   'Hard Landing.fbx',
@@ -23,11 +19,8 @@ const FBX_NAMES = [
   'Right Strafe Walking.fbx',
   'Running slow.fbx',
   'Running sprint.fbx',
-  'Start Walking.fbx',
-  'Stop Walking.fbx',
   'Walking.fbx',
   'Walking Backwards.fbx',
-  'Walking Turn 180.fbx',
 ] as const
 
 /**
