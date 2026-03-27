@@ -97,6 +97,11 @@ export interface PlayerControllerConfig {
    * - sprint: movement is allowed and controller immediately leaves ground
    */
   cliffDropCatchThreshold?: number
+  /**
+   * Multiplier for forward hazard probe distance while grounded.
+   * Higher values look farther ahead for delayed drop-offs on gentle approach slopes.
+   */
+  cliffProbeDistanceMultiplier?: number
   /** Initial upward velocity when jump triggers (m/s). Only with a terrain `sampler`. */
   jumpVelocity?: number
   /** Gravity while airborne (m/s²). */
@@ -137,6 +142,7 @@ const DEFAULT_CFG: PlayerControllerConfig = {
   backwardSpeedMultiplier: 0.25,
   crouchTerrainYOffsetDelta: 0,
   cameraStrafeSpeedMultiplier: 0.5,
+  cliffProbeDistanceMultiplier: 2,
   jumpVelocity: 6.75,
   gravity: 30,
   movementBasis: 'facing',
@@ -244,6 +250,40 @@ export class PlayerController {
 
   private getFeetToHipsLengthEstimate(): number {
     return Math.max(0.6, Math.abs(this.terrainYOffset))
+  }
+
+  private sampleGroundDropAhead(
+    sampler: TerrainSurfaceSampler,
+    x: number,
+    z: number,
+    moveDirX: number,
+    moveDirZ: number,
+    stepDistance: number,
+  ): { stepUp: number; dropAhead: number } {
+    const currentGroundY = sampleTerrainFootprintY(
+      sampler,
+      x,
+      z,
+      this.terrainFootprintRadius,
+    )
+    const feetToHips = this.getFeetToHipsLengthEstimate()
+    const probeMul = this.cfg.cliffProbeDistanceMultiplier ?? 2
+    const horizon = Math.max(stepDistance, feetToHips * probeMul)
+    const samples = 3
+    let maxRiseAhead = Number.NEGATIVE_INFINITY
+    let minGroundAhead = Number.POSITIVE_INFINITY
+    for (let i = 1; i <= samples; i += 1) {
+      const t = i / samples
+      const px = x + moveDirX * horizon * t
+      const pz = z + moveDirZ * horizon * t
+      const gy = sampleTerrainFootprintY(sampler, px, pz, this.terrainFootprintRadius)
+      if (gy > maxRiseAhead) maxRiseAhead = gy
+      if (gy < minGroundAhead) minGroundAhead = gy
+    }
+    return {
+      stepUp: maxRiseAhead - currentGroundY,
+      dropAhead: currentGroundY - minGroundAhead,
+    }
   }
 
   /** Drain pending semantic movement events since the previous call. */
@@ -434,25 +474,21 @@ export class PlayerController {
       }
 
       if (sampler && this.grounded) {
-        const currentGroundY = sampleTerrainFootprintY(
-          sampler,
-          character.position.x,
-          character.position.z,
-          this.terrainFootprintRadius,
-        )
-        const nextX = character.position.x + this._moveDir.x * delta
-        const nextZ = character.position.z + this._moveDir.z * delta
-        const nextGroundY = sampleTerrainFootprintY(
-          sampler,
-          nextX,
-          nextZ,
-          this.terrainFootprintRadius,
-        )
         const feetToHips = this.getFeetToHipsLengthEstimate()
         const maxStepUp = this.cfg.maxStepUpHeight ?? feetToHips * 0.55
         const cliffDropCatch = this.cfg.cliffDropCatchThreshold ?? feetToHips * (2 / 3)
-        const stepUp = nextGroundY - currentGroundY
-        const dropAhead = currentGroundY - nextGroundY
+        const stepDistance = Math.hypot(this._moveDir.x, this._moveDir.z) * delta
+        const dirLen = Math.hypot(this._moveDir.x, this._moveDir.z)
+        const dirX = dirLen > 1e-8 ? this._moveDir.x / dirLen : 0
+        const dirZ = dirLen > 1e-8 ? this._moveDir.z / dirLen : 0
+        const { stepUp, dropAhead } = this.sampleGroundDropAhead(
+          sampler,
+          character.position.x,
+          character.position.z,
+          dirX,
+          dirZ,
+          stepDistance,
+        )
 
         if (stepUp > maxStepUp) {
           this._moveDir.set(0, 0, 0)
