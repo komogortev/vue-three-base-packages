@@ -36,6 +36,8 @@ export type PlayerControllerEvent =
   | { type: 'jump_started'; jumpIndex: number }
   | { type: 'extra_jump_used'; jumpIndex: number; remainingExtraJumps: number }
   | { type: 'edge_catch' }
+  | { type: 'wall_stumble' }
+  | { type: 'jump_failed_high_ledge' }
   | { type: 'landed'; airTimeSeconds: number; fallDistance: number }
 
 export interface PlayerControllerConfig {
@@ -107,6 +109,12 @@ export interface PlayerControllerConfig {
    * During this window, pushing back toward the pit is allowed and transitions into a fall.
    */
   cliffEdgeReleaseBypassSeconds?: number
+  /** Horizontal retreat distance applied when high-ledge jump fails. */
+  failedJumpBackstepDistance?: number
+  /** Input lockout after failed high-ledge jump while recovery plays. */
+  failedJumpRecoverySeconds?: number
+  /** Horizontal retreat distance applied when walking into a too-high wall. */
+  wallStumbleBackstepDistance?: number
   /** Initial upward velocity when jump triggers (m/s). Only with a terrain `sampler`. */
   jumpVelocity?: number
   /** Gravity while airborne (m/s²). */
@@ -149,6 +157,9 @@ const DEFAULT_CFG: PlayerControllerConfig = {
   cameraStrafeSpeedMultiplier: 0.5,
   cliffProbeDistanceMultiplier: 2,
   cliffEdgeReleaseBypassSeconds: 2,
+  failedJumpBackstepDistance: 0.9,
+  failedJumpRecoverySeconds: 1.1,
+  wallStumbleBackstepDistance: 0.9,
   jumpVelocity: 6.75,
   gravity: 30,
   movementBasis: 'facing',
@@ -230,10 +241,13 @@ export class PlayerController {
   private readonly pendingEvents: PlayerControllerEvent[] = []
   private airborneTimeSeconds = 0
   private airStartY = 0
+  private airStartGroundY = 0
   private airApexY = 0
   private edgeCatchCooldownSeconds = 0
+  private wallStumbleCooldownSeconds = 0
   private edgeWarningActive = false
   private edgeBypassSecondsRemaining = 0
+  private failedJumpRecoveryRemaining = 0
 
   private readonly _camDir = new THREE.Vector3()
   private readonly _camRight = new THREE.Vector3()
@@ -294,6 +308,47 @@ export class PlayerController {
     }
   }
 
+  private triggerFailedJumpHighLedge(
+    character: THREE.Object3D,
+    sampler: TerrainSurfaceSampler,
+    playableRadius: number,
+    edgeMargin: number,
+    baseYOffset: number,
+  ): void {
+    const backstep = Math.max(0.4, this.cfg.failedJumpBackstepDistance ?? 0.9)
+    const hVel = Math.hypot(this.velocity.x, this.velocity.z)
+    let retreatX = 0
+    let retreatZ = 1
+    if (hVel > 1e-5) {
+      retreatX = -this.velocity.x / hVel
+      retreatZ = -this.velocity.z / hVel
+    }
+    character.position.x += retreatX * backstep
+    character.position.z += retreatZ * backstep
+    const limit = playableRadius - edgeMargin
+    const distSq = character.position.x ** 2 + character.position.z ** 2
+    if (distSq > limit * limit) {
+      const d = Math.sqrt(distSq)
+      character.position.x *= limit / d
+      character.position.z *= limit / d
+    }
+    const retreatGroundY = sampleTerrainFootprintY(
+      sampler,
+      character.position.x,
+      character.position.z,
+      this.terrainFootprintRadius,
+    )
+    character.position.y = retreatGroundY + baseYOffset
+    this.grounded = true
+    this.verticalVelocity = 0
+    this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
+    this.failedJumpRecoveryRemaining = Math.max(0, this.cfg.failedJumpRecoverySeconds ?? 1.1)
+    this.jumpBufferTime = 0
+    this.edgeWarningActive = false
+    this.edgeBypassSecondsRemaining = 0
+    this.pendingEvents.push({ type: 'jump_failed_high_ledge' })
+  }
+
   /** Drain pending semantic movement events since the previous call. */
   consumeEvents(): PlayerControllerEvent[] {
     if (this.pendingEvents.length === 0) return []
@@ -334,6 +389,7 @@ export class PlayerController {
 
   /** Call on `input:action` `jump` `pressed` — consumed on next grounded tick within the buffer. */
   notifyJumpPressed(bufferSeconds = 0.14): void {
+    if (this.failedJumpRecoveryRemaining > 0) return
     this.jumpBufferTime = Math.max(this.jumpBufferTime, bufferSeconds)
   }
 
@@ -380,10 +436,15 @@ export class PlayerController {
       this.jumpBufferTime = Math.max(0, this.jumpBufferTime - delta)
     }
     this.edgeCatchCooldownSeconds = Math.max(0, this.edgeCatchCooldownSeconds - delta)
+    this.wallStumbleCooldownSeconds = Math.max(0, this.wallStumbleCooldownSeconds - delta)
     this.edgeBypassSecondsRemaining = Math.max(0, this.edgeBypassSecondsRemaining - delta)
+    this.failedJumpRecoveryRemaining = Math.max(0, this.failedJumpRecoveryRemaining - delta)
 
     const { x, y } = this.moveIntent
-    const inputActive = Math.abs(x) > 0.01 || Math.abs(y) > 0.01
+    const recoveryLocked = this.failedJumpRecoveryRemaining > 0
+    const inputX = recoveryLocked ? 0 : x
+    const inputY = recoveryLocked ? 0 : y
+    const inputActive = Math.abs(inputX) > 0.01 || Math.abs(inputY) > 0.01
     if (!inputActive && this.edgeWarningActive) {
       this.edgeWarningActive = false
       this.edgeBypassSecondsRemaining = Math.max(
@@ -466,8 +527,8 @@ export class PlayerController {
           : (this.cfg.strafeSpeedMultiplier ?? backMul)
       this._moveDir
         .copy(this._camDir)
-        .multiplyScalar(y * speed)
-        .addScaledVector(this._camRight, x * speed * strMult)
+        .multiplyScalar(inputY * speed)
+        .addScaledVector(this._camRight, inputX * speed * strMult)
 
       const moveBeforeBack = {
         x: this._moveDir.x,
@@ -507,7 +568,14 @@ export class PlayerController {
         )
 
         if (stepUp > maxStepUp) {
+          const backstep = Math.max(0.4, this.cfg.wallStumbleBackstepDistance ?? 0.9)
+          character.position.x -= dirX * backstep
+          character.position.z -= dirZ * backstep
           this._moveDir.set(0, 0, 0)
+          if (this.wallStumbleCooldownSeconds <= 0) {
+            this.pendingEvents.push({ type: 'wall_stumble' })
+            this.wallStumbleCooldownSeconds = 0.25
+          }
         } else if (dropAhead > cliffDropCatch) {
           if (sprintHeld && !crouchHeld) {
             forceLeaveGround = true
@@ -545,7 +613,7 @@ export class PlayerController {
 
       const cfg = this.cfg
       const rotateTowardMove =
-        cfg.backwardWithoutBodyTurn !== false ? y >= 0 : true
+        cfg.backwardWithoutBodyTurn !== false ? inputY >= 0 : true
       const hFace = Math.hypot(this._moveDir.x, this._moveDir.z)
       let targetFacing: number | null = null
       // Camera-relative FPS: do not swing the body toward the strafe vector — only mouse/gamepad look changes facing.
@@ -576,7 +644,7 @@ export class PlayerController {
               ? { x: Number((lx / lookLen).toFixed(4)), z: Number((lz / lookLen).toFixed(4)) }
               : null
           const payload = {
-            intent: { x, y },
+            intent: { x: inputX, y: inputY },
             speed,
             delta,
             sprintHeld,
@@ -611,7 +679,7 @@ export class PlayerController {
           }
           console.log('[PlayerController.move]', payload)
           console.log(
-            `[PlayerController.move] ix=${x.toFixed(3)} iy=${y.toFixed(3)} mode=${basisMode} ${camBasis}=(${this._camDir.x.toFixed(3)},${this._camDir.z.toFixed(3)}) alongBody=${alongBody.toFixed(3)} backSc=${backScaleApplied.toFixed(3)} dFace=${facingDeltaDeg.toFixed(3)}° tgt=${targetFacing == null ? '—' : fd(targetFacing)}°`,
+            `[PlayerController.move] ix=${inputX.toFixed(3)} iy=${inputY.toFixed(3)} mode=${basisMode} ${camBasis}=(${this._camDir.x.toFixed(3)},${this._camDir.z.toFixed(3)}) alongBody=${alongBody.toFixed(3)} backSc=${backScaleApplied.toFixed(3)} dFace=${facingDeltaDeg.toFixed(3)}° tgt=${targetFacing == null ? '—' : fd(targetFacing)}°`,
           )
         }
       }
@@ -648,6 +716,7 @@ export class PlayerController {
           this.grounded = false
           this.airborneTimeSeconds = 0
           this.airStartY = character.position.y
+          this.airStartGroundY = character.position.y - this.terrainYOffset
           this.airApexY = character.position.y
           this.verticalVelocity = Math.min(this.verticalVelocity, 0)
         } else {
@@ -661,6 +730,7 @@ export class PlayerController {
             this.pendingEvents.push({ type: 'jump_started', jumpIndex: 1 })
             this.airborneTimeSeconds = 0
             this.airStartY = character.position.y
+            this.airStartGroundY = character.position.y - this.terrainYOffset
             this.airApexY = character.position.y
           }
         }
@@ -682,9 +752,21 @@ export class PlayerController {
         this.airborneTimeSeconds += Math.max(0, delta)
         if (character.position.y > this.airApexY) this.airApexY = character.position.y
         if (this.verticalVelocity <= 0 && character.position.y <= targetGroundY) {
-          character.position.y = targetGroundY
-          this.verticalVelocity = 0
-          this.grounded = true
+          const feetToHips = this.getFeetToHipsLengthEstimate()
+          const maxLandingGroundY = this.airStartGroundY + feetToHips
+          if (groundY > maxLandingGroundY + 1e-4) {
+            this.triggerFailedJumpHighLedge(
+              character,
+              sampler,
+              playableRadius,
+              edgeMargin,
+              baseYOffset,
+            )
+          } else {
+            character.position.y = targetGroundY
+            this.verticalVelocity = 0
+            this.grounded = true
+          }
         }
       }
     } else {
@@ -702,6 +784,7 @@ export class PlayerController {
       })
       this.airborneTimeSeconds = 0
       this.airStartY = character.position.y
+      this.airStartGroundY = character.position.y - this.terrainYOffset
       this.airApexY = character.position.y
     }
 
@@ -737,10 +820,13 @@ export class PlayerController {
     this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
     this.airborneTimeSeconds = 0
     this.airStartY = 0
+    this.airStartGroundY = 0
     this.airApexY = 0
     this.edgeCatchCooldownSeconds = 0
+    this.wallStumbleCooldownSeconds = 0
     this.edgeWarningActive = false
     this.edgeBypassSecondsRemaining = 0
+    this.failedJumpRecoveryRemaining = 0
     this.pendingEvents.length = 0
   }
 }

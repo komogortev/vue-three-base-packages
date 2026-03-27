@@ -55,8 +55,15 @@ export class CharacterAnimationRig {
   private jumpFall: THREE.AnimationAction | null = null
   private jumpSecond: THREE.AnimationAction | null = null
   private reaction: THREE.AnimationAction | null = null
+  private wallStumble: THREE.AnimationAction | null = null
+  private failJump: THREE.AnimationAction | null = null
+  private recoverFromFail: THREE.AnimationAction | null = null
   private secondJumpBurstSeconds = 0
   private reactionBurstSeconds = 0
+  private wallStumbleBurstSeconds = 0
+  private failJumpBurstSeconds = 0
+  private recoverBurstSeconds = 0
+  private recoverDelaySeconds = 0
 
   /** 0 = idle, 1 = full locomotion layer */
   private moveBlend = 0
@@ -138,6 +145,18 @@ export class CharacterAnimationRig {
     let jumpDownClip = pickClip(clips, /jumping down/i)
     if (!jumpDownClip) jumpDownClip = pickClip(clips, /\bfall/i)
     const reactionClip = pickClip(clips, /\breaction\b/i)
+    const wallStumbleClip =
+      pickClip(clips, /stumble backwards/i) ??
+      reactionClip
+    const failJumpClip =
+      pickClip(clips, /falling back death|falling back/i) ??
+      pickClip(clips, /falling from losing balance|losing balance/i) ??
+      pickClip(clips, /falling to roll|falling flat impact/i) ??
+      reactionClip
+    const recoverClip =
+      pickClip(clips, /zombie stand up|stand up/i) ??
+      pickClip(clips, /hard landing|falling to landing/i) ??
+      reactionClip
 
     const playLoop = (clip: THREE.AnimationClip | undefined, w: number): THREE.AnimationAction | null => {
       if (!clip || !this.mixer) return null
@@ -182,6 +201,9 @@ export class CharacterAnimationRig {
     this.jumpFall = playOnce(jumpDownClip, 0)
     this.jumpSecond = playOnce(jumpSecondClip, 0)
     this.reaction = playOnce(reactionClip, 0)
+    this.wallStumble = playOnce(wallStumbleClip, 0)
+    this.failJump = playOnce(failJumpClip, 0)
+    this.recoverFromFail = playOnce(recoverClip, 0)
   }
 
   private emptyLoco(): LocoActions {
@@ -269,6 +291,10 @@ export class CharacterAnimationRig {
       secondJumpTrigger?: boolean
       /** Set true for the frame where ledge catch blocks movement. */
       edgeCatchTrigger?: boolean
+      /** Set true for the frame where walk into wall stumbles back. */
+      wallStumbleTrigger?: boolean
+      /** Set true for failed jump into too-high ledge. */
+      failedJumpTrigger?: boolean
     } = {},
   ): void {
     if (!this.mixer) return
@@ -292,8 +318,15 @@ export class CharacterAnimationRig {
       this.jumpFall?.stop()
       this.jumpSecond?.stop()
       this.reaction?.stop()
+      this.wallStumble?.stop()
+      this.failJump?.stop()
+      this.recoverFromFail?.stop()
       this.secondJumpBurstSeconds = 0
       this.reactionBurstSeconds = 0
+      this.wallStumbleBurstSeconds = 0
+      this.failJumpBurstSeconds = 0
+      this.recoverBurstSeconds = 0
+      this.recoverDelaySeconds = 0
     }
     if (opts.secondJumpTrigger) {
       this.secondJumpBurstSeconds = 0.2
@@ -302,6 +335,16 @@ export class CharacterAnimationRig {
     if (opts.edgeCatchTrigger) {
       this.reactionBurstSeconds = 0.28
       this.reaction?.reset().play()
+    }
+    if (opts.wallStumbleTrigger) {
+      this.wallStumbleBurstSeconds = 0.42
+      this.wallStumble?.reset().play()
+    }
+    if (opts.failedJumpTrigger) {
+      this.failJumpBurstSeconds = 0.58
+      this.recoverDelaySeconds = 0.34
+      this.recoverBurstSeconds = 0
+      this.failJump?.reset().play()
     }
 
     const k = 1 - Math.exp(-delta * 10)
@@ -422,15 +465,40 @@ export class CharacterAnimationRig {
       this.reactionBurstSeconds = Math.max(0, this.reactionBurstSeconds - delta)
       reactionW = Math.min(1, this.reactionBurstSeconds / 0.28)
     }
+    let wallStumbleW = 0
+    if (this.wallStumbleBurstSeconds > 0) {
+      this.wallStumbleBurstSeconds = Math.max(0, this.wallStumbleBurstSeconds - delta)
+      wallStumbleW = Math.min(1, this.wallStumbleBurstSeconds / 0.42)
+    }
+    let failJumpW = 0
+    if (this.failJumpBurstSeconds > 0) {
+      this.failJumpBurstSeconds = Math.max(0, this.failJumpBurstSeconds - delta)
+      failJumpW = Math.min(1, this.failJumpBurstSeconds / 0.58)
+    }
+    let recoverW = 0
+    if (this.recoverDelaySeconds > 0) {
+      this.recoverDelaySeconds = Math.max(0, this.recoverDelaySeconds - delta)
+      if (this.recoverDelaySeconds <= 0) {
+        this.recoverBurstSeconds = 0.56
+        this.recoverFromFail?.reset().play()
+      }
+    }
+    if (this.recoverBurstSeconds > 0) {
+      this.recoverBurstSeconds = Math.max(0, this.recoverBurstSeconds - delta)
+      recoverW = Math.min(1, this.recoverBurstSeconds / 0.56)
+    }
 
     const jumpMax = Math.max(riseW, fallW, secondW)
-    const motionOverlay = Math.max(jumpMax, reactionW)
+    const motionOverlay = Math.max(jumpMax, reactionW, wallStumbleW, failJumpW, recoverW)
     const locoSuppress = 1 - 0.82 * motionOverlay
 
     this.jumpRise?.setEffectiveWeight(riseW)
     this.jumpFall?.setEffectiveWeight(fallW)
     this.jumpSecond?.setEffectiveWeight(secondW)
     this.reaction?.setEffectiveWeight(reactionW)
+    this.wallStumble?.setEffectiveWeight(wallStumbleW)
+    this.failJump?.setEffectiveWeight(failJumpW)
+    this.recoverFromFail?.setEffectiveWeight(recoverW)
 
     const maskRenorm = (
       f: number,
@@ -528,5 +596,8 @@ export class CharacterAnimationRig {
     this.jumpFall = null
     this.jumpSecond = null
     this.reaction = null
+    this.wallStumble = null
+    this.failJump = null
+    this.recoverFromFail = null
   }
 }
