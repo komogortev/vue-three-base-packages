@@ -58,6 +58,40 @@ describe('PlayerController', () => {
     expect(snap.velocity.z).toBeLessThan(0)
   })
 
+  it('uses 0.5x strafe speed in camera-basis movement by default', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0.85, 0)
+
+    const ctrl = new PlayerController({ characterSpeed: 6, movementBasis: 'camera' })
+    const delta = 0.5
+
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(delta, {
+      camera,
+      character,
+      sampler: undefined,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    const forwardDistance = Math.abs(character.position.z)
+
+    character.position.set(0, 0.85, 0)
+    ctrl.setMoveIntent(1, 0)
+    ctrl.tick(delta, {
+      camera,
+      character,
+      sampler: undefined,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    const strafeDistance = Math.abs(character.position.x)
+
+    expect(strafeDistance).toBeCloseTo(forwardDistance * 0.5, 5)
+  })
+
   it('sets jumpBuffered after notifyJumpPressed and clears after buffer duration', () => {
     const camera = setupCameraAtOriginLookingDownMinusZ()
     const character = new THREE.Mesh()
