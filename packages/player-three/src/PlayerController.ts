@@ -80,6 +80,11 @@ export interface PlayerControllerConfig {
    * When omitted, uses {@link backwardSpeedMultiplier} so A/D matches straight retreat speed.
    */
   strafeSpeedMultiplier?: number
+  /**
+   * Camera-basis (first-person style) strafe scale vs forward/back at the same `speed`.
+   * Default 0.5 so side-step remains responsive but slower than forward motion.
+   */
+  cameraStrafeSpeedMultiplier?: number
   /** Initial upward velocity when jump triggers (m/s). Only with a terrain `sampler`. */
   jumpVelocity?: number
   /** Gravity while airborne (m/s²). */
@@ -119,6 +124,7 @@ const DEFAULT_CFG: PlayerControllerConfig = {
   backwardWithoutBodyTurn: true,
   backwardSpeedMultiplier: 0.25,
   crouchTerrainYOffsetDelta: 0,
+  cameraStrafeSpeedMultiplier: 0.5,
   jumpVelocity: 6.75,
   gravity: 30,
   movementBasis: 'facing',
@@ -379,7 +385,10 @@ export class PlayerController {
       }
 
       const backMul = this.cfg.backwardSpeedMultiplier ?? 0.25
-      const strMult = this.cfg.strafeSpeedMultiplier ?? backMul
+      const strMult =
+        basisMode === 'camera'
+          ? (this.cfg.cameraStrafeSpeedMultiplier ?? 0.5)
+          : (this.cfg.strafeSpeedMultiplier ?? backMul)
       this._moveDir
         .copy(this._camDir)
         .multiplyScalar(y * speed)
