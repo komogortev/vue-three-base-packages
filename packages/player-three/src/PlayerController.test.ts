@@ -406,8 +406,9 @@ describe('PlayerController', () => {
       crouchHeld: false,
     })
 
-    expect(character.position.z).toBeCloseTo(0, 5)
+    expect(character.position.z).toBeGreaterThan(0.2)
     expect(ctrl.getSnapshot().grounded).toBe(true)
+    expect(ctrl.consumeEvents().some((e) => e.type === 'wall_stumble')).toBe(true)
   })
 
   it('catches at cliff edge while walking but falls while sprinting', () => {
@@ -629,5 +630,84 @@ describe('PlayerController', () => {
     })
     expect(character.position.z).toBeCloseTo(0, 5)
     expect(ctrl.consumeEvents().some((e) => e.type === 'edge_catch')).toBe(true)
+  })
+
+  it('fails jump onto ledge above hips and applies recovery lock', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.25 ? 2 : 0),
+    } satisfies TerrainSurfaceSampler
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+
+    const ctrl = new PlayerController({
+      characterSpeed: 8,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      jumpVelocity: 8,
+      gravity: 20,
+      failedJumpBackstepDistance: 0.8,
+      failedJumpRecoverySeconds: 0.8,
+    })
+
+    ctrl.setMoveIntent(0, 1)
+    ctrl.notifyJumpPressed()
+    let failed = false
+    for (let i = 0; i < 120 && !failed; i += 1) {
+      ctrl.tick(1 / 60, {
+        camera,
+        character,
+        sampler,
+        playableRadius: 50,
+        sprintHeld: false,
+        crouchHeld: false,
+      })
+      const events = ctrl.consumeEvents()
+      failed = events.some((e) => e.type === 'jump_failed_high_ledge')
+    }
+    expect(failed).toBe(true)
+    expect(ctrl.getSnapshot().grounded).toBe(true)
+
+    const xBefore = character.position.x
+    ctrl.setMoveIntent(1, 0)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(character.position.x).toBeCloseTo(xBefore, 5)
+  })
+
+  it('walking into high wall triggers stumble event and backstep', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? 2 : 0),
+    } satisfies TerrainSurfaceSampler
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+    const ctrl = new PlayerController({
+      characterSpeed: 8,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      maxStepUpHeight: 0.4,
+      wallStumbleBackstepDistance: 0.8,
+    })
+
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+
+    expect(character.position.z).toBeGreaterThan(0.2)
+    const events = ctrl.consumeEvents()
+    expect(events.some((e) => e.type === 'wall_stumble')).toBe(true)
   })
 })
