@@ -35,6 +35,7 @@ export interface PlayerControllerState {
 export type PlayerControllerEvent =
   | { type: 'jump_started'; jumpIndex: number }
   | { type: 'extra_jump_used'; jumpIndex: number; remainingExtraJumps: number }
+  | { type: 'edge_catch' }
   | { type: 'landed'; airTimeSeconds: number; fallDistance: number }
 
 export interface PlayerControllerConfig {
@@ -85,6 +86,17 @@ export interface PlayerControllerConfig {
    * Default 0.5 so side-step remains responsive but slower than forward motion.
    */
   cameraStrafeSpeedMultiplier?: number
+  /**
+   * Max rise in sampled ground height allowed for one movement step while grounded.
+   * Higher deltas are treated as a wall and horizontal movement is rejected for that frame.
+   */
+  maxStepUpHeight?: number
+  /**
+   * Drop threshold that triggers cliff-edge behavior while grounded.
+   * - walk/jog: movement is rejected ("catch at edge")
+   * - sprint: movement is allowed and controller immediately leaves ground
+   */
+  cliffDropCatchThreshold?: number
   /** Initial upward velocity when jump triggers (m/s). Only with a terrain `sampler`. */
   jumpVelocity?: number
   /** Gravity while airborne (m/s²). */
@@ -207,6 +219,7 @@ export class PlayerController {
   private airborneTimeSeconds = 0
   private airStartY = 0
   private airApexY = 0
+  private edgeCatchCooldownSeconds = 0
 
   private readonly _camDir = new THREE.Vector3()
   private readonly _camRight = new THREE.Vector3()
@@ -227,6 +240,10 @@ export class PlayerController {
         '[PlayerController] debugMovement on — throttled [PlayerController.move] while locomotion input active',
       )
     }
+  }
+
+  private getFeetToHipsLengthEstimate(): number {
+    return Math.max(0.6, Math.abs(this.terrainYOffset))
   }
 
   /** Drain pending semantic movement events since the previous call. */
@@ -314,11 +331,13 @@ export class PlayerController {
     if (this.jumpBufferTime > 0) {
       this.jumpBufferTime = Math.max(0, this.jumpBufferTime - delta)
     }
+    this.edgeCatchCooldownSeconds = Math.max(0, this.edgeCatchCooldownSeconds - delta)
 
     const { x, y } = this.moveIntent
     const inputActive = Math.abs(x) > 0.01 || Math.abs(y) > 0.01
     let vx = 0
     let vz = 0
+    let forceLeaveGround = false
 
     if (inputActive) {
       const facingBefore = this.facing
@@ -411,6 +430,42 @@ export class PlayerController {
           backScaleApplied = THREE.MathUtils.lerp(1, backMul, backT)
           this._moveDir.x *= backScaleApplied
           this._moveDir.z *= backScaleApplied
+        }
+      }
+
+      if (sampler && this.grounded) {
+        const currentGroundY = sampleTerrainFootprintY(
+          sampler,
+          character.position.x,
+          character.position.z,
+          this.terrainFootprintRadius,
+        )
+        const nextX = character.position.x + this._moveDir.x * delta
+        const nextZ = character.position.z + this._moveDir.z * delta
+        const nextGroundY = sampleTerrainFootprintY(
+          sampler,
+          nextX,
+          nextZ,
+          this.terrainFootprintRadius,
+        )
+        const feetToHips = this.getFeetToHipsLengthEstimate()
+        const maxStepUp = this.cfg.maxStepUpHeight ?? feetToHips * 0.55
+        const cliffDropCatch = this.cfg.cliffDropCatchThreshold ?? feetToHips * (2 / 3)
+        const stepUp = nextGroundY - currentGroundY
+        const dropAhead = currentGroundY - nextGroundY
+
+        if (stepUp > maxStepUp) {
+          this._moveDir.set(0, 0, 0)
+        } else if (dropAhead > cliffDropCatch) {
+          if (sprintHeld && !crouchHeld) {
+            forceLeaveGround = true
+          } else {
+            this._moveDir.set(0, 0, 0)
+            if (this.edgeCatchCooldownSeconds <= 0) {
+              this.pendingEvents.push({ type: 'edge_catch' })
+              this.edgeCatchCooldownSeconds = 0.24
+            }
+          }
         }
       }
 
@@ -528,17 +583,25 @@ export class PlayerController {
       const jumpV = this.cfg.jumpVelocity ?? 6.75
 
       if (this.grounded) {
-        character.position.y = targetGroundY
-        this.verticalVelocity = 0
-        this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
-        if (this.jumpBufferTime > 0 && !crouchHeld) {
-          this.verticalVelocity = jumpV
+        if (forceLeaveGround) {
           this.grounded = false
-          this.jumpBufferTime = 0
-          this.pendingEvents.push({ type: 'jump_started', jumpIndex: 1 })
           this.airborneTimeSeconds = 0
           this.airStartY = character.position.y
           this.airApexY = character.position.y
+          this.verticalVelocity = Math.min(this.verticalVelocity, 0)
+        } else {
+          character.position.y = targetGroundY
+          this.verticalVelocity = 0
+          this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
+          if (this.jumpBufferTime > 0 && !crouchHeld) {
+            this.verticalVelocity = jumpV
+            this.grounded = false
+            this.jumpBufferTime = 0
+            this.pendingEvents.push({ type: 'jump_started', jumpIndex: 1 })
+            this.airborneTimeSeconds = 0
+            this.airStartY = character.position.y
+            this.airApexY = character.position.y
+          }
         }
       } else {
         if (
@@ -557,7 +620,7 @@ export class PlayerController {
         character.position.y += this.verticalVelocity * delta
         this.airborneTimeSeconds += Math.max(0, delta)
         if (character.position.y > this.airApexY) this.airApexY = character.position.y
-        if (character.position.y <= targetGroundY) {
+        if (this.verticalVelocity <= 0 && character.position.y <= targetGroundY) {
           character.position.y = targetGroundY
           this.verticalVelocity = 0
           this.grounded = true
@@ -614,6 +677,7 @@ export class PlayerController {
     this.airborneTimeSeconds = 0
     this.airStartY = 0
     this.airApexY = 0
+    this.edgeCatchCooldownSeconds = 0
     this.pendingEvents.length = 0
   }
 }

@@ -20,3 +20,4 @@ export {
   remapClipTracksToTargetSkeleton,
   retargetMixamoClipsToCharacter,
 } from './mixamoRetargetClips'
+export { MIXAMO_FBX_CLIP_URLS } from './mixamoFbxClipUrls'
