@@ -102,6 +102,11 @@ export interface PlayerControllerConfig {
    * Higher values look farther ahead for delayed drop-offs on gentle approach slopes.
    */
   cliffProbeDistanceMultiplier?: number
+  /**
+   * Seconds of pit bypass granted after the player releases movement following an edge-catch warning.
+   * During this window, pushing back toward the pit is allowed and transitions into a fall.
+   */
+  cliffEdgeReleaseBypassSeconds?: number
   /** Initial upward velocity when jump triggers (m/s). Only with a terrain `sampler`. */
   jumpVelocity?: number
   /** Gravity while airborne (m/s²). */
@@ -143,6 +148,7 @@ const DEFAULT_CFG: PlayerControllerConfig = {
   crouchTerrainYOffsetDelta: 0,
   cameraStrafeSpeedMultiplier: 0.5,
   cliffProbeDistanceMultiplier: 2,
+  cliffEdgeReleaseBypassSeconds: 2,
   jumpVelocity: 6.75,
   gravity: 30,
   movementBasis: 'facing',
@@ -226,6 +232,8 @@ export class PlayerController {
   private airStartY = 0
   private airApexY = 0
   private edgeCatchCooldownSeconds = 0
+  private edgeWarningActive = false
+  private edgeBypassSecondsRemaining = 0
 
   private readonly _camDir = new THREE.Vector3()
   private readonly _camRight = new THREE.Vector3()
@@ -372,9 +380,17 @@ export class PlayerController {
       this.jumpBufferTime = Math.max(0, this.jumpBufferTime - delta)
     }
     this.edgeCatchCooldownSeconds = Math.max(0, this.edgeCatchCooldownSeconds - delta)
+    this.edgeBypassSecondsRemaining = Math.max(0, this.edgeBypassSecondsRemaining - delta)
 
     const { x, y } = this.moveIntent
     const inputActive = Math.abs(x) > 0.01 || Math.abs(y) > 0.01
+    if (!inputActive && this.edgeWarningActive) {
+      this.edgeWarningActive = false
+      this.edgeBypassSecondsRemaining = Math.max(
+        0,
+        this.cfg.cliffEdgeReleaseBypassSeconds ?? 2,
+      )
+    }
     let vx = 0
     let vz = 0
     let forceLeaveGround = false
@@ -496,12 +512,21 @@ export class PlayerController {
           if (sprintHeld && !crouchHeld) {
             forceLeaveGround = true
           } else {
-            this._moveDir.set(0, 0, 0)
-            if (this.edgeCatchCooldownSeconds <= 0) {
-              this.pendingEvents.push({ type: 'edge_catch' })
-              this.edgeCatchCooldownSeconds = 0.24
+            const bypassActive = this.edgeBypassSecondsRemaining > 0
+            if (bypassActive) {
+              forceLeaveGround = true
+              this.edgeWarningActive = false
+            } else {
+              this.edgeWarningActive = true
+              this._moveDir.set(0, 0, 0)
+              if (this.edgeCatchCooldownSeconds <= 0) {
+                this.pendingEvents.push({ type: 'edge_catch' })
+                this.edgeCatchCooldownSeconds = 0.18
+              }
             }
           }
+        } else {
+          this.edgeWarningActive = false
         }
       }
 
@@ -714,6 +739,8 @@ export class PlayerController {
     this.airStartY = 0
     this.airApexY = 0
     this.edgeCatchCooldownSeconds = 0
+    this.edgeWarningActive = false
+    this.edgeBypassSecondsRemaining = 0
     this.pendingEvents.length = 0
   }
 }

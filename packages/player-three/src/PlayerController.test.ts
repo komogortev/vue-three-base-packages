@@ -514,4 +514,120 @@ describe('PlayerController', () => {
     const events = ctrl.consumeEvents()
     expect(events.some((e) => e.type === 'edge_catch')).toBe(true)
   })
+
+  it('re-triggers edge_catch while holding into a warned pit', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const ctrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+    })
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(ctrl.consumeEvents().some((e) => e.type === 'edge_catch')).toBe(true)
+
+    ctrl.tick(0.2, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(ctrl.consumeEvents().some((e) => e.type === 'edge_catch')).toBe(true)
+  })
+
+  it('allows pit bypass after release, then re-arms warning after timeout', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.2 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+    const ctrl = new PlayerController({
+      characterSpeed: 10,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+      cliffEdgeReleaseBypassSeconds: 2,
+    })
+
+    // First push: warning blocks and emits edge catch.
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(character.position.z).toBeCloseTo(0, 5)
+    expect(ctrl.consumeEvents().some((e) => e.type === 'edge_catch')).toBe(true)
+
+    // Release arms bypass window.
+    ctrl.setMoveIntent(0, 0)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    ctrl.consumeEvents()
+
+    // Re-push within bypass: allowed and transitions to falling.
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(character.position.z).toBeLessThan(-0.5)
+    expect(ctrl.getSnapshot().grounded).toBe(false)
+    expect(ctrl.consumeEvents().some((e) => e.type === 'edge_catch')).toBe(false)
+
+    // Land back on top and wait out bypass, then warning should block again.
+    character.position.set(0, 0, 0)
+    ctrl.resetFacing(0)
+    ctrl.tick(2.2, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    ctrl.consumeEvents()
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    expect(character.position.z).toBeCloseTo(0, 5)
+    expect(ctrl.consumeEvents().some((e) => e.type === 'edge_catch')).toBe(true)
+  })
 })
