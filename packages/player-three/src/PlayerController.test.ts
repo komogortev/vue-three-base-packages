@@ -484,4 +484,34 @@ describe('PlayerController', () => {
     const events = ctrl.consumeEvents()
     expect(events.some((e) => e.type === 'edge_catch')).toBe(true)
   })
+
+  it('detects delayed drop ahead using multi-point cliff probes', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0, 0)
+    const sampler = {
+      sample: (_x: number, z: number) => (z < -0.4 ? -2 : 0),
+    } satisfies TerrainSurfaceSampler
+
+    const ctrl = new PlayerController({
+      characterSpeed: 2,
+      movementBasis: 'camera',
+      terrainYOffset: 0,
+      cliffDropCatchThreshold: 0.5,
+    })
+    ctrl.setMoveIntent(0, 1)
+    ctrl.tick(0.1, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+
+    // Old "single next-step sample" logic would miss this first frame (next z ~= -0.2).
+    expect(character.position.z).toBeCloseTo(0, 5)
+    const events = ctrl.consumeEvents()
+    expect(events.some((e) => e.type === 'edge_catch')).toBe(true)
+  })
 })
