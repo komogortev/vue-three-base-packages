@@ -57,11 +57,7 @@ function primaryFitness(sm: THREE.SkinnedMesh): number {
   return score
 }
 
-/**
- * Best candidate for Mixamo multi-mesh rigs (body vs boots / accessories).
- */
-export function largestSkinnedMesh(root: THREE.Object3D): THREE.SkinnedMesh | null {
-  const list = skinnedMeshes(root)
+function pickByPrimaryFitness(list: readonly THREE.SkinnedMesh[]): THREE.SkinnedMesh | null {
   if (list.length === 0) return null
   let best = list[0]!
   let bestScore = primaryFitness(best)
@@ -76,13 +72,44 @@ export function largestSkinnedMesh(root: THREE.Object3D): THREE.SkinnedMesh | nu
 }
 
 /**
+ * Best candidate for Mixamo multi-mesh rigs (body vs boots / accessories).
+ */
+export function largestSkinnedMesh(root: THREE.Object3D): THREE.SkinnedMesh | null {
+  return pickByPrimaryFitness(skinnedMeshes(root))
+}
+
+/**
+ * Which `SkinnedMesh` locomotion / retarget should drive when several exist under one rig.
+ *
+ * If exactly one mesh has `userData.animationPrimary === true`, that mesh wins (use this when a
+ * scaled duplicate or debug hull would otherwise outrank the real body via {@link largestSkinnedMesh}).
+ * If several are tagged, picks the best-scoring among tagged and warns. Otherwise same as `largestSkinnedMesh`.
+ *
+ * **Future hardening** (tracked in repo docs): descriptor-level primary mesh, load-time validation when
+ * multiple skinned meshes lack a tag, policy for two full skeletons under one root (multi-mixer vs prune).
+ */
+export function primarySkinnedMeshForRig(root: THREE.Object3D): THREE.SkinnedMesh | null {
+  const list = skinnedMeshes(root)
+  if (list.length === 0) return null
+  const tagged = list.filter((sm) => sm.userData?.animationPrimary === true)
+  if (tagged.length === 1) return tagged[0]!
+  if (tagged.length > 1) {
+    console.warn(
+      '[@base/player-three] Multiple SkinnedMeshes have userData.animationPrimary; using fitness heuristic among tagged meshes.',
+    )
+    return pickByPrimaryFitness(tagged)
+  }
+  return pickByPrimaryFitness(list)
+}
+
+/**
  * Keep the primary skinned body and remove other `SkinnedMesh`es (duplicate “with skin” anims, etc.).
  */
 export function pruneExtraSkinnedMeshes(root: THREE.Object3D): THREE.SkinnedMesh | null {
   const list = skinnedMeshes(root)
   if (list.length <= 1) return list[0] ?? null
 
-  const primary = largestSkinnedMesh(root)!
+  const primary = primarySkinnedMeshForRig(root)!
   for (const sm of list) {
     if (sm === primary) continue
     sm.parent?.remove(sm)

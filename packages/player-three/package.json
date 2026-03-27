@@ -19,7 +19,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "validate:clips": "node ./scripts/validateMixamoClips.mjs"
   },
   "peerDependencies": {
     "three": ">=0.160.0"
