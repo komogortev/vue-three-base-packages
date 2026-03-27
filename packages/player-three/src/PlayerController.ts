@@ -32,6 +32,11 @@ export interface PlayerControllerState {
   jumpBuffered: boolean
 }
 
+export type PlayerControllerEvent =
+  | { type: 'jump_started'; jumpIndex: number }
+  | { type: 'extra_jump_used'; jumpIndex: number; remainingExtraJumps: number }
+  | { type: 'landed'; airTimeSeconds: number; fallDistance: number }
+
 export interface PlayerControllerConfig {
   characterSpeed: number
   /** Multiplier while sprint key held (not while crouching). */
@@ -94,6 +99,13 @@ export interface PlayerControllerConfig {
    * - **`camera`**: leveled camera yaw + fallbacks — for detached / orbit-mouse / cinematic cameras.
    */
   movementBasis?: 'facing' | 'camera'
+  /** How many extra airborne jumps are allowed after the initial grounded jump. Default: 0 (disabled). */
+  extraJumps?: number
+  /**
+   * Optional gate called when attempting an airborne extra jump.
+   * Return false to reject the buffered jump attempt.
+   */
+  canUseExtraJump?: () => boolean
 }
 
 const DEFAULT_CFG: PlayerControllerConfig = {
@@ -110,6 +122,7 @@ const DEFAULT_CFG: PlayerControllerConfig = {
   jumpVelocity: 6.75,
   gravity: 30,
   movementBasis: 'facing',
+  extraJumps: 0,
 }
 
 export interface PlayerControllerTickContext {
@@ -174,6 +187,7 @@ export class PlayerController {
   private readonly velocity = new THREE.Vector3()
   private grounded = true
   private jumpBufferTime = 0
+  private availableExtraJumps = 0
   private verticalVelocity = 0
   private crouchHeld = false
   private sprintHeld = false
@@ -183,6 +197,10 @@ export class PlayerController {
   private crouchTerrainYOffsetDelta: number
 
   private debugMovementLogAcc = 0
+  private readonly pendingEvents: PlayerControllerEvent[] = []
+  private airborneTimeSeconds = 0
+  private airStartY = 0
+  private airApexY = 0
 
   private readonly _camDir = new THREE.Vector3()
   private readonly _camRight = new THREE.Vector3()
@@ -197,11 +215,18 @@ export class PlayerController {
     this.terrainYOffset = this.cfg.terrainYOffset
     this.terrainFootprintRadius = this.cfg.terrainFootprintRadius ?? 0
     this.crouchTerrainYOffsetDelta = this.cfg.crouchTerrainYOffsetDelta ?? 0
+    this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
     if (this.cfg.debugMovement) {
       console.log(
         '[PlayerController] debugMovement on — throttled [PlayerController.move] while locomotion input active',
       )
     }
+  }
+
+  /** Drain pending semantic movement events since the previous call. */
+  consumeEvents(): PlayerControllerEvent[] {
+    if (this.pendingEvents.length === 0) return []
+    return this.pendingEvents.splice(0, this.pendingEvents.length)
   }
 
   /** Call after `SceneBuilder` when character pivot height differs (e.g. GLTF feet vs capsule centre). */
@@ -481,6 +506,7 @@ export class PlayerController {
     const baseYOffset =
       this.terrainYOffset + this.crouchGroundBlend * this.crouchTerrainYOffsetDelta
 
+    const wasGrounded = this.grounded
     if (sampler) {
       const groundY = sampleTerrainFootprintY(
         sampler,
@@ -495,14 +521,33 @@ export class PlayerController {
       if (this.grounded) {
         character.position.y = targetGroundY
         this.verticalVelocity = 0
+        this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
         if (this.jumpBufferTime > 0 && !crouchHeld) {
           this.verticalVelocity = jumpV
           this.grounded = false
           this.jumpBufferTime = 0
+          this.pendingEvents.push({ type: 'jump_started', jumpIndex: 1 })
+          this.airborneTimeSeconds = 0
+          this.airStartY = character.position.y
+          this.airApexY = character.position.y
         }
       } else {
+        if (
+          this.jumpBufferTime > 0 &&
+          this.availableExtraJumps > 0 &&
+          !crouchHeld &&
+          (this.cfg.canUseExtraJump?.() ?? true)
+        ) {
+          this.verticalVelocity = jumpV
+          this.jumpBufferTime = 0
+          this.availableExtraJumps -= 1
+          const totalJumpIndex = (this.cfg.extraJumps ?? 0) - this.availableExtraJumps + 1
+          this.pendingEvents.push({ type: 'extra_jump_used', jumpIndex: totalJumpIndex, remainingExtraJumps: this.availableExtraJumps })
+        }
         this.verticalVelocity -= gravity * delta
         character.position.y += this.verticalVelocity * delta
+        this.airborneTimeSeconds += Math.max(0, delta)
+        if (character.position.y > this.airApexY) this.airApexY = character.position.y
         if (character.position.y <= targetGroundY) {
           character.position.y = targetGroundY
           this.verticalVelocity = 0
@@ -512,6 +557,19 @@ export class PlayerController {
     } else {
       this.grounded = true
       this.verticalVelocity = 0
+      this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
+    }
+
+    if (!wasGrounded && this.grounded) {
+      const fallDistance = Math.max(0, this.airApexY - character.position.y)
+      this.pendingEvents.push({
+        type: 'landed',
+        airTimeSeconds: this.airborneTimeSeconds,
+        fallDistance,
+      })
+      this.airborneTimeSeconds = 0
+      this.airStartY = character.position.y
+      this.airApexY = character.position.y
     }
 
     this.velocity.set(vx, this.verticalVelocity, vz)
@@ -543,5 +601,10 @@ export class PlayerController {
     this.sprintHeld = false
     this.crouchGroundBlend = 0
     this.verticalVelocity = 0
+    this.availableExtraJumps = Math.max(0, this.cfg.extraJumps ?? 0)
+    this.airborneTimeSeconds = 0
+    this.airStartY = 0
+    this.airApexY = 0
+    this.pendingEvents.length = 0
   }
 }

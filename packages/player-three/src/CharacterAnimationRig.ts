@@ -37,6 +37,8 @@ export class CharacterAnimationRig {
   private readonly crouch: LocoActions
   private jumpRise: THREE.AnimationAction | null = null
   private jumpFall: THREE.AnimationAction | null = null
+  private jumpSecond: THREE.AnimationAction | null = null
+  private secondJumpBurstSeconds = 0
 
   /** 0 = idle, 1 = full locomotion layer */
   private moveBlend = 0
@@ -111,6 +113,9 @@ export class CharacterAnimationRig {
     const jumpClip =
       pickClip(clips, /^jumping$/i) ??
       pickClip(clips, /^jumping \(\d+\)$/i)
+    const jumpSecondClip =
+      pickClip(clips, /double jump|second jump/i) ??
+      jumpClip
     let jumpDownClip = pickClip(clips, /jumping down/i)
     if (!jumpDownClip) jumpDownClip = pickClip(clips, /\bfall/i)
 
@@ -155,6 +160,7 @@ export class CharacterAnimationRig {
 
     this.jumpRise = playOnce(jumpClip, 0)
     this.jumpFall = playOnce(jumpDownClip, 0)
+    this.jumpSecond = playOnce(jumpSecondClip, 0)
   }
 
   private emptyLoco(): LocoActions {
@@ -233,7 +239,14 @@ export class CharacterAnimationRig {
     delta: number,
     root: THREE.Object3D,
     velocity: { x: number; y: number; z: number },
-    opts: { crouch?: boolean; sprint?: boolean; grounded?: boolean; jog?: boolean } = {},
+    opts: {
+      crouch?: boolean
+      sprint?: boolean
+      grounded?: boolean
+      jog?: boolean
+      /** Set true for the frame where a second jump is triggered. */
+      secondJumpTrigger?: boolean
+    } = {},
   ): void {
     if (!this.mixer) return
     this.mixer.update(delta)
@@ -249,10 +262,17 @@ export class CharacterAnimationRig {
     if (takeoff) {
       this.jumpRise?.reset().play()
       this.jumpFall?.reset().play()
+      this.jumpSecond?.reset().play()
     }
     if (land) {
       this.jumpRise?.stop()
       this.jumpFall?.stop()
+      this.jumpSecond?.stop()
+      this.secondJumpBurstSeconds = 0
+    }
+    if (opts.secondJumpTrigger) {
+      this.secondJumpBurstSeconds = 0.2
+      this.jumpSecond?.reset().play()
     }
 
     const k = 1 - Math.exp(-delta * 10)
@@ -344,6 +364,7 @@ export class CharacterAnimationRig {
 
     let riseW = 0
     let fallW = 0
+    let secondW = 0
     if (!grounded && (this.jumpRise || this.jumpFall)) {
       if (vy > 0.35) {
         riseW = Math.min(1, vy / 3.5)
@@ -362,13 +383,18 @@ export class CharacterAnimationRig {
       const airMag = Math.min(1, Math.abs(vy) / 1.2 + 0.35)
       riseW *= airMag
       fallW *= airMag
+      if (this.secondJumpBurstSeconds > 0) {
+        this.secondJumpBurstSeconds = Math.max(0, this.secondJumpBurstSeconds - delta)
+        secondW = Math.min(1, this.secondJumpBurstSeconds / 0.2)
+      }
     }
 
-    const jumpMax = Math.max(riseW, fallW)
+    const jumpMax = Math.max(riseW, fallW, secondW)
     const locoSuppress = 1 - 0.82 * jumpMax
 
     this.jumpRise?.setEffectiveWeight(riseW)
     this.jumpFall?.setEffectiveWeight(fallW)
+    this.jumpSecond?.setEffectiveWeight(secondW)
 
     const maskRenorm = (
       f: number,
@@ -464,5 +490,6 @@ export class CharacterAnimationRig {
     this.crouch.strafeR = null
     this.jumpRise = null
     this.jumpFall = null
+    this.jumpSecond = null
   }
 }

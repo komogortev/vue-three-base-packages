@@ -222,4 +222,129 @@ describe('PlayerController', () => {
     expect(ctrl.getSnapshot().crouching).toBe(true)
     expect(ctrl.getSnapshot().sprinting).toBe(false)
   })
+
+  it('uses one extra jump in air when enabled', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0.85, 0)
+    const sampler = { sample: () => 0 } satisfies TerrainSurfaceSampler
+
+    const ctrl = new PlayerController({
+      characterSpeed: 1,
+      terrainYOffset: 0,
+      jumpVelocity: 7,
+      gravity: 20,
+      extraJumps: 1,
+    })
+
+    ctrl.notifyJumpPressed()
+    ctrl.tick(1 / 60, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    ctrl.consumeEvents() // initial jump event
+
+    let sawExtra = false
+    for (let i = 0; i < 8; i += 1) {
+      if (i === 2) ctrl.notifyJumpPressed()
+      ctrl.tick(1 / 60, {
+        camera,
+        character,
+        sampler,
+        playableRadius: 50,
+        sprintHeld: false,
+        crouchHeld: false,
+      })
+      const events = ctrl.consumeEvents()
+      if (events.some((e) => e.type === 'extra_jump_used')) sawExtra = true
+    }
+
+    expect(sawExtra).toBe(true)
+  })
+
+  it('does not use extra jump when canUseExtraJump returns false', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0.85, 0)
+    const sampler = { sample: () => 0 } satisfies TerrainSurfaceSampler
+
+    const ctrl = new PlayerController({
+      characterSpeed: 1,
+      terrainYOffset: 0,
+      jumpVelocity: 7,
+      gravity: 20,
+      extraJumps: 1,
+      canUseExtraJump: () => false,
+    })
+
+    ctrl.notifyJumpPressed()
+    ctrl.tick(1 / 60, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    ctrl.consumeEvents()
+
+    ctrl.notifyJumpPressed()
+    ctrl.tick(1 / 60, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+
+    const events = ctrl.consumeEvents()
+    expect(events.some((e) => e.type === 'extra_jump_used')).toBe(false)
+  })
+
+  it('emits jump and landed events in order', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0.85, 0)
+    const sampler = { sample: () => 0 } satisfies TerrainSurfaceSampler
+
+    const ctrl = new PlayerController({
+      characterSpeed: 1,
+      terrainYOffset: 0,
+      jumpVelocity: 6,
+      gravity: 30,
+    })
+
+    ctrl.notifyJumpPressed()
+    ctrl.tick(1 / 60, {
+      camera,
+      character,
+      sampler,
+      playableRadius: 50,
+      sprintHeld: false,
+      crouchHeld: false,
+    })
+    const first = ctrl.consumeEvents()
+    expect(first[0]?.type).toBe('jump_started')
+
+    let landed = false
+    for (let i = 0; i < 120 && !landed; i += 1) {
+      ctrl.tick(1 / 60, {
+        camera,
+        character,
+        sampler,
+        playableRadius: 50,
+        sprintHeld: false,
+        crouchHeld: false,
+      })
+      const events = ctrl.consumeEvents()
+      landed = events.some((e) => e.type === 'landed')
+    }
+
+    expect(landed).toBe(true)
+  })
 })

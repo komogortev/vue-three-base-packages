@@ -5,6 +5,7 @@ export {
   PLAYER_CAPSULE_HALF_HEIGHT,
   sampleTerrainFootprintY,
   type PlayerControllerConfig,
+  type PlayerControllerEvent,
   type PlayerControllerState,
   type PlayerControllerTickContext,
 } from './PlayerController'
