@@ -1,20 +1,30 @@
 import * as THREE from 'three'
-import { largestSkinnedMesh } from './mixamoSkinnedMeshUtils'
+import {
+  computeLandImpactTier,
+  resolveCharacterOverlayClips,
+} from './animationOverlayAssignments'
+import { resolveCharacterLocomotionClips } from './locomotionClipAssignments'
+import { primarySkinnedMeshForRig } from './mixamoSkinnedMeshUtils'
+
+const LAND_BURST_SECONDS = 0.42
+const EDGE_CATCH_BURST_SECONDS = 0.28
+
+export type CharacterAnimationRigConfig = {
+  /** One-shot `console.info` of resolved clip names at construction. */
+  debugClipResolution?: boolean
+  /** Log land tier + metrics when a landing overlay fires. */
+  debugAnimationTriggers?: boolean
+}
 
 /**
  * FBX rigs place bones under the loaded group; `SkinnedMesh` is often a sibling.
- * `AnimationMixer` must use that group so clip tracks resolve (mixer on mesh alone ⇒ T-pose).
+ * Use the rig group as the mixer root when clips target named bones in the subtree
+ * (e.g. remap-only `mixamorigHips.quaternion`). Use the primary `SkinnedMesh` when
+ * tracks use `.bones[name]…` (e.g. `SkeletonUtils.retargetClip`).
  */
 function animationRigRoot(locomotionRoot: THREE.Object3D): THREE.Object3D {
   if (locomotionRoot.children.length === 1) return locomotionRoot.children[0]!
   return locomotionRoot
-}
-
-function pickClip(
-  clips: THREE.AnimationClip[],
-  re: RegExp,
-): THREE.AnimationClip | undefined {
-  return clips.find((c) => re.test(c.name))
 }
 
 function normalizeClipName(name: string): string {
@@ -33,33 +43,48 @@ function dedupeClipsByName(clips: THREE.AnimationClip[]): THREE.AnimationClip[] 
   return out
 }
 
+function clipsUseSkinnedMeshMixerRoot(clips: readonly THREE.AnimationClip[]): boolean {
+  for (const clip of clips) {
+    for (const t of clip.tracks) {
+      if (t.name.includes('.bones[')) return true
+    }
+  }
+  return false
+}
+
 type LocoActions = {
   idle: THREE.AnimationAction | null
   walkFwd: THREE.AnimationAction | null
-  runSlowFwd: THREE.AnimationAction | null
-  runSprintFwd: THREE.AnimationAction | null
+  runFwd: THREE.AnimationAction | null
   walkBack: THREE.AnimationAction | null
   strafeL: THREE.AnimationAction | null
   strafeR: THREE.AnimationAction | null
 }
 
 /**
- * Third-person locomotion: stand + crouch; jog vs sprint run clips; jump rise / fall overlays.
- * Clips in `root.userData.gltfAnimations` (from `SceneBuilder`).
+ * Third-person locomotion: stand walk / single run + crouch; air + hazard + landing overlays.
+ * Run forward uses **sprint** input to blend from walk. Clips in `root.userData.gltfAnimations`.
+ * Steady: `locomotionClipAssignments.ts`. Overlays: `animationOverlayAssignments.ts`.
  */
 export class CharacterAnimationRig {
   private readonly mixer: THREE.AnimationMixer | null = null
+  private readonly config: CharacterAnimationRigConfig
   private readonly stand: LocoActions
   private readonly crouch: LocoActions
   private jumpRise: THREE.AnimationAction | null = null
   private jumpFall: THREE.AnimationAction | null = null
   private jumpSecond: THREE.AnimationAction | null = null
-  private reaction: THREE.AnimationAction | null = null
+  private landSoft: THREE.AnimationAction | null = null
+  private landMedium: THREE.AnimationAction | null = null
+  private landHeavy: THREE.AnimationAction | null = null
+  private landBurstSeconds = 0
+  private landKind: 'soft' | 'medium' | 'heavy' | null = null
+  private edgeCatch: THREE.AnimationAction | null = null
   private wallStumble: THREE.AnimationAction | null = null
   private failJump: THREE.AnimationAction | null = null
   private recoverFromFail: THREE.AnimationAction | null = null
   private secondJumpBurstSeconds = 0
-  private reactionBurstSeconds = 0
+  private edgeCatchBurstSeconds = 0
   private wallStumbleBurstSeconds = 0
   private failJumpBurstSeconds = 0
   private recoverBurstSeconds = 0
@@ -69,21 +94,20 @@ export class CharacterAnimationRig {
   private moveBlend = 0
   /** 0 = stand poses, 1 = crouch poses */
   private crouchBlend = 0
-  /** Smoothed jog / slow-run (explicit input only, not speed-based). */
-  private jogGate = 0
-  /** Forward sprint run clip blend. */
-  private sprintRunGate = 0
+  /** Forward run layer (0 = walk, 1 = run) while sprint held; not used when crouching. */
+  private runGate = 0
   private lastGrounded = true
 
   private readonly _worldFwd = new THREE.Vector3()
   private readonly _worldRight = new THREE.Vector3()
   private readonly _vel = new THREE.Vector3()
 
-  constructor(root: THREE.Object3D) {
+  constructor(root: THREE.Object3D, config?: CharacterAnimationRigConfig) {
+    this.config = config ?? {}
     const allClips = (root.userData['gltfAnimations'] as THREE.AnimationClip[] | undefined) ?? []
     const clips = dedupeClipsByName(allClips)
     const rigRoot = animationRigRoot(root)
-    const skinned = largestSkinnedMesh(rigRoot)
+    const skinned = primarySkinnedMeshForRig(rigRoot)
     if (!skinned || clips.length === 0) {
       this.mixer = null
       this.stand = this.emptyLoco()
@@ -91,72 +115,37 @@ export class CharacterAnimationRig {
       return
     }
 
-    // Drive the whole imported rig so every SkinnedMesh that shares these bones animates.
-    // Mixer on a single mesh leaves extra skinned parts (when pruneExtraSkinnedMeshes is false) in T-pose.
-    this.mixer = new THREE.AnimationMixer(rigRoot)
+    // Retargeted clips bind to `.bones[…]` on the SkinnedMesh; remap-only clips bind by bone name under rigRoot.
+    // Multi-mesh / wrong-primary / mixer-root hardening: see docs/threejs-engine-dev/game-systems-roadmap.md § "character animation rig".
+    const mixerRoot = clipsUseSkinnedMeshMixerRoot(clips) ? skinned : rigRoot
+    this.mixer = new THREE.AnimationMixer(mixerRoot)
 
-    const idleStand =
-      pickClip(clips, /neutral idle/i) ??
-      pickClip(clips, /idle|stand|wait|rest|breath|t[-_]?pose|idle-action-ready/i) ??
-      clips[0]
-    const walkFwdStand =
-      pickClip(clips, /^walking$/i) ??
-      pickClip(clips, /^walking \(\d+\)$/i) ??
-      pickClip(clips, /start walking/i)
+    const {
+      idleStand,
+      walkFwdStand,
+      walkBackStand,
+      strafeLStand,
+      strafeRStand,
+      idleCrouch,
+      walkCrouch,
+      strafeLCrouch,
+      strafeRCrouch,
+      runFwdStand,
+    } = resolveCharacterLocomotionClips(clips)
 
-    let runSlowStand = pickClip(clips, /running slow/i)
-    let runSprintStand = pickClip(clips, /running sprint/i)
-    if (!runSlowStand && runSprintStand) runSlowStand = runSprintStand
-    if (!runSprintStand && runSlowStand) runSprintStand = runSlowStand
-    if (!runSlowStand) {
-      runSlowStand =
-        pickClip(clips, /^running$/i) ??
-        pickClip(clips, /^running \(\d+\)$/i) ??
-        pickClip(clips, /\bjog\b/i) ??
-        pickClip(clips, /^sprint/i)
-    }
-    if (!runSprintStand) runSprintStand = runSlowStand
-    if (runSprintStand && walkFwdStand && runSprintStand === walkFwdStand) {
-      runSprintStand = undefined
-      if (runSlowStand === walkFwdStand) runSlowStand = undefined
-    } else if (runSlowStand && walkFwdStand && runSlowStand === walkFwdStand) {
-      runSlowStand = undefined
-    }
-
-    const walkBackStand = pickClip(clips, /walking backwards|backwards/i)
-    const strafeLStand = pickClip(clips, /left strafe/i)
-    const strafeRStand = pickClip(clips, /right strafe/i)
-
-    const idleCrouch =
-      pickClip(clips, /crouching idle/i) ?? pickClip(clips, /male crouch pose/i) ?? idleStand
-    const walkCrouch =
-      pickClip(clips, /^crouched walking$/i) ??
-      pickClip(clips, /crouched walking/i) ??
-      walkFwdStand
-    const strafeLCrouch = pickClip(clips, /crouched sneaking left/i)
-    const strafeRCrouch = pickClip(clips, /crouched sneaking right/i)
-
-    const jumpClip =
-      pickClip(clips, /^jumping$/i) ??
-      pickClip(clips, /^jumping \(\d+\)$/i)
-    const jumpSecondClip =
-      pickClip(clips, /double jump|second jump/i) ??
-      jumpClip
-    let jumpDownClip = pickClip(clips, /jumping down/i)
-    if (!jumpDownClip) jumpDownClip = pickClip(clips, /\bfall/i)
-    const reactionClip = pickClip(clips, /\breaction\b/i)
-    const wallStumbleClip =
-      pickClip(clips, /stumble backwards/i) ??
-      reactionClip
-    const failJumpClip =
-      pickClip(clips, /falling back death|falling back/i) ??
-      pickClip(clips, /falling from losing balance|losing balance/i) ??
-      pickClip(clips, /falling to roll|falling flat impact/i) ??
-      reactionClip
-    const recoverClip =
-      pickClip(clips, /zombie stand up|stand up/i) ??
-      pickClip(clips, /hard landing|falling to landing/i) ??
-      reactionClip
+    const overlayClips = resolveCharacterOverlayClips(clips)
+    const {
+      jumpRise: jumpClip,
+      jumpSecond: jumpSecondClip,
+      jumpFall: jumpDownClip,
+      landSoft: landSoftClip,
+      landMedium: landMediumClip,
+      landHeavy: landHeavyClip,
+      edgeCatch: edgeCatchClip,
+      wallStumble: wallStumbleClip,
+      failJump: failJumpClip,
+      recoverFromFail: recoverClip,
+    } = overlayClips
 
     const playLoop = (clip: THREE.AnimationClip | undefined, w: number): THREE.AnimationAction | null => {
       if (!clip || !this.mixer) return null
@@ -181,8 +170,7 @@ export class CharacterAnimationRig {
     this.stand = {
       idle: playLoop(idleStand, 1),
       walkFwd: playLoop(walkFwdStand, 0),
-      runSlowFwd: playLoop(runSlowStand, 0),
-      runSprintFwd: playLoop(runSprintStand, 0),
+      runFwd: playLoop(runFwdStand, 0),
       walkBack: playLoop(walkBackStand, 0),
       strafeL: playLoop(strafeLStand, 0),
       strafeR: playLoop(strafeRStand, 0),
@@ -190,8 +178,7 @@ export class CharacterAnimationRig {
     this.crouch = {
       idle: playLoop(idleCrouch, 0),
       walkFwd: playLoop(walkCrouch, 0),
-      runSlowFwd: null,
-      runSprintFwd: null,
+      runFwd: null,
       walkBack: null,
       strafeL: playLoop(strafeLCrouch, 0),
       strafeR: playLoop(strafeRCrouch, 0),
@@ -200,18 +187,72 @@ export class CharacterAnimationRig {
     this.jumpRise = playOnce(jumpClip, 0)
     this.jumpFall = playOnce(jumpDownClip, 0)
     this.jumpSecond = playOnce(jumpSecondClip, 0)
-    this.reaction = playOnce(reactionClip, 0)
+    this.landSoft = playOnce(landSoftClip, 0)
+    this.landMedium = playOnce(landMediumClip, 0)
+    this.landHeavy = playOnce(landHeavyClip, 0)
+    this.edgeCatch = playOnce(edgeCatchClip, 0)
     this.wallStumble = playOnce(wallStumbleClip, 0)
     this.failJump = playOnce(failJumpClip, 0)
     this.recoverFromFail = playOnce(recoverClip, 0)
+
+    if (this.config.debugClipResolution) {
+      console.info('[CharacterAnimationRig] locomotion clips', {
+        idleStand: idleStand?.name,
+        walkFwd: walkFwdStand?.name,
+        runFwd: runFwdStand?.name,
+        crouchIdle: idleCrouch?.name,
+        crouchWalk: walkCrouch?.name,
+      })
+      console.info('[CharacterAnimationRig] overlay clips', {
+        jumpRise: overlayClips.jumpRise?.name,
+        jumpFall: overlayClips.jumpFall?.name,
+        landSoft: overlayClips.landSoft?.name,
+        landMedium: overlayClips.landMedium?.name,
+        landHeavy: overlayClips.landHeavy?.name,
+        edgeCatch: overlayClips.edgeCatch?.name,
+        wallStumble: overlayClips.wallStumble?.name,
+        failJump: overlayClips.failJump?.name,
+        recover: overlayClips.recoverFromFail?.name,
+      })
+    }
+  }
+
+  private stopLandActions(): void {
+    this.landSoft?.stop()
+    this.landMedium?.stop()
+    this.landHeavy?.stop()
+    this.landBurstSeconds = 0
+    this.landKind = null
+  }
+
+  private playLandImpactForTier(tier: ReturnType<typeof computeLandImpactTier>): void {
+    if (tier === 'none') return
+    const play = (kind: 'soft' | 'medium' | 'heavy', a: THREE.AnimationAction | null): boolean => {
+      if (!a) return false
+      this.landKind = kind
+      this.landBurstSeconds = LAND_BURST_SECONDS
+      a.reset().play()
+      return true
+    }
+    if (tier === 'hard') {
+      if (play('heavy', this.landHeavy)) return
+      if (play('medium', this.landMedium)) return
+      play('soft', this.landSoft)
+      return
+    }
+    if (tier === 'medium') {
+      if (play('medium', this.landMedium)) return
+      play('soft', this.landSoft)
+      return
+    }
+    play('soft', this.landSoft)
   }
 
   private emptyLoco(): LocoActions {
     return {
       idle: null,
       walkFwd: null,
-      runSlowFwd: null,
-      runSprintFwd: null,
+      runFwd: null,
       walkBack: null,
       strafeL: null,
       strafeR: null,
@@ -226,47 +267,30 @@ export class CharacterAnimationRig {
     wL: number,
     wR: number,
     moveLayer: number,
-    jogMix: number,
-    sprintMix: number,
+    runMix: number,
     locoSuppress: number,
   ): void {
     const m = moveLayer * locoSuppress
     set.idle?.setEffectiveWeight(idleW)
-    const j = THREE.MathUtils.clamp(jogMix, 0, 1)
-    const sp = THREE.MathUtils.clamp(sprintMix, 0, 1)
-    let wfWalk = wF
-    let wfSlow = 0
-    let wfSprint = 0
-    if (sp > 1e-4 && set.runSprintFwd) {
-      wfSprint = wF * sp
-      wfWalk = wF * (1 - sp)
-    } else if (j > 1e-4 && set.runSlowFwd) {
-      wfSlow = wF * j
-      wfWalk = wF * (1 - j)
-    }
-    if (!set.runSprintFwd && wfSprint > 0) {
-      wfWalk += wfSprint
-      wfSprint = 0
-    }
-    if (!set.runSlowFwd && wfSlow > 0) {
-      wfWalk += wfSlow
-      wfSlow = 0
+    const r = THREE.MathUtils.clamp(runMix, 0, 1)
+    let wfWalk = wF * (1 - r)
+    let wfRun = wF * r
+    if (!set.runFwd && wfRun > 0) {
+      wfWalk += wfRun
+      wfRun = 0
     }
     if (!set.walkFwd) {
-      wfSlow += wfWalk
+      wfRun += wfWalk
       wfWalk = 0
     }
-    const crouchWalkBack =
-      !set.walkBack && set.walkFwd && !set.runSlowFwd && !set.runSprintFwd
+    const crouchWalkBack = !set.walkBack && set.walkFwd && !set.runFwd
     if (crouchWalkBack) {
-      const fwdBack = (wfWalk + wfSlow + wfSprint + wB) * m
+      const fwdBack = (wfWalk + wfRun + wB) * m
       set.walkFwd?.setEffectiveWeight(fwdBack)
-      set.runSlowFwd?.setEffectiveWeight(0)
-      set.runSprintFwd?.setEffectiveWeight(0)
+      set.runFwd?.setEffectiveWeight(0)
     } else {
       set.walkFwd?.setEffectiveWeight(wfWalk * m)
-      set.runSlowFwd?.setEffectiveWeight(wfSlow * m)
-      set.runSprintFwd?.setEffectiveWeight(wfSprint * m)
+      set.runFwd?.setEffectiveWeight(wfRun * m)
       set.walkBack?.setEffectiveWeight(wB * m)
     }
     set.strafeL?.setEffectiveWeight(wL * m)
@@ -276,7 +300,9 @@ export class CharacterAnimationRig {
   /**
    * @param velocity — world-space velocity (m/s); **y** used for jump rise vs fall blend.
    * @param opts.grounded — false while airborne (jump arc).
-   * @param opts.jog — hold jog / slow-run input (`locomotion` axis `z`); does not replace walk unless held.
+   * @param opts.sprint — forward run clip vs walk when held (stand layer only).
+   * @param opts.landFallDistance — from `PlayerController` `landed` event (meters); landing overlay tier.
+   * @param opts.landAirTimeSeconds — from `landed` event; combined with fall for tier when present.
    */
   update(
     delta: number,
@@ -286,7 +312,10 @@ export class CharacterAnimationRig {
       crouch?: boolean
       sprint?: boolean
       grounded?: boolean
-      jog?: boolean
+      /** Fall distance (m) on the frame ground contact is detected; see `consumeEvents` `landed`. */
+      landFallDistance?: number
+      /** Air time (s) on landing; optional if `landFallDistance` alone is enough. */
+      landAirTimeSeconds?: number
       /** Set true for the frame where a second jump is triggered. */
       secondJumpTrigger?: boolean
       /** Set true for the frame where ledge catch blocks movement. */
@@ -309,6 +338,7 @@ export class CharacterAnimationRig {
     this.lastGrounded = grounded
 
     if (takeoff) {
+      this.stopLandActions()
       this.jumpRise?.reset().play()
       this.jumpFall?.reset().play()
       this.jumpSecond?.reset().play()
@@ -317,24 +347,34 @@ export class CharacterAnimationRig {
       this.jumpRise?.stop()
       this.jumpFall?.stop()
       this.jumpSecond?.stop()
-      this.reaction?.stop()
+      this.edgeCatch?.stop()
       this.wallStumble?.stop()
       this.failJump?.stop()
       this.recoverFromFail?.stop()
       this.secondJumpBurstSeconds = 0
-      this.reactionBurstSeconds = 0
+      this.edgeCatchBurstSeconds = 0
       this.wallStumbleBurstSeconds = 0
       this.failJumpBurstSeconds = 0
       this.recoverBurstSeconds = 0
       this.recoverDelaySeconds = 0
+      this.stopLandActions()
+      const landTier = computeLandImpactTier(opts.landFallDistance, opts.landAirTimeSeconds)
+      if (this.config.debugAnimationTriggers && landTier !== 'none') {
+        console.info('[CharacterAnimationRig] land impact', {
+          tier: landTier,
+          fallM: opts.landFallDistance,
+          airS: opts.landAirTimeSeconds,
+        })
+      }
+      this.playLandImpactForTier(landTier)
     }
     if (opts.secondJumpTrigger) {
       this.secondJumpBurstSeconds = 0.2
       this.jumpSecond?.reset().play()
     }
     if (opts.edgeCatchTrigger) {
-      this.reactionBurstSeconds = 0.28
-      this.reaction?.reset().play()
+      this.edgeCatchBurstSeconds = EDGE_CATCH_BURST_SECONDS
+      this.edgeCatch?.reset().play()
     }
     if (opts.wallStumbleTrigger) {
       this.wallStumbleBurstSeconds = 0.42
@@ -352,8 +392,7 @@ export class CharacterAnimationRig {
 
     const hasStandLoco =
       this.stand.walkFwd ||
-      this.stand.runSlowFwd ||
-      this.stand.runSprintFwd ||
+      this.stand.runFwd ||
       this.stand.walkBack ||
       this.stand.strafeL ||
       this.stand.strafeR
@@ -403,7 +442,7 @@ export class CharacterAnimationRig {
 
       let locSum = wF + wB + wL + wR
       if (locSum < 1e-6 && speed > 0.08) {
-        if (this.stand.walkFwd || this.stand.runSlowFwd || this.stand.runSprintFwd || this.crouch.walkFwd) {
+        if (this.stand.walkFwd || this.stand.runFwd || this.crouch.walkFwd) {
           wF = 1
           wB = wL = wR = 0
           locSum = 1
@@ -416,23 +455,15 @@ export class CharacterAnimationRig {
       }
     }
 
-    const wantJogAnim =
-      (opts.jog ?? false) &&
-      !!this.stand.runSlowFwd &&
+    const wantRunAnim =
+      !!this.stand.runFwd &&
+      sprintHeld &&
       !crouchHeld &&
       grounded &&
-      speed > 0.08 &&
-      forwardSpeed > 0.02 &&
-      this.moveBlend > 0.12
-    this.jogGate = THREE.MathUtils.lerp(this.jogGate, wantJogAnim ? 1 : 0, k)
-
-    const wantSprintRun =
-      !!this.stand.runSprintFwd &&
-      sprintHeld &&
       speed > 0.12 &&
       forwardSpeed > 0.04 &&
       this.moveBlend > 0.2
-    this.sprintRunGate = THREE.MathUtils.lerp(this.sprintRunGate, wantSprintRun ? 1 : 0, k)
+    this.runGate = THREE.MathUtils.lerp(this.runGate, wantRunAnim ? 1 : 0, k)
 
     let riseW = 0
     let fallW = 0
@@ -460,10 +491,17 @@ export class CharacterAnimationRig {
         secondW = Math.min(1, this.secondJumpBurstSeconds / 0.2)
       }
     }
-    let reactionW = 0
-    if (this.reactionBurstSeconds > 0) {
-      this.reactionBurstSeconds = Math.max(0, this.reactionBurstSeconds - delta)
-      reactionW = Math.min(1, this.reactionBurstSeconds / 0.28)
+    let edgeCatchW = 0
+    if (this.edgeCatchBurstSeconds > 0) {
+      this.edgeCatchBurstSeconds = Math.max(0, this.edgeCatchBurstSeconds - delta)
+      edgeCatchW = Math.min(1, this.edgeCatchBurstSeconds / EDGE_CATCH_BURST_SECONDS)
+    }
+
+    let landW = 0
+    if (this.landBurstSeconds > 0) {
+      this.landBurstSeconds = Math.max(0, this.landBurstSeconds - delta)
+      landW = Math.min(1, this.landBurstSeconds / LAND_BURST_SECONDS)
+      if (this.landBurstSeconds <= 1e-6) this.landKind = null
     }
     let wallStumbleW = 0
     if (this.wallStumbleBurstSeconds > 0) {
@@ -489,13 +527,23 @@ export class CharacterAnimationRig {
     }
 
     const jumpMax = Math.max(riseW, fallW, secondW)
-    const motionOverlay = Math.max(jumpMax, reactionW, wallStumbleW, failJumpW, recoverW)
+    const motionOverlay = Math.max(
+      jumpMax,
+      edgeCatchW,
+      wallStumbleW,
+      failJumpW,
+      recoverW,
+      landW,
+    )
     const locoSuppress = 1 - 0.82 * motionOverlay
 
     this.jumpRise?.setEffectiveWeight(riseW)
     this.jumpFall?.setEffectiveWeight(fallW)
     this.jumpSecond?.setEffectiveWeight(secondW)
-    this.reaction?.setEffectiveWeight(reactionW)
+    this.landSoft?.setEffectiveWeight(this.landKind === 'soft' ? landW : 0)
+    this.landMedium?.setEffectiveWeight(this.landKind === 'medium' ? landW : 0)
+    this.landHeavy?.setEffectiveWeight(this.landKind === 'heavy' ? landW : 0)
+    this.edgeCatch?.setEffectiveWeight(edgeCatchW)
     this.wallStumble?.setEffectiveWeight(wallStumbleW)
     this.failJump?.setEffectiveWeight(failJumpW)
     this.recoverFromFail?.setEffectiveWeight(recoverW)
@@ -526,7 +574,7 @@ export class CharacterAnimationRig {
     }
 
     const standHas = {
-      hf: !!(this.stand.walkFwd || this.stand.runSlowFwd || this.stand.runSprintFwd),
+      hf: !!(this.stand.walkFwd || this.stand.runFwd),
       hb: !!this.stand.walkBack,
       hl: !!this.stand.strafeL,
       hr: !!this.stand.strafeR,
@@ -558,8 +606,7 @@ export class CharacterAnimationRig {
       ws.l,
       ws.r,
       mb * standLayer,
-      this.jogGate,
-      this.sprintRunGate,
+      this.runGate,
       locoSuppress,
     )
     this.applyLocoWeights(
@@ -571,7 +618,6 @@ export class CharacterAnimationRig {
       wc.r,
       mb * crouchLayer,
       0,
-      0,
       locoSuppress,
     )
   }
@@ -580,22 +626,23 @@ export class CharacterAnimationRig {
     this.mixer?.stopAllAction()
     this.stand.idle = null
     this.stand.walkFwd = null
-    this.stand.runSlowFwd = null
-    this.stand.runSprintFwd = null
+    this.stand.runFwd = null
     this.stand.walkBack = null
     this.stand.strafeL = null
     this.stand.strafeR = null
     this.crouch.idle = null
     this.crouch.walkFwd = null
-    this.crouch.runSlowFwd = null
-    this.crouch.runSprintFwd = null
+    this.crouch.runFwd = null
     this.crouch.walkBack = null
     this.crouch.strafeL = null
     this.crouch.strafeR = null
     this.jumpRise = null
     this.jumpFall = null
     this.jumpSecond = null
-    this.reaction = null
+    this.landSoft = null
+    this.landMedium = null
+    this.landHeavy = null
+    this.edgeCatch = null
     this.wallStumble = null
     this.failJump = null
     this.recoverFromFail = null

@@ -54,6 +54,9 @@ export function remapClipTracksToTargetSkeleton(
  * Bakes each clip onto `targetSkinned` so it plays with `AnimationMixer(targetSkinned)`.
  * Uses `SkeletonUtils.retargetClip` when the source file has a skinned mesh; otherwise
  * remaps track node names to the target skeleton.
+ *
+ * When the rig has several `SkinnedMesh`es, pass the same mesh `primarySkinnedMeshForRig(root)`
+ * would return (tag with `userData.animationPrimary` if needed).
  */
 export function retargetMixamoClipsToCharacter(
   targetSkinned: THREE.SkinnedMesh,

@@ -18,12 +18,36 @@ export {
   type ConsequenceResolution,
   type ConsequenceSeverity,
 } from './consequencePolicy'
-export { CharacterAnimationRig } from './CharacterAnimationRig'
+export { CharacterAnimationRig, type CharacterAnimationRigConfig } from './CharacterAnimationRig'
+export {
+  computeLandImpactTier,
+  resolveCharacterOverlayClips,
+  type AnimationOverlaySlot,
+  type CharacterOverlayClipSet,
+  type LandImpactTier,
+  LAND_IMPACT_MEDIUM_MAX_FALL_M,
+  LAND_IMPACT_SKIP_AIR_S,
+  LAND_IMPACT_SKIP_FALL_M,
+  LAND_IMPACT_SOFT_MAX_FALL_M,
+} from './animationOverlayAssignments'
+export {
+  normalizeClipLabelForMatch,
+  pickClipByPatterns,
+  resolveCharacterLocomotionClips,
+  resolveStandRunFwdClip,
+  resolveSteadyLocomotionClip,
+  type CharacterLocomotionClipSet,
+  type LocomotionSteadySlot,
+} from './locomotionClipAssignments'
 export {
   stripMixamoHipsPositionTracks,
   sanitizeMixamoClips,
 } from './mixamoAnimationUtils'
-export { largestSkinnedMesh, pruneExtraSkinnedMeshes } from './mixamoSkinnedMeshUtils'
+export {
+  largestSkinnedMesh,
+  primarySkinnedMeshForRig,
+  pruneExtraSkinnedMeshes,
+} from './mixamoSkinnedMeshUtils'
 export {
   findMixamoHipBoneName,
   remapClipTracksToTargetSkeleton,
