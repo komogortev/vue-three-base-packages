@@ -1,11 +1,18 @@
 import * as THREE from 'three'
 
 /**
- * Normalize clip names for matching Mixamo exports and scenario renames (`locomotion__walk__forward` → spaces).
+ * Normalize clip names for matching Mixamo exports and scenario renames.
+ *
+ * Steps:
+ * 1. Strip FBX namespace prefix — Mixamo often exports clips as `mixamorig|Walking`,
+ *    `Armature|Action`, etc. The part before the first `|` is discarded.
+ * 2. Lower-case and collapse double-underscores / punctuation to spaces so that
+ *    `locomotion__walk__forward` matches patterns written for "walk forward".
  */
 export function normalizeClipLabelForMatch(name: string): string {
   return name
     .toLowerCase()
+    .replace(/^[^|]+\|/, '')     // strip FBX namespace prefix: "mixamorig|Walking" → "walking"
     .replace(/__/g, ' ')
     .replace(/[._]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -55,12 +62,28 @@ const STEADY_PATTERNS: Record<LocomotionSteadySlot, readonly RegExp[]> = {
     /start walking/i,
   ],
   'locomotion.walk.backward': [/walking backwards|backwards/i],
-  'locomotion.walk.strafe_left': [/left strafe/i],
-  'locomotion.walk.strafe_right': [/right strafe/i],
-  'locomotion.crouch.idle': [/crouching idle/i, /male crouch pose/i],
-  'locomotion.crouch.walk_forward': [/^crouched walking$/i, /crouched walking/i],
-  'locomotion.crouch.strafe_left': [/crouched sneaking left/i],
-  'locomotion.crouch.strafe_right': [/crouched sneaking right/i],
+  'locomotion.walk.strafe_left': [/left strafe/i, /strafe.?left/i],
+  'locomotion.walk.strafe_right': [/right strafe/i, /strafe.?right/i],
+  // Patterns cover both Mixamo source names ("Crouching Idle", "Crouched Walking") and
+  // convention-renamed internal names ("locomotion__crouch__idle" → normalized "locomotion crouch idle").
+  'locomotion.crouch.idle': [
+    /crouching idle/i,
+    /male crouch pose/i,
+    /crouch(?:ing|ed)?\s+idle/i,          // "crouch idle" / "locomotion crouch idle"
+  ],
+  'locomotion.crouch.walk_forward': [
+    /^crouched walking$/i,
+    /crouched walking/i,
+    /crouch(?:ing|ed)?[\s_]+walk/i,       // "crouch walk" / "locomotion crouch walk forward"
+  ],
+  'locomotion.crouch.strafe_left': [
+    /crouched sneaking left/i,
+    /crouch(?:ing|ed)?[\s_]+strafe[\s_]+left/i,  // "crouch strafe left"
+  ],
+  'locomotion.crouch.strafe_right': [
+    /crouched sneaking right/i,
+    /crouch(?:ing|ed)?[\s_]+strafe[\s_]+right/i, // "crouch strafe right"
+  ],
 }
 
 export function resolveSteadyLocomotionClip(
