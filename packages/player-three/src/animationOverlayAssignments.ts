@@ -78,26 +78,17 @@ export function resolveCharacterOverlayClips(
     pickClipByPatterns(clips, [/falling flat impact/i]) ??
     landMedium
 
-  const reactionFallback = pickClipByPatterns(clips, [/\breaction\b/i])
   const edgeCatch =
     pickClipByPatterns(clips, [/edge slip/i]) ??
     pickClipByPatterns(clips, [/teeter heavy/i]) ??
-    pickClipByPatterns(clips, [/^teeter$/i]) ??
-    reactionFallback
+    pickClipByPatterns(clips, [/^teeter$/i])
 
-  const wallStumble =
-    pickClipByPatterns(clips, [/stumble backwards/i]) ?? reactionFallback
+  const wallStumble = pickClipByPatterns(clips, [/stumble backwards/i])
 
-  const failJump =
-    pickClipByPatterns(clips, [/falling back death|falling back/i]) ??
-    pickClipByPatterns(clips, [/falling from losing balance|losing balance/i]) ??
-    pickClipByPatterns(clips, [/falling to roll|falling flat impact/i]) ??
-    reactionFallback
+  // Empty slot — no suitable clip exists yet; the rig omits the animation gracefully.
+  const failJump: THREE.AnimationClip | undefined = undefined
 
-  const recoverFromFail =
-    pickClipByPatterns(clips, [/zombie stand up|stand up/i]) ??
-    pickClipByPatterns(clips, [/hard landing|falling to landing/i]) ??
-    reactionFallback
+  const recoverFromFail = pickClipByPatterns(clips, [/zombie stand up|stand up/i])
 
   return {
     jumpRise,
