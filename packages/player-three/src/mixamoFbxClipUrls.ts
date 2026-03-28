@@ -35,7 +35,10 @@ const FBX_ASSET_PATHS = [
 
   // ── Air: landing ──────────────────────────────────────────────────────────
   'fbx/air/air__land__soft.fbx',
+  'fbx/air/air__land__medium.fbx',
   'fbx/air/air__land__heavy.fbx',
+  'fbx/air/air__land__critical.fbx',     // slot only — supply animation to activate
+  'fbx/air/air__land__fatal.fbx',        // slot only — supply animation to activate
   'fbx/air/air__land__impact_flat.fbx',
 
   // ── Hazard ────────────────────────────────────────────────────────────────
@@ -46,6 +49,12 @@ const FBX_ASSET_PATHS = [
 
   // ── Recovery ──────────────────────────────────────────────────────────────
   'fbx/recovery/recovery__stand_up.fbx',
+  'fbx/recovery/recovery__fail_jump.fbx',
+
+  // ── Water ─────────────────────────────────────────────────────────────────
+  'fbx/water/water__tread__idle.fbx',
+  'fbx/water/water__swim__forward.fbx',
+  'fbx/water/water__entry__fall.fbx',
 ] as const
 
 /**

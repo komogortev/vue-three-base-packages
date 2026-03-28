@@ -8,6 +8,11 @@ export {
   type PlayerControllerEvent,
   type PlayerControllerState,
   type PlayerControllerTickContext,
+  type PlayerMode,
+  type WaterMode,
+  type AirMode,
+  type HazardMode,
+  type RecoveryMode,
 } from './PlayerController'
 export {
   resolveConsequence,
@@ -22,10 +27,14 @@ export { CharacterAnimationRig, type CharacterAnimationRigConfig } from './Chara
 export {
   computeLandImpactTier,
   resolveCharacterOverlayClips,
+  resolveWaterClips,
   type AnimationOverlaySlot,
   type CharacterOverlayClipSet,
+  type CharacterWaterClipSet,
   type LandImpactTier,
   LAND_IMPACT_MEDIUM_MAX_FALL_M,
+  LAND_IMPACT_HARD_MAX_FALL_M,
+  LAND_IMPACT_CRITICAL_MAX_FALL_M,
   LAND_IMPACT_SKIP_AIR_S,
   LAND_IMPACT_SKIP_FALL_M,
   LAND_IMPACT_SOFT_MAX_FALL_M,

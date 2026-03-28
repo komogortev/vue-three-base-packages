@@ -2,9 +2,11 @@ import * as THREE from 'three'
 import {
   computeLandImpactTier,
   resolveCharacterOverlayClips,
+  resolveWaterClips,
 } from './animationOverlayAssignments'
 import { resolveCharacterLocomotionClips } from './locomotionClipAssignments'
 import { primarySkinnedMeshForRig } from './mixamoSkinnedMeshUtils'
+import type { WaterMode } from './PlayerController'
 
 const LAND_BURST_SECONDS = 0.42
 const EDGE_CATCH_BURST_SECONDS = 0.28
@@ -77,12 +79,18 @@ export class CharacterAnimationRig {
   private landSoft: THREE.AnimationAction | null = null
   private landMedium: THREE.AnimationAction | null = null
   private landHeavy: THREE.AnimationAction | null = null
+  private landCritical: THREE.AnimationAction | null = null
+  private landFatal: THREE.AnimationAction | null = null
   private landBurstSeconds = 0
-  private landKind: 'soft' | 'medium' | 'heavy' | null = null
+  private landKind: 'soft' | 'medium' | 'heavy' | 'critical' | 'fatal' | null = null
   private edgeCatch: THREE.AnimationAction | null = null
   private wallStumble: THREE.AnimationAction | null = null
   private failJump: THREE.AnimationAction | null = null
   private recoverFromFail: THREE.AnimationAction | null = null
+  private waterTread: THREE.AnimationAction | null = null
+  private waterSwimFwd: THREE.AnimationAction | null = null
+  /** Smoothed 0→1 blend toward swim (1) vs tread (0). */
+  private waterSwimBlend = 0
   private secondJumpBurstSeconds = 0
   private edgeCatchBurstSeconds = 0
   private wallStumbleBurstSeconds = 0
@@ -141,6 +149,8 @@ export class CharacterAnimationRig {
       landSoft: landSoftClip,
       landMedium: landMediumClip,
       landHeavy: landHeavyClip,
+      landCritical: landCriticalClip,
+      landFatal: landFatalClip,
       edgeCatch: edgeCatchClip,
       wallStumble: wallStumbleClip,
       failJump: failJumpClip,
@@ -190,10 +200,16 @@ export class CharacterAnimationRig {
     this.landSoft = playOnce(landSoftClip, 0)
     this.landMedium = playOnce(landMediumClip, 0)
     this.landHeavy = playOnce(landHeavyClip, 0)
+    this.landCritical = playOnce(landCriticalClip, 0)
+    this.landFatal = playOnce(landFatalClip, 0)
     this.edgeCatch = playOnce(edgeCatchClip, 0)
     this.wallStumble = playOnce(wallStumbleClip, 0)
     this.failJump = playOnce(failJumpClip, 0)
     this.recoverFromFail = playOnce(recoverClip, 0)
+
+    const waterClips = resolveWaterClips(clips)
+    this.waterTread = playLoop(waterClips.tread, 0)
+    this.waterSwimFwd = playLoop(waterClips.swimForward, 0)
 
     if (this.config.debugClipResolution) {
       console.info('[CharacterAnimationRig] locomotion clips', {
@@ -209,10 +225,17 @@ export class CharacterAnimationRig {
         landSoft: overlayClips.landSoft?.name,
         landMedium: overlayClips.landMedium?.name,
         landHeavy: overlayClips.landHeavy?.name,
+        landCritical: overlayClips.landCritical?.name ?? '(slot empty)',
+        landFatal: overlayClips.landFatal?.name ?? '(slot empty)',
         edgeCatch: overlayClips.edgeCatch?.name,
         wallStumble: overlayClips.wallStumble?.name,
         failJump: overlayClips.failJump?.name,
         recover: overlayClips.recoverFromFail?.name,
+      })
+      console.info('[CharacterAnimationRig] water clips', {
+        tread: waterClips.tread?.name,
+        swimForward: waterClips.swimForward?.name,
+        entryFall: waterClips.entryFall?.name,
       })
     }
   }
@@ -221,18 +244,35 @@ export class CharacterAnimationRig {
     this.landSoft?.stop()
     this.landMedium?.stop()
     this.landHeavy?.stop()
+    this.landCritical?.stop()
+    this.landFatal?.stop()
     this.landBurstSeconds = 0
     this.landKind = null
   }
 
   private playLandImpactForTier(tier: ReturnType<typeof computeLandImpactTier>): void {
     if (tier === 'none') return
-    const play = (kind: 'soft' | 'medium' | 'heavy', a: THREE.AnimationAction | null): boolean => {
+    const play = (kind: 'soft' | 'medium' | 'heavy' | 'critical' | 'fatal', a: THREE.AnimationAction | null): boolean => {
       if (!a) return false
       this.landKind = kind
       this.landBurstSeconds = LAND_BURST_SECONDS
       a.reset().play()
       return true
+    }
+    if (tier === 'fatal') {
+      if (play('fatal', this.landFatal)) return
+      if (play('critical', this.landCritical)) return
+      if (play('heavy', this.landHeavy)) return
+      if (play('medium', this.landMedium)) return
+      play('soft', this.landSoft)
+      return
+    }
+    if (tier === 'critical') {
+      if (play('critical', this.landCritical)) return
+      if (play('heavy', this.landHeavy)) return
+      if (play('medium', this.landMedium)) return
+      play('soft', this.landSoft)
+      return
     }
     if (tier === 'hard') {
       if (play('heavy', this.landHeavy)) return
@@ -311,6 +351,8 @@ export class CharacterAnimationRig {
     opts: {
       crouch?: boolean
       sprint?: boolean
+      /** Jogging gait (between walk and sprint). Reserved for future locomotion blend. */
+      jog?: boolean
       grounded?: boolean
       /** Fall distance (m) on the frame ground contact is detected; see `consumeEvents` `landed`. */
       landFallDistance?: number
@@ -324,6 +366,11 @@ export class CharacterAnimationRig {
       wallStumbleTrigger?: boolean
       /** Set true for failed jump into too-high ledge. */
       failedJumpTrigger?: boolean
+      /**
+       * Current water sub-mode from `PlayerController.getWaterMode()`.
+       * When non-null, ground locomotion + air overlays are suppressed and water clips play.
+       */
+      waterMode?: WaterMode | null
     } = {},
   ): void {
     if (!this.mixer) return
@@ -351,6 +398,8 @@ export class CharacterAnimationRig {
       this.wallStumble?.stop()
       this.failJump?.stop()
       this.recoverFromFail?.stop()
+      this.landCritical?.stop()
+      this.landFatal?.stop()
       this.secondJumpBurstSeconds = 0
       this.edgeCatchBurstSeconds = 0
       this.wallStumbleBurstSeconds = 0
@@ -535,6 +584,42 @@ export class CharacterAnimationRig {
       recoverW,
       landW,
     )
+
+    // ── Water mode — suppress all ground/air layers; blend tread ↔ swim ──────
+    const inWater = opts.waterMode != null
+    const kWater = 1 - Math.exp(-delta * 6)
+    this.waterSwimBlend = THREE.MathUtils.lerp(
+      this.waterSwimBlend,
+      inWater && opts.waterMode === 'swim' ? 1 : 0,
+      kWater,
+    )
+    const waterTotal = inWater ? 1 : 0
+    this.waterTread?.setEffectiveWeight(waterTotal * (1 - this.waterSwimBlend))
+    this.waterSwimFwd?.setEffectiveWeight(waterTotal * this.waterSwimBlend)
+
+    if (inWater) {
+      // Zero out all non-water clips to avoid bleed.
+      this.jumpRise?.setEffectiveWeight(0)
+      this.jumpFall?.setEffectiveWeight(0)
+      this.jumpSecond?.setEffectiveWeight(0)
+      this.landSoft?.setEffectiveWeight(0)
+      this.landMedium?.setEffectiveWeight(0)
+      this.landHeavy?.setEffectiveWeight(0)
+      this.landCritical?.setEffectiveWeight(0)
+      this.landFatal?.setEffectiveWeight(0)
+      this.edgeCatch?.setEffectiveWeight(0)
+      this.wallStumble?.setEffectiveWeight(0)
+      this.failJump?.setEffectiveWeight(0)
+      this.recoverFromFail?.setEffectiveWeight(0)
+      this.applyLocoWeights(this.stand, 0, 0, 0, 0, 0, 0, 0, 0)
+      this.applyLocoWeights(this.crouch, 0, 0, 0, 0, 0, 0, 0, 0)
+      return
+    }
+
+    // Non-water: zero water clips.
+    this.waterTread?.setEffectiveWeight(0)
+    this.waterSwimFwd?.setEffectiveWeight(0)
+
     const locoSuppress = 1 - 0.82 * motionOverlay
 
     this.jumpRise?.setEffectiveWeight(riseW)
@@ -543,6 +628,8 @@ export class CharacterAnimationRig {
     this.landSoft?.setEffectiveWeight(this.landKind === 'soft' ? landW : 0)
     this.landMedium?.setEffectiveWeight(this.landKind === 'medium' ? landW : 0)
     this.landHeavy?.setEffectiveWeight(this.landKind === 'heavy' ? landW : 0)
+    this.landCritical?.setEffectiveWeight(this.landKind === 'critical' ? landW : 0)
+    this.landFatal?.setEffectiveWeight(this.landKind === 'fatal' ? landW : 0)
     this.edgeCatch?.setEffectiveWeight(edgeCatchW)
     this.wallStumble?.setEffectiveWeight(wallStumbleW)
     this.failJump?.setEffectiveWeight(failJumpW)
@@ -642,6 +729,8 @@ export class CharacterAnimationRig {
     this.landSoft = null
     this.landMedium = null
     this.landHeavy = null
+    this.landCritical = null
+    this.landFatal = null
     this.edgeCatch = null
     this.wallStumble = null
     this.failJump = null

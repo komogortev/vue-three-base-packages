@@ -389,11 +389,48 @@ export type SceneObject = PlacedObject | ScatterField | GltfObject
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
+/**
+ * An explicit swimmable volume — a rectangular XZ area with its own water surface Y.
+ *
+ * Use this instead of relying on `terrain.seaLevel` alone when:
+ *  - The scene has multiple water bodies at different elevations (elevated pools, sunken lakes).
+ *  - Only part of the terrain is swimmable (a river, a pool, an ocean bay).
+ *  - The water surface Y differs from the global `terrain.seaLevel` (e.g. a raised fountain).
+ *
+ * The `PlayerController` activates water physics when the character's feet enter any volume's
+ * XZ bounds and dip below `surfaceY`. `surfaceY` acts as the buoyancy target for that body.
+ *
+ * @example
+ * // A pool at the world center, sea-level surface
+ * { bounds: { minX: -5, maxX: 5, minZ: -25, maxZ: 25 }, surfaceY: 0, label: 'main-pool' }
+ *
+ * @example
+ * // Elevated fountain basin 3 m above ground
+ * { bounds: { minX: 8, maxX: 14, minZ: -3, maxZ: 3 }, surfaceY: 3, label: 'fountain' }
+ */
+export interface SwimmableVolume {
+  /** World-space XZ axis-aligned bounding rectangle. */
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number }
+  /** Water surface world Y within this volume. The character floats at this Y. */
+  surfaceY: number
+  /** Optional human-readable label for debugging and editor display. */
+  label?: string
+}
+
 export interface SceneDescriptor {
   terrain?: TerrainDescriptor
   atmosphere?: AtmosphereDescriptor
   character?: CharacterDescriptor
   objects?: SceneObject[]
+  /**
+   * Explicit swimmable volumes for water physics. Preferred over the implicit `terrain.seaLevel`
+   * approach when the scene has multiple water bodies or non-global water surfaces.
+   *
+   * When present, `PlayerController` uses these volumes for water entry/exit detection.
+   * When absent, falls back to a single global volume derived from `terrain.seaLevel` (if > 0
+   * or explicitly configured on the controller via `waterSurfaceY`).
+   */
+  swimmableVolumes?: SwimmableVolume[]
   /**
    * When true, {@link SceneBuilder.build} skips spawning the player character (editor orbit view;
    * walk mode adds a temporary avatar via {@link SceneBuilder.buildCharacter}).

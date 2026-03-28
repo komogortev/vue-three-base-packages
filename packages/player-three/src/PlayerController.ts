@@ -37,6 +37,8 @@ export interface PlayerControllerState {
   sprinting: boolean
   /** True while a jump press is still inside the buffer window (see {@link notifyJumpPressed}). */
   jumpBuffered: boolean
+  /** Non-null when `PlayerMode === 'water'` — sub-state within the water mode. */
+  waterMode: WaterMode | null
 }
 
 export type PlayerControllerEvent =
@@ -54,17 +56,22 @@ export type PlayerControllerEvent =
       severity: ConsequenceSeverity
     }
   | { type: 'landed'; airTimeSeconds: number; fallDistance: number }
+  | { type: 'water_entered' }
+  | { type: 'water_exited' }
 
-export type PlayerMode = 'grounded' | 'airborne' | 'recovery_locked'
+export type PlayerMode = 'grounded' | 'airborne' | 'recovery_locked' | 'water'
 export type HazardMode = 'none' | 'pit_warning' | 'pit_bypass_window' | 'wall_stumble'
 export type AirMode = 'jump_rise' | 'jump_fall' | 'failed_high_ledge'
 export type RecoveryMode = 'from_failed_jump' | 'from_wall_stumble'
+/** Sub-mode while `PlayerMode === 'water'`. */
+export type WaterMode = 'tread' | 'swim'
 
 interface PlayerControllerInternalState {
   mode: PlayerMode
   hazardMode: HazardMode
   airMode: AirMode | null
   recoveryMode: RecoveryMode | null
+  waterMode: WaterMode | null
   pitWarningRepeatTimer: number
   pitBypassRemaining: number
   recoveryLockRemaining: number
@@ -109,6 +116,7 @@ interface PlayerTransitionSnapshot {
   hazardMode: HazardMode
   airMode: AirMode | null
   recoveryMode: RecoveryMode | null
+  waterMode: WaterMode | null
 }
 
 interface TransitionEventMeta {
@@ -117,6 +125,8 @@ interface TransitionEventMeta {
   pitWarningPulse?: boolean
   wallStumblePulse?: boolean
   landed?: { airTimeSeconds: number; fallDistance: number }
+  waterEntered?: boolean
+  waterExited?: boolean
   consequenceDebug?: {
     hazardType: ConsequenceHazardType
     locomotionClass: ConsequenceLocomotionClass
@@ -176,9 +186,17 @@ export interface PlayerControllerConfig {
   cameraStrafeSpeedMultiplier?: number
   /**
    * Max rise in sampled ground height allowed for one movement step while grounded.
-   * Higher deltas are treated as a wall and horizontal movement is rejected for that frame.
+   * Overrides {@link maxWalkableSlopeDeg} when set explicitly.
    */
   maxStepUpHeight?: number
+  /**
+   * Steepest slope (degrees) the character can walk up without triggering a wall stumble.
+   * Converted to a height-delta limit against the forward probe horizon
+   * (`feetToHips × cliffProbeDistanceMultiplier`). Default **35°** — allows gentle hills
+   * while still blocking near-vertical ledge faces (≥ 45° will feel very steep).
+   * Ignored when {@link maxStepUpHeight} is set explicitly.
+   */
+  maxWalkableSlopeDeg?: number
   /**
    * Drop threshold that triggers cliff-edge behavior while grounded.
    * - walk/jog: movement is rejected ("catch at edge")
@@ -210,6 +228,12 @@ export interface PlayerControllerConfig {
    * (use to trace circling / drift: camera vs body, backward scale, lerp).
    */
   debugMovement?: boolean
+  /**
+   * When true, `console.log` logs jump arc metrics on each landing:
+   * peak height, fall distance, air time, and effective gravity / velocity config.
+   * Use to calibrate `jumpVelocity` and `gravity`.
+   */
+  debugJumpArc?: boolean
   /** Min seconds between debug lines; default 0.12. */
   debugMovementLogIntervalSec?: number
   /**
@@ -232,6 +256,54 @@ export interface PlayerControllerConfig {
    * Default false to preserve legacy branching semantics unless explicitly enabled.
    */
   useConsequenceResolver?: boolean
+
+  // ── Water mode ─────────────────────────────────────────────────────────────
+
+  /**
+   * Explicit swimmable volumes — XZ rectangles each with their own surface Y.
+   * When set, takes priority over {@link waterSurfaceY} for water entry/exit.
+   * Source: `SceneDescriptor.swimmableVolumes` (pass directly from descriptor).
+   * @see {@link setSwimmableVolumes}
+   */
+  swimmableVolumes?: Array<{ bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; surfaceY: number }>
+  /**
+   * Fallback global water surface Y when no {@link swimmableVolumes} are configured.
+   * Activates water physics across the entire playable disc at this Y.
+   * Source: `SceneDescriptor.terrain.seaLevel` for simple flat-ocean scenes.
+   */
+  waterSurfaceY?: number
+  /**
+   * Depth (m) below the water surface at which the controller switches from grounded walking
+   * to full swim mode.  Default **1.5 m** — roughly shoulder height for a 1.78 m character,
+   * so the character wades naturally through shallow water before starting to swim.
+   *
+   * Replaces the old `waterAnkleDepth` (0.1 m) which triggered too eagerly.
+   */
+  waterSwimDepth?: number
+  /**
+   * @deprecated Use {@link waterSwimDepth} instead.
+   * Kept for backwards-compat; ignored when `waterSwimDepth` is set.
+   */
+  waterAnkleDepth?: number
+  /**
+   * How far above the water surface (m) the sampled terrain must rise before the controller
+   * exits water mode and returns to `grounded`. Default **0.3** m.
+   */
+  waterShoreThreshold?: number
+  /**
+   * Per-frame horizontal velocity multiplier while in water (applied every tick).
+   * Values < 1 create drag; default **0.88** gives a smooth deceleration feel.
+   */
+  waterDragFactor?: number
+  /**
+   * Swim speed as a fraction of `characterSpeed`. Default **0.4**.
+   */
+  waterSwimSpeedFactor?: number
+  /**
+   * Upward spring force (m/s²) applied when the character is below the water surface target Y.
+   * Also used as the downward spring force when above target. Default **12**.
+   */
+  waterBuoyancy?: number
 }
 
 const DEFAULT_CFG: PlayerControllerConfig = {
@@ -268,6 +340,11 @@ export interface PlayerControllerTickContext {
   sprintHeld: boolean
   /** Locomotion axis: crouch (keyboard default **C** via `@base/input`; gamepad if mapped). */
   crouchHeld: boolean
+  /**
+   * Per-tick override for {@link PlayerControllerConfig.facingLerp}.
+   * Used by the scene module to apply a slower turn rate in third-person camera mode.
+   */
+  facingLerpOverride?: number
 }
 
 function lerpAngle(current: number, target: number, t: number): number {
@@ -336,6 +413,7 @@ export class PlayerController {
     hazardMode: 'none',
     airMode: null,
     recoveryMode: null,
+    waterMode: null,
     pitWarningRepeatTimer: 0,
     pitBypassRemaining: 0,
     recoveryLockRemaining: 0,
@@ -380,8 +458,19 @@ export class PlayerController {
   }
 
   private isWallAhead(stepUp: number, feetToHips: number): boolean {
-    const maxStepUp = this.cfg.maxStepUpHeight ?? feetToHips * 0.55
+    const maxStepUp = this.cfg.maxStepUpHeight ?? this.slopeMaxStepUp(feetToHips)
     return stepUp > maxStepUp
+  }
+
+  /**
+   * Convert `maxWalkableSlopeDeg` (default 35°) to a height-delta limit over the probe horizon.
+   * The probe looks `feetToHips × probeMul` ahead, so max allowable rise = horizon × tan(angleDeg).
+   */
+  private slopeMaxStepUp(feetToHips: number): number {
+    const probeMul = this.cfg.cliffProbeDistanceMultiplier ?? 2
+    const probeHorizon = feetToHips * probeMul
+    const deg = this.cfg.maxWalkableSlopeDeg ?? 35
+    return probeHorizon * Math.tan((deg * Math.PI) / 180)
   }
 
   private canBypassPit(): boolean {
@@ -465,7 +554,6 @@ export class PlayerController {
       dirZ,
       stepDistance,
     )
-    const maxStepUp = this.cfg.maxStepUpHeight ?? feetToHips * 0.55
     const cliffDropCatch = this.cfg.cliffDropCatchThreshold ?? feetToHips * (2 / 3)
     return {
       stepUp,
@@ -508,6 +596,15 @@ export class PlayerController {
     const dirX = dirLen > 1e-8 ? moveDir.x / dirLen : 0
     const dirZ = dirLen > 1e-8 ? moveDir.z / dirLen : 0
     const hazards = this.computeHazards(sampler, character, moveDir.x, moveDir.z, delta)
+    if (this.cfg.debugMovement && hazards.wallAhead) {
+      const fth = this.getFeetToHipsLengthEstimate()
+      const maxStep = this.cfg.maxStepUpHeight ?? this.slopeMaxStepUp(fth)
+      const deg = this.cfg.maxWalkableSlopeDeg ?? 35
+      console.log(
+        `[PlayerController] wall rejection stepUp=${hazards.stepUp.toFixed(3)}m` +
+        ` maxStep=${maxStep.toFixed(3)}m (${deg}°)`,
+      )
+    }
     const locomotionClass: ConsequenceLocomotionClass =
       sprintHeld && !crouchHeld ? 'sprint' : 'walk_like'
 
@@ -608,6 +705,142 @@ export class PlayerController {
     this.state.airborneTimeSeconds = 0
     this.state.takeoffGroundY = character.position.y - this.terrainYOffset
     this.state.airApexY = character.position.y
+  }
+
+  // ── Water helpers ──────────────────────────────────────────────────────────
+
+  /**
+   * Find the surface Y of the first swimmable volume whose XZ bounds contain (x, z).
+   * Falls back to the global `waterSurfaceY` when no volumes are configured.
+   * Returns `null` when water is not configured or the position is outside all volumes.
+   */
+  private findWaterSurfaceAt(x: number, z: number): number | null {
+    const vols = this.cfg.swimmableVolumes
+    if (vols && vols.length > 0) {
+      for (const vol of vols) {
+        const { minX, maxX, minZ, maxZ } = vol.bounds
+        if (x >= minX && x <= maxX && z >= minZ && z <= maxZ) return vol.surfaceY
+      }
+      return null
+    }
+    return this.cfg.waterSurfaceY ?? null
+  }
+
+  private isWaterConfigured(): boolean {
+    return (this.cfg.swimmableVolumes?.length ?? 0) > 0 || this.cfg.waterSurfaceY !== undefined
+  }
+
+  private feetY(character: THREE.Object3D): number {
+    return character.position.y - this.terrainYOffset
+  }
+
+  private shouldEnterWater(character: THREE.Object3D): boolean {
+    const surfaceY = this.findWaterSurfaceAt(character.position.x, character.position.z)
+    if (surfaceY === null) return false
+    // Shoulder-height trigger: character wades in shallow water while grounded.
+    // Water mode only activates when the surface is ~1.5 m above the feet.
+    const swimDepth = this.cfg.waterSwimDepth ?? this.cfg.waterAnkleDepth ?? 1.5
+    const entering = this.feetY(character) < (surfaceY - swimDepth)
+    if (entering) this._activeWaterSurfaceY = surfaceY
+    return entering
+  }
+
+  private shouldExitWater(character: THREE.Object3D, sampler: TerrainSurfaceSampler | undefined): boolean {
+    // Exit if no longer inside any swimmable volume.
+    const surfaceY = this.findWaterSurfaceAt(character.position.x, character.position.z)
+    if (surfaceY === null) return true
+    // Also exit if terrain has risen above the water surface (walked up shore).
+    if (!sampler) return false
+    const shoreThreshold = this.cfg.waterShoreThreshold ?? 0.3
+    const terrainY = sampleTerrainFootprintY(sampler, character.position.x, character.position.z, this.terrainFootprintRadius)
+    return terrainY > (surfaceY + shoreThreshold)
+  }
+
+  private tickWater(
+    character: THREE.Object3D,
+    sampler: TerrainSurfaceSampler | undefined,
+    inputActive: boolean,
+    moveDirX: number,
+    moveDirZ: number,
+    delta: number,
+  ): void {
+    const drag = this.cfg.waterDragFactor ?? 0.88
+    const buoyancy = this.cfg.waterBuoyancy ?? 12
+    const swimFactor = this.cfg.waterSwimSpeedFactor ?? 0.4
+    const waterSurfaceY = this._activeWaterSurfaceY ?? this.cfg.waterSurfaceY ?? 0
+    const waterTargetY = waterSurfaceY + this.terrainYOffset
+
+    // Shore exit check — terrain has risen out of water.
+    if (this.shouldExitWater(character, sampler)) {
+      const prev = this.captureTransitionSnapshot()
+      this.exitWater(character, sampler)
+      this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), { waterExited: true })
+      return
+    }
+
+    // Buoyancy: spring toward water surface target Y.
+    const yError = waterTargetY - character.position.y
+    this.verticalVelocity += yError * buoyancy * delta
+    // Dampen vertical oscillation.
+    this.verticalVelocity *= (1 - 0.85 * delta * 8)
+    character.position.y += this.verticalVelocity * delta
+    // Clamp: don't rise above surface.
+    if (character.position.y > waterTargetY) {
+      character.position.y = waterTargetY
+      this.verticalVelocity = Math.min(0, this.verticalVelocity)
+    }
+
+    // Horizontal drag.
+    const hx = (this.velocity.x || 0) * drag
+    const hz = (this.velocity.z || 0) * drag
+
+    // Swim input.
+    const swimSpeed = (this.cfg.characterSpeed ?? 7) * swimFactor
+    let vx = hx
+    let vz = hz
+    if (inputActive) {
+      vx += moveDirX * swimSpeed
+      vz += moveDirZ * swimSpeed
+      this.state.waterMode = 'swim'
+    } else {
+      this.state.waterMode = 'tread'
+    }
+
+    // Clamp to playable radius (reuse existing logic — done in outer tick after this).
+    this.velocity.set(vx, this.verticalVelocity, vz)
+    character.position.x += vx * delta
+    character.position.z += vz * delta
+  }
+
+  private enterWater(character: THREE.Object3D): void {
+    this.state.mode = 'water'
+    this.state.waterMode = 'tread'
+    this.state.hazardMode = 'none'
+    this.state.airMode = null
+    this.grounded = false
+    // Bleed off vertical velocity on water entry.
+    this.verticalVelocity = Math.min(0, this.verticalVelocity * 0.15)
+    this.jumpBufferTime = 0
+  }
+
+  private exitWater(character: THREE.Object3D, sampler: TerrainSurfaceSampler | undefined): void {
+    this.state.mode = 'grounded'
+    this.state.waterMode = null
+    this._activeWaterSurfaceY = null
+    this.grounded = true
+    this.verticalVelocity = 0
+    if (sampler) {
+      const groundY = sampleTerrainFootprintY(sampler, character.position.x, character.position.z, this.terrainFootprintRadius)
+      character.position.y = groundY + this.terrainYOffset
+    }
+  }
+
+  /**
+   * Replace swimmable volumes at runtime (e.g. after a scene transition).
+   * Pass an empty array to disable volume-based water detection (falls back to {@link setWaterSurfaceY}).
+   */
+  setSwimmableVolumes(volumes: Array<{ bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; surfaceY: number }>): void {
+    this.cfg.swimmableVolumes = volumes
   }
 
   private resolveAirborneTransition(ctx: AirborneTransitionContext): void {
@@ -720,6 +953,7 @@ export class PlayerController {
       hazardMode: this.state.hazardMode,
       airMode: this.state.airMode,
       recoveryMode: this.state.recoveryMode,
+      waterMode: this.state.waterMode,
     }
   }
 
@@ -760,6 +994,8 @@ export class PlayerController {
         fallDistance: meta.landed.fallDistance,
       })
     }
+    if (meta.waterEntered) this.pendingEvents.push({ type: 'water_entered' })
+    if (meta.waterExited) this.pendingEvents.push({ type: 'water_exited' })
     if (meta.consequenceDebug && this.cfg.debugMovement) {
       this.pendingEvents.push({
         type: 'hazard_consequence_debug',
@@ -826,16 +1062,21 @@ export class PlayerController {
       crouching: this.crouchHeld,
       sprinting: this.sprintHeld && !this.crouchHeld,
       jumpBuffered: this.jumpBufferTime > 0,
+      waterMode: this.state.waterMode,
     }
   }
 
   /** Last known mesh position after the most recent `tick` (for snapshot before character ref exists). */
   private lastCharacterPos = new THREE.Vector3()
+  /** XZ position at jump takeoff — used for `debugJumpArc` horizontal distance measurement. */
+  private jumpTakeoffXZ = new THREE.Vector2()
+  /** Surface Y of the currently active swimmable volume; set on water entry, cleared on exit. */
+  private _activeWaterSurfaceY: number | null = null
 
   tick(delta: number, ctx: PlayerControllerTickContext): void {
     const { camera, character, sampler, playableRadius, sprintHeld, crouchHeld } = ctx
-    const { characterSpeed, runSpeedMultiplier, crouchSpeedMultiplier, facingLerp, edgeMargin } =
-      this.cfg
+    const { characterSpeed, runSpeedMultiplier, crouchSpeedMultiplier, edgeMargin } = this.cfg
+    const facingLerp = ctx.facingLerpOverride ?? this.cfg.facingLerp
 
     this.crouchHeld = crouchHeld
     this.sprintHeld = sprintHeld
@@ -870,7 +1111,7 @@ export class PlayerController {
     const inputX = recoveryLocked ? 0 : x
     const inputY = recoveryLocked ? 0 : y
     const inputActive = this.isInputActive({ x: inputX, y: inputY })
-    if (!inputActive) {
+    if (!inputActive && this.state.mode !== 'water') {
       this.resolveGroundedHazardTransition({
         inputActive,
         sprintHeld,
@@ -979,19 +1220,20 @@ export class PlayerController {
         }
       }
 
-      const groundedHazardTransition = this.resolveGroundedHazardTransition({
-        inputActive,
-        sprintHeld,
-        crouchHeld,
-        sampler,
-        character,
-        moveDir: this._moveDir,
-        delta,
-      })
-      forceLeaveGround = groundedHazardTransition.forceLeaveGround
-
-      character.position.x += this._moveDir.x * delta
-      character.position.z += this._moveDir.z * delta
+      if (this.state.mode !== 'water') {
+        const groundedHazardTransition = this.resolveGroundedHazardTransition({
+          inputActive,
+          sprintHeld,
+          crouchHeld,
+          sampler,
+          character,
+          moveDir: this._moveDir,
+          delta,
+        })
+        forceLeaveGround = groundedHazardTransition.forceLeaveGround
+        character.position.x += this._moveDir.x * delta
+        character.position.z += this._moveDir.z * delta
+      }
 
       const limit = playableRadius - edgeMargin
       const distSq = character.position.x ** 2 + character.position.z ** 2
@@ -1016,8 +1258,10 @@ export class PlayerController {
         this.facing = lerpAngle(this.facing, targetFacing, facingLerp * delta)
       }
 
-      vx = this._moveDir.x
-      vz = this._moveDir.z
+      if (this.state.mode !== 'water') {
+        vx = this._moveDir.x
+        vz = this._moveDir.z
+      }
 
       if (cfg.debugMovement) {
         const interval = cfg.debugMovementLogIntervalSec ?? 0.12
@@ -1091,6 +1335,40 @@ export class PlayerController {
     const baseYOffset =
       this.terrainYOffset + this.crouchGroundBlend * this.crouchTerrainYOffsetDelta
 
+    // ── Water entry check (grounded → water; airborne → water on surface crossing) ──
+    if (this.isWaterConfigured() && this.state.mode !== 'water') {
+      if (this.shouldEnterWater(character)) {
+        const prev = this.captureTransitionSnapshot()
+        this.enterWater(character)
+        this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), { waterEntered: true })
+      }
+    }
+
+    // ── Water tick — replaces terrain snap and gravity ─────────────────────────
+    if (this.state.mode === 'water') {
+      this.tickWater(character, sampler, inputActive, this._moveDir.x, this._moveDir.z, delta)
+      // Edge clamp for water-mode XZ (tickWater moves position).
+      const limit = playableRadius - edgeMargin
+      const wDistSq = character.position.x ** 2 + character.position.z ** 2
+      if (wDistSq > limit * limit) {
+        const d = Math.sqrt(wDistSq)
+        character.position.x *= limit / d
+        character.position.z *= limit / d
+      }
+      // Facing rotation while swimming (same logic as grounded).
+      const hFaceW = Math.hypot(this._moveDir.x, this._moveDir.z)
+      if (inputActive && hFaceW > 1e-8) {
+        const nx = this._moveDir.x / hFaceW
+        const nz = this._moveDir.z / hFaceW
+        const tgtFacing = Math.atan2(-nx, -nz)
+        this.facing = lerpAngle(this.facing, tgtFacing, facingLerp * delta)
+      }
+      this.velocity.set(this.velocity.x, this.verticalVelocity, this.velocity.z)
+      this.lastCharacterPos.copy(character.position)
+      character.rotation.y = this.facing
+      return
+    }
+
     const wasGrounded = this.grounded
     if (sampler) {
       const groundY = sampleTerrainFootprintY(
@@ -1116,6 +1394,7 @@ export class PlayerController {
             this.verticalVelocity = jumpV
             this.beginAirborne('jump_rise', character)
             this.jumpBufferTime = 0
+            this.jumpTakeoffXZ.set(character.position.x, character.position.z)
             this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
               jumpStarted: { jumpIndex: 1 },
             })
@@ -1144,6 +1423,21 @@ export class PlayerController {
 
     if (!wasGrounded && this.grounded) {
       const fallDistance = Math.max(0, this.state.airApexY - character.position.y)
+      if (this.cfg.debugJumpArc) {
+        const hDist = Math.hypot(
+          character.position.x - this.jumpTakeoffXZ.x,
+          character.position.z - this.jumpTakeoffXZ.y,
+        )
+        const peakHeight = this.state.airApexY - this.state.takeoffGroundY
+        console.log(
+          `[PlayerController] jump arc — ` +
+          `peakHeight=${peakHeight.toFixed(2)}m ` +
+          `fallDist=${fallDistance.toFixed(2)}m ` +
+          `hDist=${hDist.toFixed(2)}m ` +
+          `airTime=${this.state.airborneTimeSeconds.toFixed(3)}s ` +
+          `(jumpV=${this.cfg.jumpVelocity ?? 6.75} gravity=${this.cfg.gravity ?? 30})`,
+        )
+      }
       const prev = {
         ...this.captureTransitionSnapshot(),
         mode: 'airborne' as PlayerMode,
@@ -1197,6 +1491,7 @@ export class PlayerController {
     this.state.hazardMode = 'none'
     this.state.airMode = null
     this.state.recoveryMode = null
+    this.state.waterMode = null
     this.state.pitWarningRepeatTimer = 0
     this.state.pitBypassRemaining = 0
     this.state.recoveryLockRemaining = 0
@@ -1205,5 +1500,23 @@ export class PlayerController {
     this.state.airApexY = 0
     this.wallStumbleCooldownSeconds = 0
     this.pendingEvents.length = 0
+  }
+
+  /** Current water sub-mode; `null` when not in `water` PlayerMode. */
+  getWaterMode(): WaterMode | null {
+    return this.state.waterMode
+  }
+
+  /** True when the controller is currently in water mode (buoyancy + drag physics active). */
+  isSwimming(): boolean {
+    return this.state.mode === 'water'
+  }
+
+  /**
+   * Override the water surface Y at runtime (e.g. animated tides or scene transitions).
+   * Pass `undefined` to disable water mode entirely.
+   */
+  setWaterSurfaceY(y: number | undefined): void {
+    this.cfg.waterSurfaceY = y
   }
 }
