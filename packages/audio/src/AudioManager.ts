@@ -60,9 +60,18 @@ export class AudioManager {
 
   // ─── Context lifecycle ───────────────────────────────────────────────────────
 
-  suspend(): Promise<void> { return this._context.suspend() }
-  resume(): Promise<void>  { return this._context.resume() }
-  close(): Promise<void>   { return this._context.close() }
+  suspend(): Promise<void> {
+    if (this._context.state === 'closed') return Promise.resolve()
+    return this._context.suspend()
+  }
+  resume(): Promise<void> {
+    if (this._context.state === 'closed') return Promise.resolve()
+    return this._context.resume()
+  }
+  close(): Promise<void> {
+    if (this._context.state === 'closed') return Promise.resolve()
+    return this._context.close()
+  }
 
   private createGain(value: number): GainNode {
     const node = this._context.createGain()
