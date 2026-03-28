@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import {
   computeLandImpactTier,
   resolveCharacterOverlayClips,
+  resolveWaterClips,
 } from './animationOverlayAssignments'
 
 function clip(name: string): THREE.AnimationClip {
@@ -47,5 +48,43 @@ describe('resolveCharacterOverlayClips', () => {
     expect(o.landSoft?.name).toBe('Falling To Landing')
     expect(o.landMedium?.name).toBe('Hard Landing')
     expect(o.landHeavy?.name).toBe('Falling Heavy')
+  })
+
+  it('resolves failJump from Straight Landing clip', () => {
+    const clips = [clip('Straight Landing'), clip('Stand Up')]
+    const o = resolveCharacterOverlayClips(clips)
+    expect(o.failJump?.name).toBe('Straight Landing')
+    expect(o.recoverFromFail?.name).toBe('Stand Up')
+  })
+
+  it('returns undefined failJump when no matching clip', () => {
+    const clips = [clip('Jumping'), clip('Running')]
+    const o = resolveCharacterOverlayClips(clips)
+    expect(o.failJump).toBeUndefined()
+  })
+})
+
+describe('resolveWaterClips', () => {
+  it('resolves tread from Floating clip name', () => {
+    const clips = [clip('Floating'), clip('Swimming'), clip('Falling Into Pool')]
+    const w = resolveWaterClips(clips)
+    expect(w.tread?.name).toBe('Floating')
+    expect(w.swimForward?.name).toBe('Swimming')
+    expect(w.entryFall?.name).toBe('Falling Into Pool')
+  })
+
+  it('resolves tread from convention-renamed clip (water tread idle)', () => {
+    const clips = [clip('water__tread__idle'), clip('water__swim__forward')]
+    const w = resolveWaterClips(clips)
+    expect(w.tread?.name).toBe('water__tread__idle')
+    expect(w.swimForward?.name).toBe('water__swim__forward')
+  })
+
+  it('returns undefined for missing water clips', () => {
+    const clips = [clip('Idle'), clip('Walking')]
+    const w = resolveWaterClips(clips)
+    expect(w.tread).toBeUndefined()
+    expect(w.swimForward).toBeUndefined()
+    expect(w.entryFall).toBeUndefined()
   })
 })
