@@ -8,6 +8,10 @@ export function resolveStaticAssetUrl(url: string, baseUrl: string): string {
   if (!url) return url
   if (/^(https?:|blob:|data:)/i.test(url)) return url
   if (url.startsWith('/')) {
+    // Vite asset URLs from import.meta.glob already include the base path in production
+    // (e.g. /three-dreams/assets/file-HASH.fbx). Prepending again doubles the segment.
+    // Descriptor paths (e.g. /Remy.fbx) do NOT start with the base, so they still get prefixed.
+    if (baseUrl !== '/' && url.startsWith(baseUrl)) return url
     return `${baseUrl}${url.slice(1)}`
   }
   return url
