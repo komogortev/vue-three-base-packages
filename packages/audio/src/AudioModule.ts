@@ -93,6 +93,19 @@ export class AudioModule extends BaseModule {
   // ─── Public helpers ───────────────────────────────────────────────────────────
 
   /**
+   * Explicitly resume the AudioContext.
+   *
+   * Browsers (especially Chrome in incognito) suspend the AudioContext until a
+   * user gesture is confirmed. Call this once after the first user interaction
+   * (e.g. immediately after mounting in response to a button click) so that
+   * audio nodes function correctly and the "GainNode on closed context" warning
+   * is suppressed.
+   */
+  resume(): Promise<void> {
+    return this._manager.resume()
+  }
+
+  /**
    * Load an audio file and decode it into an AudioBuffer.
    * Uses THREE.AudioLoader which supports common formats (mp3, ogg, wav).
    */
