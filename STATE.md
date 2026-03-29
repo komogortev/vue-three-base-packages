@@ -2,7 +2,7 @@
 
 ## Status
 
-_Last updated: 2026-03-28_
+_Last updated: 2026-03-29_
 
 **What's working:** All 9 packages build cleanly. `@base/player-three` test suite passes at 47 tests. Swimming v1 (`water` PlayerMode, `SwimmableVolume`, tread/swim FBX slots) landed. Five-tier landing severity (`LandImpactTier`) wired with pattern-matched animation resolution. Third-person orbit camera in `@base/camera-three` (via `facingLerpThirdPerson`). Checkpoint `checkpoint/session-09-10-2026-03-28` tagged at `be61e99`.
 
@@ -26,6 +26,7 @@ _Last updated: 2026-03-28_
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-03-29** — NPC stub/respawn mechanics confirmed as game-layer concern (in `three-dreams/GameplaySceneConfig`), not a shared package concern. `@base/player-three` and `@base/scene-builder` APIs require no changes for Phase 4A NPC system.
 - **2026-03-28** — Five-tier `LandImpactTier` landed: soft / medium / hard / critical / fatal. Four-tier was insufficient for nuanced animation responses.
 - **2026-03-28** — `SwimmableVolume` per-body rather than global `seaLevel` scalar. Supports pools at any elevation.
 - **2026-03-27** — FBX naming convention locked: `category__subcategory__action.fbx`. Vite glob URL resolution depends on stable naming.
