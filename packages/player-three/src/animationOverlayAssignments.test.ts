@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import {
   computeLandImpactTier,
   resolveCharacterOverlayClips,
+  resolveClipForOverlaySlot,
   resolveWaterClips,
 } from './animationOverlayAssignments'
 
@@ -22,6 +23,18 @@ describe('computeLandImpactTier', () => {
   it('returns medium then hard', () => {
     expect(computeLandImpactTier(2.5, 0.6)).toBe('medium')
     expect(computeLandImpactTier(5, 1)).toBe('hard')
+  })
+})
+
+describe('resolveClipForOverlaySlot', () => {
+  it('resolves hazard.pit.edge_catch with edge slip before teeter', () => {
+    const clips = [clip('Teeter Heavy'), clip('Edge Slip')]
+    expect(resolveClipForOverlaySlot(clips, 'hazard.pit.edge_catch')?.name).toBe('Edge Slip')
+  })
+
+  it('resolves hazard.wall.stumble', () => {
+    const clips = [clip('Stumble Backwards')]
+    expect(resolveClipForOverlaySlot(clips, 'hazard.wall.stumble')?.name).toBe('Stumble Backwards')
   })
 })
 

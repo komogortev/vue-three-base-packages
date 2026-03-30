@@ -16,6 +16,11 @@ export type CharacterAnimationRigConfig = {
   debugClipResolution?: boolean
   /** Log land tier + metrics when a landing overlay fires. */
   debugAnimationTriggers?: boolean
+  /**
+   * One-line `console.info` when hazard / fail-jump / recovery overlays start (semantic slot + clip name).
+   * Match harness `debugMovement` / `?debugMove=1` so DevTools show controller + rig together.
+   */
+  debugHazardEdges?: boolean
 }
 
 /**
@@ -240,6 +245,14 @@ export class CharacterAnimationRig {
     }
   }
 
+  private logHazardOverlay(slot: string, action: THREE.AnimationAction | null | undefined): void {
+    if (!this.config.debugHazardEdges) return
+    const clip = action?.getClip()
+    console.info(
+      `[CharacterAnimationRig] hazard_overlay slot=${slot} clip=${clip?.name ?? '(none)'}`,
+    )
+  }
+
   private stopLandActions(): void {
     this.landSoft?.stop()
     this.landMedium?.stop()
@@ -424,16 +437,19 @@ export class CharacterAnimationRig {
     if (opts.edgeCatchTrigger) {
       this.edgeCatchBurstSeconds = EDGE_CATCH_BURST_SECONDS
       this.edgeCatch?.reset().play()
+      this.logHazardOverlay('hazard.pit.edge_catch', this.edgeCatch)
     }
     if (opts.wallStumbleTrigger) {
       this.wallStumbleBurstSeconds = 0.42
       this.wallStumble?.reset().play()
+      this.logHazardOverlay('hazard.wall.stumble', this.wallStumble)
     }
     if (opts.failedJumpTrigger) {
       this.failJumpBurstSeconds = 0.58
       this.recoverDelaySeconds = 0.34
       this.recoverBurstSeconds = 0
       this.failJump?.reset().play()
+      this.logHazardOverlay('air.fail.high_ledge', this.failJump)
     }
 
     const k = 1 - Math.exp(-delta * 10)
@@ -568,6 +584,7 @@ export class CharacterAnimationRig {
       if (this.recoverDelaySeconds <= 0) {
         this.recoverBurstSeconds = 0.56
         this.recoverFromFail?.reset().play()
+        this.logHazardOverlay('recovery.failed_jump.exit', this.recoverFromFail)
       }
     }
     if (this.recoverBurstSeconds > 0) {
