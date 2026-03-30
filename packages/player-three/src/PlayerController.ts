@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import type { AnimationOverlaySlot } from './animationOverlayAssignments'
 import type { TerrainSurfaceSampler } from './terrainSurface'
 import {
   resolveConsequence,
@@ -7,6 +8,14 @@ import {
   type ConsequenceLocomotionClass,
   type ConsequenceSeverity,
 } from './consequencePolicy'
+
+function hazardEdgeSemanticSlot(
+  event: 'edge_catch' | 'wall_stumble' | 'jump_failed_high_ledge',
+): AnimationOverlaySlot {
+  if (event === 'edge_catch') return 'hazard.pit.edge_catch'
+  if (event === 'wall_stumble') return 'hazard.wall.stumble'
+  return 'air.fail.high_ledge'
+}
 
 /** Pivot-centre-to-ground distance for the default CapsuleGeometry(0.35, 1.0). Keep in sync with SceneBuilder. */
 export const PLAYER_CAPSULE_HALF_HEIGHT = 0.85
@@ -957,6 +966,15 @@ export class PlayerController {
     }
   }
 
+  /** One-line trace when `debugMovement` — maps controller event → semantic overlay slot (rig resolves clip). */
+  private logHazardEdgeTrace(
+    event: 'edge_catch' | 'wall_stumble' | 'jump_failed_high_ledge',
+  ): void {
+    if (!this.cfg.debugMovement) return
+    const slot = hazardEdgeSemanticSlot(event)
+    console.log(`[PlayerController] hazard_edge event=${event} clip_slot=${slot}`)
+  }
+
   private emitTransitionEvents(
     prev: PlayerTransitionSnapshot,
     next: PlayerTransitionSnapshot,
@@ -977,15 +995,18 @@ export class PlayerController {
       (prev.hazardMode !== 'pit_warning' || meta.pitWarningPulse === true)
     ) {
       this.pendingEvents.push({ type: 'edge_catch' })
+      this.logHazardEdgeTrace('edge_catch')
     }
     if (
       next.hazardMode === 'wall_stumble' &&
       (prev.hazardMode !== 'wall_stumble' || meta.wallStumblePulse === true)
     ) {
       this.pendingEvents.push({ type: 'wall_stumble' })
+      this.logHazardEdgeTrace('wall_stumble')
     }
     if (prev.airMode !== 'failed_high_ledge' && next.airMode === 'failed_high_ledge') {
       this.pendingEvents.push({ type: 'jump_failed_high_ledge' })
+      this.logHazardEdgeTrace('jump_failed_high_ledge')
     }
     if (prev.mode === 'airborne' && next.mode === 'grounded' && meta.landed) {
       this.pendingEvents.push({

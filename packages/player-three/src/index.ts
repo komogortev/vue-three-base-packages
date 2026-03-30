@@ -26,7 +26,9 @@ export {
 export { CharacterAnimationRig, type CharacterAnimationRigConfig } from './CharacterAnimationRig'
 export {
   computeLandImpactTier,
+  OVERLAY_SLOT_PATTERN_GROUPS,
   resolveCharacterOverlayClips,
+  resolveClipForOverlaySlot,
   resolveWaterClips,
   type AnimationOverlaySlot,
   type CharacterOverlayClipSet,

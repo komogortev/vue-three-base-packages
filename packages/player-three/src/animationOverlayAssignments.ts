@@ -22,6 +22,56 @@ export type AnimationOverlaySlot =
   | 'water.swim.forward'
   | 'water.entry.fall'
 
+/**
+ * Ordered pattern groups per semantic slot: try each group with {@link pickClipByPatterns}
+ * (OR within a group), then the next group (fallback chain). This is the single source of
+ * truth for overlay clip resolution; {@link resolveCharacterOverlayClips} adds cross-slot
+ * fallbacks (e.g. second jump → rise clip).
+ */
+export const OVERLAY_SLOT_PATTERN_GROUPS: { readonly [K in AnimationOverlaySlot]: readonly (readonly RegExp[])[] } = {
+  'air.jump.rise': [[/^jumping up$/i, /^jumping$/i, /^jumping \(\d+\)$/i]],
+  'air.jump.second': [[/double jump|second jump/i]],
+  'air.jump.fall': [[/jumping down/i], [/falling idle/i], [/\bfall/i]],
+  'air.jump.land.soft': [
+    [/^landing$/i, /^landing soft$/i, /^soft landing$/i, /falling to landing/i, /\bland\b/i],
+  ],
+  'air.jump.land.medium': [[/hard landing medium/i, /medium landing/i, /^hard landing$/i]],
+  'air.jump.land.hard': [
+    [/falling to roll hard/i, /falling to roll/i, /roll.*landing|landing.*roll/i],
+    [/falling heavy/i],
+    [/falling flat impact(?! fatal)/i],
+  ],
+  'air.jump.land.critical': [[/falling.*critical/i, /critical.*fall/i, /land.*critical/i, /\bbig.?fall\b/i]],
+  'air.jump.land.fatal': [[/falling flat impact fatal/i, /falling.*fatal/i, /fatal.*impact/i]],
+  'hazard.pit.edge_catch': [[/edge slip/i], [/teeter heavy/i], [/^teeter$/i]],
+  'hazard.wall.stumble': [[/stumble backwards/i]],
+  'air.fail.high_ledge': [[/straight landing/i, /recovery.*fail.*jump|fail.*jump.*recovery/i]],
+  'recovery.failed_jump.exit': [[/zombie stand up|stand up/i]],
+  'water.tread': [[/water.*tread|tread.*idle/i, /\bfloating\b/i]],
+  'water.swim.forward': [
+    [/water.*swim.*forward|swim.*forward/i],
+    [/^swimming$/i],
+    [/\bswimming\b/i],
+    [/\bswim\b/i],
+  ],
+  'water.entry.fall': [[/water.*entry.*fall|falling.*pool|fall.*pool/i]],
+}
+
+/**
+ * Resolve one overlay clip by semantic slot using {@link OVERLAY_SLOT_PATTERN_GROUPS}.
+ */
+export function resolveClipForOverlaySlot(
+  clips: readonly THREE.AnimationClip[],
+  slot: AnimationOverlaySlot,
+): THREE.AnimationClip | undefined {
+  const groups = OVERLAY_SLOT_PATTERN_GROUPS[slot]
+  for (const patterns of groups) {
+    const c = pickClipByPatterns(clips, patterns)
+    if (c) return c
+  }
+  return undefined
+}
+
 export type LandImpactTier = 'none' | 'soft' | 'medium' | 'hard' | 'critical' | 'fatal'
 
 /** Below this fall distance (m) and air time, skip a dedicated land one-shot (tiny hops). */
@@ -81,69 +131,27 @@ export type CharacterOverlayClipSet = {
 
 /**
  * Resolve overlay clips from loaded FBX/GLTF animation names (Mixamo + scenario renames).
+ * Hazard / air / recovery slots use {@link OVERLAY_SLOT_PATTERN_GROUPS} via
+ * {@link resolveClipForOverlaySlot}; cross-slot fallbacks stay here.
  */
 export function resolveCharacterOverlayClips(
   clips: readonly THREE.AnimationClip[],
 ): CharacterOverlayClipSet {
-  const jumpRise =
-    pickClipByPatterns(clips, [/^jumping up$/i, /^jumping$/i, /^jumping \(\d+\)$/i])
-  const jumpSecond =
-    pickClipByPatterns(clips, [/double jump|second jump/i]) ?? jumpRise
-  const jumpFall =
-    pickClipByPatterns(clips, [/jumping down/i]) ??
-    pickClipByPatterns(clips, [/falling idle/i]) ??
-    pickClipByPatterns(clips, [/\bfall/i])
+  const jumpRise = resolveClipForOverlaySlot(clips, 'air.jump.rise')
+  const jumpSecond = resolveClipForOverlaySlot(clips, 'air.jump.second') ?? jumpRise
+  const jumpFall = resolveClipForOverlaySlot(clips, 'air.jump.fall')
 
-  // "Landing soft.fbx" → Mixamo internal clip name is usually the page title.
-  // Common Mixamo names: "Landing", "Soft Landing", "Landing soft", "Falling To Landing".
-  const landSoft =
-    pickClipByPatterns(clips, [
-      /^landing$/i, /^landing soft$/i, /^soft landing$/i,
-      /falling to landing/i, /\bland\b/i,
-    ])
-  // "Hard Landing medium.fbx" → "Hard Landing Medium", "Hard Landing", "Medium Landing".
-  const landMedium =
-    pickClipByPatterns(clips, [
-      /hard landing medium/i, /medium landing/i,
-      /^hard landing$/i,
-    ]) ?? landSoft
-  // "Falling To Roll hard.fbx" → "Falling To Roll", "Falling To Roll Hard", "Roll Landing".
+  const landSoft = resolveClipForOverlaySlot(clips, 'air.jump.land.soft')
+  const landMedium = resolveClipForOverlaySlot(clips, 'air.jump.land.medium') ?? landSoft
   const landHeavy =
-    pickClipByPatterns(clips, [
-      /falling to roll hard/i, /falling to roll/i, /roll.*landing|landing.*roll/i,
-    ]) ??
-    pickClipByPatterns(clips, [/falling heavy/i]) ??
-    pickClipByPatterns(clips, [/falling flat impact(?! fatal)/i]) ??
-    landMedium
+    resolveClipForOverlaySlot(clips, 'air.jump.land.hard') ?? landMedium
+  const landCritical = resolveClipForOverlaySlot(clips, 'air.jump.land.critical') ?? landHeavy
+  const landFatal = resolveClipForOverlaySlot(clips, 'air.jump.land.fatal') ?? landCritical
 
-  // "falling critical.fbx" → Mixamo name may be "Falling Critical", "Falling",
-  // "Big Fall", etc.  Patterns ordered most-specific → least-specific.
-  const landCritical =
-    pickClipByPatterns(clips, [
-      /falling.*critical/i, /critical.*fall/i, /land.*critical/i,
-      /\bbig.?fall\b/i,
-    ]) ??
-    landHeavy
-  // "Falling Flat Impact Fatal.fbx" → "Falling Flat Impact Fatal".
-  const landFatal =
-    pickClipByPatterns(clips, [
-      /falling flat impact fatal/i, /falling.*fatal/i, /fatal.*impact/i,
-    ]) ??
-    landCritical
-
-  const edgeCatch =
-    pickClipByPatterns(clips, [/edge slip/i]) ??
-    pickClipByPatterns(clips, [/teeter heavy/i]) ??
-    pickClipByPatterns(clips, [/^teeter$/i])
-
-  const wallStumble = pickClipByPatterns(clips, [/stumble backwards/i])
-
-  // Straight-leg backward landing — mild stumble-back with no hip X-rotation.
-  // Matched from recovery__fail_jump.fbx (Mixamo "Straight Landing" internal clip name).
-  const failJump =
-    pickClipByPatterns(clips, [/straight landing/i, /recovery.*fail.*jump|fail.*jump.*recovery/i])
-
-  const recoverFromFail = pickClipByPatterns(clips, [/zombie stand up|stand up/i])
+  const edgeCatch = resolveClipForOverlaySlot(clips, 'hazard.pit.edge_catch')
+  const wallStumble = resolveClipForOverlaySlot(clips, 'hazard.wall.stumble')
+  const failJump = resolveClipForOverlaySlot(clips, 'air.fail.high_ledge')
+  const recoverFromFail = resolveClipForOverlaySlot(clips, 'recovery.failed_jump.exit')
 
   return {
     jumpRise,
@@ -175,16 +183,9 @@ export type CharacterWaterClipSet = {
  * Matched from `fbx/water/` assets following the `water__*__*.fbx` naming convention.
  */
 export function resolveWaterClips(clips: readonly THREE.AnimationClip[]): CharacterWaterClipSet {
-  const tread =
-    pickClipByPatterns(clips, [/water.*tread|tread.*idle/i, /\bfloating\b/i])
-  const swimForward =
-    pickClipByPatterns(clips, [
-      /water.*swim.*forward|swim.*forward/i,
-      /^swimming$/i,
-      /\bswimming\b/i,  // Mixamo "Swimming" or "Swimming Forward" variants
-      /\bswim\b/i,      // last-resort broad match
-    ])
-  const entryFall =
-    pickClipByPatterns(clips, [/water.*entry.*fall|falling.*pool|fall.*pool/i])
-  return { tread, swimForward, entryFall }
+  return {
+    tread: resolveClipForOverlaySlot(clips, 'water.tread'),
+    swimForward: resolveClipForOverlaySlot(clips, 'water.swim.forward'),
+    entryFall: resolveClipForOverlaySlot(clips, 'water.entry.fall'),
+  }
 }
