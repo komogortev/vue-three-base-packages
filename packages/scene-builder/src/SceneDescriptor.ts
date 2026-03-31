@@ -383,6 +383,17 @@ export interface GltfObject {
    * (e.g. heightmap dips). Uses sampled Y. Default false — props underwater are skipped.
    */
   allowBelowSeaLevel?: boolean
+  /**
+   * When true and the GLB includes embedded animation clips, {@link SceneBuilder} starts a
+   * looping clip on an {@link THREE.AnimationMixer} and registers a tick (gameplay) or expects
+   * the editor frame loop to call `mixer.update` — see {@link SceneBuilderResult.disposeEmbeddedGltfAnimations}.
+   */
+  playEmbeddedAnimations?: boolean
+  /**
+   * Substring match (case-insensitive) on clip name; first match loops when
+   * {@link playEmbeddedAnimations} is true. If omitted, the first clip in the file is used.
+   */
+  loopClipNameContains?: string
 }
 
 export type SceneObject = PlacedObject | ScatterField | GltfObject

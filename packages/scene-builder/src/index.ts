@@ -11,6 +11,11 @@ export { TerrainSampler } from './TerrainSampler'
 export { PrimitiveFactory, PRIMITIVE_BASE_OFFSETS } from './PrimitiveFactory'
 export { createSeeder } from './Seeder'
 export { convertUnlitToPbrRough } from './gltfMaterialUtils'
+export {
+  attachEmbeddedGltfAnimations,
+  pickEmbeddedGltfLoopClip,
+  type GltfEmbeddedAnimationOptions,
+} from './gltfEmbeddedAnimation'
 
 export {
   SceneBuilder,
