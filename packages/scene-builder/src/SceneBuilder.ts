@@ -25,6 +25,7 @@ import {
   sanitizeMixamoClips,
 } from '@base/player-three'
 import { convertUnlitToPbrRough } from './gltfMaterialUtils'
+import { attachEmbeddedGltfAnimations } from './gltfEmbeddedAnimation'
 import { bindResolvePublicUrl } from './resolvePublicUrl'
 import type { ResolvePublicUrl } from './HeightmapLoader'
 
@@ -54,6 +55,17 @@ export interface SceneBuilderResult {
   effectiveRadius: number
   /** All procedural scatter instances live under this group (editor can rebuild in place). */
   scatterRoot: THREE.Group
+  /**
+   * Unregisters the engine tick that advances mixers for `gltf` objects with
+   * `playEmbeddedAnimations: true`. Call from the host module **before** clearing the scene
+   * (e.g. `onUnmount`) to avoid updating freed subgraphs.
+   */
+  disposeEmbeddedGltfAnimations?: () => void
+  /**
+   * World [x, z] pairs of every `{ type: 'gltf' }` object that loaded successfully.
+   * Use to suppress npcStub placeholders that have a real model loaded at the same position.
+   */
+  loadedGltfXZ: ReadonlyArray<readonly [number, number]>
 }
 
 /**
@@ -72,6 +84,8 @@ export interface SceneBuilderResult {
  *   7. Scene objects (explicit PlacedObjects + seeded ScatterFields)
  */
 export class SceneBuilder {
+  private static embeddedGltfAnimBuildSeq = 0
+
   static async build(
     ctx: ThreeContext,
     descriptor: SceneDescriptor,
@@ -174,7 +188,8 @@ export class SceneBuilder {
     scatterRoot.name = 'scene-scatter-root'
     ctx.scene.add(scatterRoot)
 
-    await SceneBuilder.placeObjects(
+    const embeddedGltfMixers: THREE.AnimationMixer[] = []
+    const loadedGltfXZ = await SceneBuilder.placeObjects(
       ctx,
       descriptor.objects ?? [],
       sampler,
@@ -182,7 +197,18 @@ export class SceneBuilder {
       seaLevel,
       scatterRoot,
       resolvePublicUrl,
+      embeddedGltfMixers,
     )
+
+    let disposeEmbeddedGltfAnimations: (() => void) | undefined
+    if (embeddedGltfMixers.length > 0) {
+      const id = `scene-builder-gltf-embed-${SceneBuilder.embeddedGltfAnimBuildSeq++}`
+      disposeEmbeddedGltfAnimations = ctx.registerSystem(id, (delta) => {
+        for (const m of embeddedGltfMixers) {
+          m.update(delta)
+        }
+      })
+    }
 
     return {
       sampler,
@@ -191,6 +217,8 @@ export class SceneBuilder {
       terrainMesh,
       effectiveRadius: radius,
       scatterRoot,
+      disposeEmbeddedGltfAnimations,
+      loadedGltfXZ,
     }
   }
 
@@ -533,6 +561,7 @@ export class SceneBuilder {
   /**
    * Iterates the objects array and dispatches each entry to the appropriate placer.
    * GLTF loads run in parallel via Promise.all for fast scene build.
+   * Returns the [x, z] pairs of every GltfObject that loaded without error.
    */
   private static async placeObjects(
     ctx: ThreeContext,
@@ -542,22 +571,36 @@ export class SceneBuilder {
     seaLevel: number,
     scatterRoot: THREE.Group,
     resolvePublicUrl: ResolvePublicUrl,
-  ): Promise<void> {
-    const gltfTasks: Promise<void>[] = []
+    embeddedGltfMixers: THREE.AnimationMixer[],
+  ): Promise<ReadonlyArray<readonly [number, number]>> {
+    const gltfObjects: GltfObject[] = []
+    const gltfTasks: Promise<boolean>[] = []
 
     for (const obj of objects) {
       if (obj.type === 'scatter') {
         SceneBuilder.placeScatter(scatterRoot, obj as ScatterField, sampler, terrainRadius, seaLevel)
       } else if (obj.type === 'gltf') {
+        const gltfObj = obj as GltfObject
+        gltfObjects.push(gltfObj)
         gltfTasks.push(
-          SceneBuilder.placeGltf(ctx, obj as GltfObject, sampler, seaLevel, resolvePublicUrl),
+          SceneBuilder.placeGltf(
+            ctx,
+            gltfObj,
+            sampler,
+            seaLevel,
+            resolvePublicUrl,
+            embeddedGltfMixers,
+          ),
         )
       } else {
         SceneBuilder.placeExplicit(ctx.scene, obj as PlacedObject, sampler, seaLevel)
       }
     }
 
-    await Promise.all(gltfTasks)
+    const results = await Promise.all(gltfTasks)
+    return gltfObjects
+      .filter((_, i) => results[i])
+      .map((o) => [o.x, o.z] as const)
   }
 
   /**
@@ -616,6 +659,7 @@ export class SceneBuilder {
   /**
    * Loads a GLTF/GLB model and places it at the given world position.
    * On load failure, drops a red wireframe box as a visible error indicator.
+   * Returns true if the model was placed successfully, false on skip or error.
    */
   private static async placeGltf(
     ctx: ThreeContext,
@@ -623,7 +667,8 @@ export class SceneBuilder {
     sampler: TerrainSampler,
     seaLevel: number,
     resolvePublicUrl: ResolvePublicUrl,
-  ): Promise<void> {
+    embeddedGltfMixers: THREE.AnimationMixer[],
+  ): Promise<boolean> {
     const terrainY = sampler.sample(obj.x, obj.z)
     const useExplicitY = obj.y !== undefined
     const placeY = useExplicitY ? obj.y! : terrainY
@@ -632,19 +677,27 @@ export class SceneBuilder {
       console.warn(
         `[SceneBuilder] GLTF skipped (terrain below seaLevel=${seaLevel}) at x=${obj.x} z=${obj.z} → y=${terrainY.toFixed(2)} — move the object or raise seaLevel.`,
       )
-      return
+      return false
     }
 
     const scale = obj.scale ?? 1
 
     try {
       const gltf  = await ctx.assets.loadGLTF(resolvePublicUrl(obj.url))
-      const model = gltf.scene.clone(true)
+      // SkeletonUtils.clone properly rebinds SkinnedMesh bone references on the cloned
+      // hierarchy. gltf.scene.clone(true) leaves SkinnedMesh pointing at the original
+      // bones, causing AnimationMixer to animate them while the visible clone stays in T-pose.
+      const model = cloneSkinnedRoot(gltf.scene)
       convertUnlitToPbrRough(model)
       model.scale.setScalar(scale)
       model.rotation.y  = obj.rotationY ?? 0
       model.position.set(obj.x, placeY, obj.z)
+      attachEmbeddedGltfAnimations(model, gltf.animations, obj, embeddedGltfMixers)
+      if (isViteDev() && obj.playEmbeddedAnimations && (!gltf.animations || gltf.animations.length === 0)) {
+        console.warn('[SceneBuilder] playEmbeddedAnimations ignored — no clips in GLB:', obj.url)
+      }
       ctx.scene.add(model)
+      return true
     } catch (err) {
       // Typical causes: 404 (missing scene.bin / textures next to a .gltf), wrong path
       // (use `/models/foo.glb` from /public), or terrain sample below seaLevel (skipped above).
@@ -655,6 +708,7 @@ export class SceneBuilder {
       )
       box.position.set(obj.x, placeY + 1, obj.z)
       ctx.scene.add(box)
+      return false
     }
   }
 
