@@ -391,9 +391,26 @@ export interface GltfObject {
   playEmbeddedAnimations?: boolean
   /**
    * Substring match (case-insensitive) on clip name; first match loops when
-   * {@link playEmbeddedAnimations} is true. If omitted, the first clip in the file is used.
+   * {@link playEmbeddedAnimations} is true or {@link animationPackUrls} are present.
+   * If omitted, the first clip in the file/packs is used.
    */
   loopClipNameContains?: string
+  /**
+   * External GLB URLs whose animation clips are merged onto this model's skeleton.
+   * Loaded in parallel after the mesh GLB; clips are retargeted to the model's SkinnedMesh rig.
+   *
+   * Use `npcAnimPacks()` (from `npcUrls.ts`) to compose the correct URL list — base by default,
+   * base + extended when a scene needs social/emote clips.
+   *
+   * @example
+   * // NPC with default base locomotion only
+   * { type: 'gltf', url: NPC_CHARACTER_URLS.man40yOutdoors, animationPackUrls: npcAnimPacks() }
+   *
+   * @example
+   * // NPC that needs extended emotes (scene-05 bench conversation)
+   * { type: 'gltf', url: NPC_CHARACTER_URLS.man60yCasual, animationPackUrls: npcAnimPacks({ extended: true }) }
+   */
+  animationPackUrls?: string[]
 }
 
 export type SceneObject = PlacedObject | ScatterField | GltfObject

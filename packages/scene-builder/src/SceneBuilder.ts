@@ -25,7 +25,7 @@ import {
   sanitizeMixamoClips,
 } from '@base/player-three'
 import { convertUnlitToPbrRough } from './gltfMaterialUtils'
-import { attachEmbeddedGltfAnimations } from './gltfEmbeddedAnimation'
+import { attachEmbeddedGltfAnimations, pickEmbeddedGltfLoopClip } from './gltfEmbeddedAnimation'
 import { bindResolvePublicUrl } from './resolvePublicUrl'
 import type { ResolvePublicUrl } from './HeightmapLoader'
 
@@ -696,6 +696,42 @@ export class SceneBuilder {
       if (isViteDev() && obj.playEmbeddedAnimations && (!gltf.animations || gltf.animations.length === 0)) {
         console.warn('[SceneBuilder] playEmbeddedAnimations ignored — no clips in GLB:', obj.url)
       }
+
+      // ── External animation packs (NPC shared packs) ───────────────────────
+      // Mirrors the character `animationClipUrls` path: loads each pack GLB,
+      // retargets clips to the model's SkinnedMesh skeleton, creates a mixer,
+      // and starts a looping action. `embeddedGltfMixers` drives the tick.
+      if (obj.animationPackUrls?.length) {
+        const skinnedTarget = largestSkinnedMesh(model)
+        if (skinnedTarget) {
+          const packClips: THREE.AnimationClip[] = []
+          await Promise.all(
+            obj.animationPackUrls.map(async (packUrl) => {
+              const u = packUrl.trim()
+              if (!u) return
+              try {
+                const pack = await SceneBuilder.loadModelWithAnimations(ctx, u, resolvePublicUrl)
+                packClips.push(...retargetMixamoClipsToCharacter(skinnedTarget, pack.rootScene, pack.animations))
+              } catch (err) {
+                console.warn('[SceneBuilder] NPC animation pack failed:', u, err)
+              }
+            }),
+          )
+          if (packClips.length) {
+            const sanitized = sanitizeMixamoClips(packClips)
+            model.userData['gltfAnimations'] = sanitized
+            const mixer  = new THREE.AnimationMixer(model)
+            const clip   = pickEmbeddedGltfLoopClip(sanitized, obj.loopClipNameContains)
+            if (clip) {
+              mixer.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity).play()
+            }
+            embeddedGltfMixers.push(mixer)
+          }
+        } else if (isViteDev()) {
+          console.warn('[SceneBuilder] animationPackUrls ignored — no SkinnedMesh found in:', obj.url)
+        }
+      }
+
       ctx.scene.add(model)
       return true
     } catch (err) {
