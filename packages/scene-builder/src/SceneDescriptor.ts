@@ -392,9 +392,14 @@ export interface GltfObject {
   /**
    * Substring match (case-insensitive) on clip name; first match loops when
    * {@link playEmbeddedAnimations} is true or {@link animationPackUrls} are present.
-   * If omitted, the first clip in the file/packs is used.
+   * Takes priority over {@link loopClipIndex}.
    */
   loopClipNameContains?: string
+  /**
+   * Fallback clip index when {@link loopClipNameContains} is not set.
+   * Default 0 (first clip in the pack).
+   */
+  loopClipIndex?: number
   /**
    * External GLB URLs whose animation clips are merged onto this model's skeleton.
    * Loaded in parallel after the mesh GLB; clips are retargeted to the model's SkinnedMesh rig.

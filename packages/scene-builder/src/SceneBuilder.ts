@@ -45,6 +45,12 @@ export interface SceneBuildOptions {
   resolvePublicUrl?: ResolvePublicUrl
 }
 
+/** Mixer + retargeted clips for a single NPC driven by `animationPackUrls`. */
+export interface NpcGltfEntry {
+  mixer: THREE.AnimationMixer
+  clips: THREE.AnimationClip[]
+}
+
 export interface SceneBuilderResult {
   sampler: TerrainSampler
   /** Locomotion root — omitted when `descriptor.skipPlayerCharacter` is true. */
@@ -66,6 +72,11 @@ export interface SceneBuilderResult {
    * Use to suppress npcStub placeholders that have a real model loaded at the same position.
    */
   loadedGltfXZ: ReadonlyArray<readonly [number, number]>
+  /**
+   * One entry per NPC `gltf` object that loaded its `animationPackUrls` successfully.
+   * Exposes mixer + retargeted clips for external tooling (e.g. dev animation cycling).
+   */
+  npcGltfEntries: NpcGltfEntry[]
 }
 
 /**
@@ -189,6 +200,7 @@ export class SceneBuilder {
     ctx.scene.add(scatterRoot)
 
     const embeddedGltfMixers: THREE.AnimationMixer[] = []
+    const npcGltfEntries: NpcGltfEntry[] = []
     const loadedGltfXZ = await SceneBuilder.placeObjects(
       ctx,
       descriptor.objects ?? [],
@@ -198,6 +210,7 @@ export class SceneBuilder {
       scatterRoot,
       resolvePublicUrl,
       embeddedGltfMixers,
+      npcGltfEntries,
     )
 
     let disposeEmbeddedGltfAnimations: (() => void) | undefined
@@ -219,6 +232,7 @@ export class SceneBuilder {
       scatterRoot,
       disposeEmbeddedGltfAnimations,
       loadedGltfXZ,
+      npcGltfEntries,
     }
   }
 
@@ -572,6 +586,7 @@ export class SceneBuilder {
     scatterRoot: THREE.Group,
     resolvePublicUrl: ResolvePublicUrl,
     embeddedGltfMixers: THREE.AnimationMixer[],
+    npcGltfEntries: NpcGltfEntry[],
   ): Promise<ReadonlyArray<readonly [number, number]>> {
     const gltfObjects: GltfObject[] = []
     const gltfTasks: Promise<boolean>[] = []
@@ -590,6 +605,7 @@ export class SceneBuilder {
             seaLevel,
             resolvePublicUrl,
             embeddedGltfMixers,
+            npcGltfEntries,
           ),
         )
       } else {
@@ -668,6 +684,7 @@ export class SceneBuilder {
     seaLevel: number,
     resolvePublicUrl: ResolvePublicUrl,
     embeddedGltfMixers: THREE.AnimationMixer[],
+    npcGltfEntries: NpcGltfEntry[],
   ): Promise<boolean> {
     const terrainY = sampler.sample(obj.x, obj.z)
     const useExplicitY = obj.y !== undefined
@@ -721,11 +738,15 @@ export class SceneBuilder {
             const sanitized = sanitizeMixamoClips(packClips)
             model.userData['gltfAnimations'] = sanitized
             const mixer  = new THREE.AnimationMixer(model)
-            const clip   = pickEmbeddedGltfLoopClip(sanitized, obj.loopClipNameContains)
+            const idx    = obj.loopClipIndex ?? 0
+            const clip   = obj.loopClipNameContains
+              ? pickEmbeddedGltfLoopClip(sanitized, obj.loopClipNameContains)
+              : (sanitized[idx] ?? sanitized[0])
             if (clip) {
               mixer.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity).play()
             }
             embeddedGltfMixers.push(mixer)
+            npcGltfEntries.push({ mixer, clips: sanitized })
           }
         } else if (isViteDev()) {
           console.warn('[SceneBuilder] animationPackUrls ignored — no SkinnedMesh found in:', obj.url)

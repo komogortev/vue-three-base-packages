@@ -21,6 +21,7 @@ export {
   SceneBuilder,
   type SceneBuilderResult,
   type SceneBuildOptions,
+  type NpcGltfEntry,
 } from './SceneBuilder'
 
 export { EnvironmentRuntime, type EnvironmentState } from './EnvironmentRuntime'
