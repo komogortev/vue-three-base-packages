@@ -13,7 +13,7 @@ export default defineConfig({
       formats: ['es'],
     },
     rollupOptions: {
-      external: ['vue'],
+      external: ['vue', 'three'],
       output: {
         assetFileNames: 'assets/[name][extname]',
       },
