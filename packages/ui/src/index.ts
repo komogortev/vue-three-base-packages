@@ -1,14 +1,13 @@
 // @base/ui — Shared Vue 3 components + editor tools for the @base ecosystem
 
 // ── Waypoint Editor ──────────────────────────────────────────────────────────
-// Drop-in scene authoring tool: click-to-place navigation waypoints on a GLB
-// floor mesh, visualize the path in 3D, and export a TypeScript array.
+// Standalone click-to-place waypoint tool (single NPC path, fullscreen page).
+// For multi-object scenes use SceneEditorView instead.
 //
-// Three consumers:
-//   WaypointEditorView   → fullscreen route page (e.g. /#/editor in three-dreams)
-//   WaypointEditorPanel  → compact panel embedded in threejs-engine-dev's EngineHarness
-//   useWaypointEditor    → composable if you need headless / custom UI
-//   WaypointEditorHUD    → reusable sidebar (used by WaypointEditorView)
+// Consumers:
+//   WaypointEditorView   → fullscreen route page
+//   useWaypointEditor    → composable for headless / custom UI
+//   WaypointEditorHUD    → reusable sidebar list
 
 export { useWaypointEditor } from './editor/useWaypointEditor'
 export type {
@@ -18,4 +17,24 @@ export type {
 
 export { default as WaypointEditorView } from './editor/WaypointEditorView.vue'
 export { default as WaypointEditorHUD } from './editor/WaypointEditorHUD.vue'
-export { default as WaypointEditorPanel } from './editor/WaypointEditorPanel.vue'
+
+// ── Scene Editor ─────────────────────────────────────────────────────────────
+// Unified inspector-style editor: hierarchy + 3D viewport + contextual panels.
+// Supports NPC placement overview, per-NPC waypoint authoring, trigger zone
+// display. Packageable — no game imports; host page maps game descriptors to
+// SceneEditorConfig.
+//
+// Consumers:
+//   SceneEditorView      → full editor shell (hierarchy + viewport + inspector)
+//   useSceneEditorViewport → composable for custom editor layouts
+//   SceneEditorConfig    → config type the host page builds and passes as prop
+
+export { default as SceneEditorView } from './editor/SceneEditorView.vue'
+export { useSceneEditorViewport } from './editor/useSceneEditorViewport'
+export type { SceneEditorViewportReturn } from './editor/useSceneEditorViewport'
+export type {
+  SceneEditorConfig,
+  EditorNpcEntry,
+  EditorZoneEntry,
+  EditorSelection,
+} from './editor/sceneEditorTypes'
