@@ -8,7 +8,7 @@
   with the first entry (typically sandbox) selected by default.
 
   When only `config` is provided (no `scenes`), single-scene mode is used for
-  backward compat (e.g. threejs-engine-dev's hardcoded SceneEditorPage).
+  backward compat.
 
   Responsibilities:
   - Owns the Three.js canvas via useSceneEditorViewport
