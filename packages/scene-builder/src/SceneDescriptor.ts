@@ -297,6 +297,20 @@ export interface CharacterDescriptor {
    * Each URL may be **.gltf/.glb** or **.fbx** (Mixamo); all clips are merged.
    */
   animationClipUrls?: string[]
+  /**
+   * Index-based override for locomotion slot assignment.
+   *
+   * Use when animation clip names don't match Mixamo regex patterns — e.g. GLB packs exported from
+   * Blender with default NLA track names ("NlaTrack", "NlaTrack.001" …).
+   *
+   * Keys are `CharacterLocomotionClipSet` property names; values are zero-based clip indices
+   * in the merged `animationClipUrls` array (after `sanitizeMixamoClips`).
+   *
+   * @example
+   * // animations_base.glb verified indices: idle=4, walk=6, run=3
+   * locomotionClipIndices: { idleStand: 4, walkFwdStand: 6, runFwdStand: 3 }
+   */
+  locomotionClipIndices?: Record<string, number>
 }
 
 // ─── Objects ─────────────────────────────────────────────────────────────────
