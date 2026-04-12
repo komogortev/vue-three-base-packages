@@ -3,14 +3,17 @@
 
   Layout: [Hierarchy | 3D Viewport | Inspector]
 
-  Packageable in @base/ui — no game imports. The host page (e.g. SceneEditorPage.vue
-  in threejs-engine-dev) maps its SceneDescriptor + SceneGameplayPolicy to
-  SceneEditorConfig and passes it as a prop.
+  Packageable in @base/ui — no game imports. The host page maps its project scenes
+  to SceneEditorEntry[] and passes them via the `scenes` prop. The editor opens
+  with the first entry (typically sandbox) selected by default.
+
+  When only `config` is provided (no `scenes`), single-scene mode is used for
+  backward compat (e.g. threejs-engine-dev's hardcoded SceneEditorPage).
 
   Responsibilities:
   - Owns the Three.js canvas via useSceneEditorViewport
   - Orchestrates selection state between hierarchy, viewport, and inspector
-  - Manages per-NPC waypoint maps (localStorage-persisted)
+  - Manages per-NPC waypoint maps (localStorage-persisted, keyed per scene)
   - Routes floor-click events from viewport to inspector path-edit mode
   - Exposes status bar copy-confirmation feedback
 -->
@@ -20,10 +23,13 @@
     <!-- Left: Hierarchy -->
     <SceneEditorHierarchy
       v-model="selection"
-      :scene-label="sceneLabel"
-      :npcs="config.npcs ?? []"
-      :zones="config.zones ?? []"
+      :scene-label="activeSceneLabel"
+      :npcs="activeConfig.npcs ?? []"
+      :zones="activeConfig.zones ?? []"
       :npc-path-ids="npcPathIds"
+      :scenes="scenes"
+      :active-scene-id="activeSceneId"
+      @switch-scene="onSwitchScene"
     />
 
     <!-- Centre: Viewport -->
@@ -52,7 +58,7 @@
     <!-- Right: Inspector -->
     <SceneEditorInspector
       :selection="selection"
-      :config="config"
+      :config="activeConfig"
       :waypoint-map="waypointMap"
       @path-edit-start="onPathEditStart"
       @path-edit-stop="onPathEditStop"
@@ -65,18 +71,51 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
-import type { SceneEditorConfig, EditorSelection } from './sceneEditorTypes'
+import type { SceneEditorConfig, SceneEditorEntry, EditorSelection } from './sceneEditorTypes'
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 const props = defineProps<{
-  config: SceneEditorConfig
+  /**
+   * Multi-scene mode: list of named scenes to show in the switcher dropdown.
+   * First entry is selected by default (should be sandbox).
+   */
+  scenes?: SceneEditorEntry[]
+  /**
+   * Single-scene mode (backward compat). Ignored when `scenes` is provided.
+   */
+  config?: SceneEditorConfig
+  /** Override label shown in hierarchy header (single-scene mode only). */
   sceneLabel?: string
 }>()
+
+// ─── Active scene ─────────────────────────────────────────────────────────────
+
+const activeSceneId = ref<string>(
+  props.scenes && props.scenes.length > 0
+    ? props.scenes[0].id
+    : '__single__'
+)
+
+const activeConfig = computed<SceneEditorConfig>(() => {
+  if (props.scenes && props.scenes.length > 0) {
+    return props.scenes.find(s => s.id === activeSceneId.value)?.config
+      ?? props.scenes[0].config
+  }
+  return props.config ?? { npcs: [], zones: [] }
+})
+
+const activeSceneLabel = computed<string | undefined>(() => {
+  if (props.scenes && props.scenes.length > 0) {
+    return props.scenes.find(s => s.id === activeSceneId.value)?.label
+  }
+  return props.sceneLabel
+})
 
 // ─── Canvas ref ───────────────────────────────────────────────────────────────
 
@@ -92,39 +131,51 @@ const {
   setPathEditMode,
   updateNpcPath,
   clearNpcPath,
-} = useSceneEditorViewport({ canvas: canvasRef, config: props.config })
+  reinitScene,
+} = useSceneEditorViewport({ canvas: canvasRef, config: activeConfig.value })
+
+// ─── Scene switching ──────────────────────────────────────────────────────────
+
+async function onSwitchScene(sceneId: string): Promise<void> {
+  if (sceneId === activeSceneId.value) return
+  activeSceneId.value = sceneId
+  // Clear waypoint display — new scene has its own localStorage keys
+  waypointMap.value = new Map()
+  // Reset path-edit mode
+  isPathEditing.value = false
+  setPathEditMode(false)
+  // Reload viewport with new config
+  await reinitScene(activeConfig.value)
+  // Restore waypoints for new scene
+  restoreWaypoints()
+}
 
 // ─── Selection sync (hierarchy ↔ viewport) ───────────────────────────────────
 
-// Local selection drives both panels; viewport composable reflects it.
 const selection = ref<EditorSelection>(null)
 
-// Viewport-originated clicks update our local selection
 watch(viewportSelection, (s) => {
   selection.value = s
 })
 
-// Hierarchy/inspector-originated changes push into viewport
 watch(selection, (s) => {
   setSelection(s)
 })
 
 // ─── Waypoint state ───────────────────────────────────────────────────────────
 
-// Per-entity waypoint arrays — persisted to localStorage
 const waypointMap = ref(new Map<string, THREE.Vector3[]>())
 
 const STORAGE_PREFIX = computed(() =>
-  props.config.storageKeyPrefix ?? 'scene-editor-waypoints'
+  activeConfig.value.storageKeyPrefix ?? 'scene-editor-waypoints'
 )
 
 function storageKey(entityId: string): string {
   return `${STORAGE_PREFIX.value}:${entityId}`
 }
 
-// Restore from localStorage on mount
 function restoreWaypoints(): void {
-  for (const npc of props.config.npcs ?? []) {
+  for (const npc of activeConfig.value.npcs ?? []) {
     try {
       const raw = localStorage.getItem(storageKey(npc.entityId))
       if (!raw) continue
@@ -144,7 +195,6 @@ function persistWaypoints(entityId: string, waypoints: THREE.Vector3[]): void {
 }
 
 function onWaypointsChanged(entityId: string, waypoints: THREE.Vector3[]): void {
-  // Replace map entry (new Map to trigger Vue reactivity on ref)
   const next = new Map(waypointMap.value)
   if (waypoints.length > 0) {
     next.set(entityId, waypoints)
@@ -172,7 +222,6 @@ function onMoveWaypoint(payload: { entityId: string; from: number; to: number })
   onWaypointsChanged(entityId, prev)
 }
 
-// Set of entityIds that have at least one waypoint (for hierarchy badge)
 const npcPathIds = computed(() => {
   const ids = new Set<string>()
   for (const [id, wps] of waypointMap.value) {
@@ -202,7 +251,6 @@ const statusFlash = ref(false)
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
 watch(statusMessage, (msg) => {
-  // Only update display if we're not already showing a flash message
   if (!statusFlash.value) displayStatus.value = msg
 })
 
@@ -218,10 +266,7 @@ function flashStatus(msg: string): void {
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
-import { onMounted, onUnmounted } from 'vue'
-
 onMounted(() => {
-  // Wait one tick for canvas to be in DOM, then restore waypoints
   setTimeout(restoreWaypoints, 100)
 })
 

@@ -8,7 +8,17 @@
   <aside class="hierarchy">
     <header class="hierarchy-header">
       <span class="title">Scene</span>
-      <span v-if="sceneLabel" class="scene-badge">{{ sceneLabel }}</span>
+      <!-- Multi-scene switcher dropdown -->
+      <select
+        v-if="scenes && scenes.length > 1"
+        class="scene-select"
+        :value="activeSceneId"
+        @change="emit('switch-scene', ($event.target as HTMLSelectElement).value)"
+      >
+        <option v-for="s in scenes" :key="s.id" :value="s.id">{{ s.label }}</option>
+      </select>
+      <!-- Single-scene label badge (backward compat) -->
+      <span v-else-if="sceneLabel" class="scene-badge">{{ sceneLabel }}</span>
     </header>
 
     <!-- Scene settings row -->
@@ -67,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import type { EditorNpcEntry, EditorZoneEntry, EditorSelection } from './sceneEditorTypes'
+import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, SceneEditorEntry } from './sceneEditorTypes'
 
 const props = defineProps<{
   modelValue: EditorSelection
@@ -76,10 +86,15 @@ const props = defineProps<{
   zones: EditorZoneEntry[]
   /** Set of entityIds that currently have waypoint data. */
   npcPathIds?: Set<string>
+  /** When provided, renders a scene switcher dropdown instead of the label badge. */
+  scenes?: SceneEditorEntry[]
+  /** Currently active scene id — controls the dropdown selection. */
+  activeSceneId?: string
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: EditorSelection]
+  'switch-scene': [sceneId: string]
 }>()
 
 function npcHasPath(entityId: string): boolean {
@@ -127,6 +142,21 @@ function npcHasPath(entityId: string): boolean {
   text-overflow: ellipsis;
   max-width: 110px;
 }
+.scene-select {
+  flex: 1;
+  min-width: 0;
+  background: #18304a;
+  color: #5ab0f5;
+  border: 1px solid #1e3a58;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 9px;
+  padding: 2px 4px;
+  outline: none;
+  cursor: pointer;
+}
+.scene-select:hover { border-color: #2a5070; }
+.scene-select option { background: #0d1320; color: #a0b4c8; }
 
 /* ── Section ──────────────────────────────────────────────────────────────── */
 .section {

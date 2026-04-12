@@ -39,8 +39,12 @@ export interface EditorZoneEntry {
 // ─── Editor configuration ─────────────────────────────────────────────────────
 
 export interface SceneEditorConfig {
-  /** GLB to load as the raycast floor (navigation mesh). */
-  floorGlbUrl: string
+  /**
+   * GLB to load as the raycast floor (navigation mesh).
+   * Optional — when omitted (e.g. sandbox), an invisible flat plane is used as
+   * the raycast surface so path-edit floor-click still works.
+   */
+  floorGlbUrl?: string
   /** Additional GLBs loaded for visual context only (not raycasted). */
   contextGlbUrls?: string[]
   /**
@@ -60,6 +64,21 @@ export interface SceneEditorConfig {
    * e.g. 'SCENE_01' → selected NPC path exports as 'SCENE_01_NPC_DAD_SCENE_01_PATH'.
    */
   exportNamePrefix?: string
+}
+
+// ─── Multi-scene switcher ─────────────────────────────────────────────────────
+
+/**
+ * A named entry in the scene switcher dropdown.
+ * The host page builds one entry per project scene (+ an optional sandbox entry)
+ * and passes them to SceneEditorView via the `scenes` prop.
+ */
+export interface SceneEditorEntry {
+  /** Stable unique id (e.g. 'scene-01', '__sandbox__'). */
+  id: string
+  /** Display name shown in the switcher dropdown. */
+  label: string
+  config: SceneEditorConfig
 }
 
 // ─── Selection state ──────────────────────────────────────────────────────────

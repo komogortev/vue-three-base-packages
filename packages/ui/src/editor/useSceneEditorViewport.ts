@@ -21,6 +21,11 @@ export interface SceneEditorViewportReturn {
   updateNpcPath: (entityId: string, waypoints: THREE.Vector3[]) => void
   /** Remove path visualization for an NPC without needing an empty array call. */
   clearNpcPath: (entityId: string) => void
+  /**
+   * Reload the scene with a new config (scene switcher).
+   * Keeps renderer / camera / controls / lights alive — only reloads GLBs + markers.
+   */
+  reinitScene: (newConfig: SceneEditorConfig) => Promise<void>
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -29,13 +34,16 @@ export function useSceneEditorViewport(opts: {
   canvas: Ref<HTMLCanvasElement | null>
   config: SceneEditorConfig
 }): SceneEditorViewportReturn {
-  const { canvas: canvasRef, config } = opts
+  const { canvas: canvasRef } = opts
+
+  // Mutable config — updated by reinitScene
+  let config: SceneEditorConfig = opts.config
 
   const isReady = ref(false)
   const statusMessage = ref('Initializing…')
   const selection = ref<EditorSelection>(null)
 
-  // Three.js core
+  // Three.js core — created once, kept alive across scene switches
   let renderer: THREE.WebGLRenderer
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
@@ -43,10 +51,11 @@ export function useSceneEditorViewport(opts: {
   let raycaster: THREE.Raycaster
   let animId: number
 
-  // Raycast targets
+  // Scene-specific objects — cleared on each scene switch
   let floorMeshes: THREE.Object3D[] = []
+  let sceneObjects: THREE.Object3D[] = []  // all scene-level objects added per config
 
-  // Marker groups
+  // Marker groups — cleared and rebuilt on scene switch
   const npcMarkerGroup = new THREE.Group()
   const zoneMarkerGroup = new THREE.Group()
   const pathGroup = new THREE.Group()
@@ -58,7 +67,7 @@ export function useSceneEditorViewport(opts: {
   // Per-NPC path visualization
   const npcPathViz = new Map<string, { line: THREE.Line; dots: THREE.Group }>()
 
-  // Shared geometries (disposed on cleanup)
+  // Shared geometries (disposed on component unmount, not on scene switch)
   const npcSphereGeo = new THREE.SphereGeometry(0.35, 12, 8)
   const dotGeo = new THREE.SphereGeometry(0.12, 8, 6)
 
@@ -71,6 +80,7 @@ export function useSceneEditorViewport(opts: {
   let onFloorHitCb: ((pos: THREE.Vector3) => void) | undefined
 
   // ─── Init ───────────────────────────────────────────────────────────────────
+  // Creates renderer/camera/controls/lights once. Then calls loadScene().
 
   async function init(): Promise<void> {
     const canvas = canvasRef.value
@@ -95,30 +105,19 @@ export function useSceneEditorViewport(opts: {
 
     raycaster = new THREE.Raycaster()
 
-    // Lighting — editor-neutral, not matching game atmosphere
+    // Lighting — editor-neutral, persistent across scene switches
     scene.add(new THREE.AmbientLight('#c8d8f0', 0.65))
     const sun = new THREE.DirectionalLight('#fff5e0', 1.3)
     sun.position.set(10, 20, 10)
     scene.add(sun)
 
-    // Grid — subtle reference plane
+    // Grid — persistent reference plane
     scene.add(new THREE.GridHelper(100, 100, '#1a2d4a', '#0e1622'))
 
-    // Add marker groups to scene
+    // Marker groups are persistent containers — their children are rebuilt per scene
     scene.add(npcMarkerGroup)
     scene.add(zoneMarkerGroup)
     scene.add(pathGroup)
-
-    // Load scene GLBs
-    statusMessage.value = 'Loading scene…'
-    await loadGLB(config.floorGlbUrl, /* isFloor */ true)
-    for (const url of config.contextGlbUrls ?? []) {
-      await loadGLB(url, false)
-    }
-
-    buildNpcMarkers()
-    buildZoneMarkers()
-    buildSpawnMarker()
 
     canvas.addEventListener('mousedown', onMouseDown)
     canvas.addEventListener('mouseup', onMouseUp)
@@ -126,8 +125,80 @@ export function useSceneEditorViewport(opts: {
     window.addEventListener('resize', onResize)
 
     animate()
+
+    await loadScene(config)
+  }
+
+  // ─── Scene loading ───────────────────────────────────────────────────────────
+  // Loads GLBs, builds markers, adds invisible floor plane when no GLB is given.
+
+  async function loadScene(cfg: SceneEditorConfig): Promise<void> {
+    isReady.value = false
+    statusMessage.value = 'Loading scene…'
+    selection.value = null
+    pathEditActive = false
+    onFloorHitCb = undefined
+
+    if (cfg.floorGlbUrl) {
+      await loadGLB(cfg.floorGlbUrl, /* isFloor */ true)
+    } else {
+      // Sandbox / procedural scene — use a large invisible plane as the raycast surface
+      const planeGeo = new THREE.PlaneGeometry(200, 200)
+      planeGeo.rotateX(-Math.PI / 2)
+      const planeMesh = new THREE.Mesh(
+        planeGeo,
+        new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }),
+      )
+      planeMesh.position.set(0, 0, 0)
+      scene.add(planeMesh)
+      floorMeshes.push(planeMesh)
+      sceneObjects.push(planeMesh)
+    }
+
+    for (const url of cfg.contextGlbUrls ?? []) {
+      await loadGLB(url, false)
+    }
+
+    buildNpcMarkers(cfg)
+    buildZoneMarkers(cfg)
+    buildSpawnMarker(cfg)
+
     isReady.value = true
-    statusMessage.value = sceneStatus()
+    statusMessage.value = sceneStatus(cfg)
+  }
+
+  // ─── Scene clearing (before scene switch) ────────────────────────────────────
+
+  function clearScene(): void {
+    // Remove all objects added during loadScene
+    for (const obj of sceneObjects) {
+      scene.remove(obj)
+    }
+    sceneObjects = []
+    floorMeshes = []
+
+    // Clear marker groups
+    npcMarkerGroup.clear()
+    zoneMarkerGroup.clear()
+
+    npcSpheres.clear()
+    zoneRingPips.clear()
+
+    // Clear all path visualizations
+    for (const [, viz] of npcPathViz) {
+      pathGroup.remove(viz.line)
+      pathGroup.remove(viz.dots)
+      viz.line.geometry.dispose()
+    }
+    npcPathViz.clear()
+  }
+
+  // ─── reinitScene — public API for scene switcher ──────────────────────────────
+
+  async function reinitScene(newConfig: SceneEditorConfig): Promise<void> {
+    config = newConfig
+    clearScene()
+    await loadScene(newConfig)
   }
 
   // ─── GLB loading ────────────────────────────────────────────────────────────
@@ -137,6 +208,7 @@ export function useSceneEditorViewport(opts: {
     try {
       const gltf = await loader.loadAsync(url)
       scene.add(gltf.scene)
+      sceneObjects.push(gltf.scene)
       if (isFloor) {
         gltf.scene.traverse(obj => {
           if ((obj as THREE.Mesh).isMesh) floorMeshes.push(obj)
@@ -149,11 +221,11 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Marker construction ─────────────────────────────────────────────────────
 
-  function buildNpcMarkers(): void {
+  function buildNpcMarkers(cfg: SceneEditorConfig): void {
     npcMarkerGroup.clear()
     npcSpheres.clear()
 
-    for (const npc of config.npcs ?? []) {
+    for (const npc of cfg.npcs ?? []) {
       const yBase = npc.y ?? 0
 
       // Sphere body
@@ -185,11 +257,11 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  function buildZoneMarkers(): void {
+  function buildZoneMarkers(cfg: SceneEditorConfig): void {
     zoneMarkerGroup.clear()
     zoneRingPips.clear()
 
-    for (const zone of config.zones ?? []) {
+    for (const zone of cfg.zones ?? []) {
       const defaultColor = zone.type === 'exit' ? '#ffdd44' : '#44ff88'
       const colorHex = zone.color
         ? `#${zone.color.toString(16).padStart(6, '0')}`
@@ -215,15 +287,15 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  function buildSpawnMarker(): void {
-    if (!config.spawnPoint) return
-    const { x, z } = config.spawnPoint
-    // Small diamond (rotated box)
+  function buildSpawnMarker(cfg: SceneEditorConfig): void {
+    if (!cfg.spawnPoint) return
+    const { x, z } = cfg.spawnPoint
     const geo = new THREE.OctahedronGeometry(0.3)
     const mat = new THREE.MeshBasicMaterial({ color: '#ff44ff' })
     const mesh = new THREE.Mesh(geo, mat)
     mesh.position.set(x, 0.4, z)
     scene.add(mesh)
+    sceneObjects.push(mesh)
   }
 
   // ─── Selection ───────────────────────────────────────────────────────────────
@@ -244,7 +316,7 @@ export function useSceneEditorViewport(opts: {
 
   function describeSelection(s: EditorSelection): string {
     if (!s || s.kind === 'scene') {
-      return sceneStatus()
+      return sceneStatus(config)
     }
     if (s.kind === 'npc') {
       const npc = config.npcs?.find(n => n.entityId === s.entityId)
@@ -259,9 +331,9 @@ export function useSceneEditorViewport(opts: {
     return ''
   }
 
-  function sceneStatus(): string {
-    const n = config.npcs?.length ?? 0
-    const z = config.zones?.length ?? 0
+  function sceneStatus(cfg: SceneEditorConfig): string {
+    const n = cfg.npcs?.length ?? 0
+    const z = cfg.zones?.length ?? 0
     return `Scene loaded — ${n} NPC${n !== 1 ? 's' : ''}, ${z} zone${z !== 1 ? 's' : ''}`
   }
 
@@ -270,14 +342,12 @@ export function useSceneEditorViewport(opts: {
   function setPathEditMode(active: boolean, cb?: (pos: THREE.Vector3) => void): void {
     pathEditActive = active
     onFloorHitCb = cb
-    // Refresh status to show/hide floor-click hint
     statusMessage.value = describeSelection(selection.value)
   }
 
   // ─── Path visualization ──────────────────────────────────────────────────────
 
   function updateNpcPath(entityId: string, waypoints: THREE.Vector3[]): void {
-    // Remove existing visualization
     const existing = npcPathViz.get(entityId)
     if (existing) {
       pathGroup.remove(existing.line)
@@ -291,12 +361,10 @@ export function useSceneEditorViewport(opts: {
     const isSel = selection.value?.kind === 'npc' && selection.value.entityId === entityId
     const lineColor = isSel ? '#ffcc00' : '#3a6080'
 
-    // Path line
     const pts = waypoints.map(w => new THREE.Vector3(w.x, w.y + 0.28, w.z))
     const lineGeo = new THREE.BufferGeometry().setFromPoints(pts)
     const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: lineColor }))
 
-    // Dot markers per waypoint
     const dots = new THREE.Group()
     for (let i = 0; i < waypoints.length; i++) {
       const w = waypoints[i]
@@ -332,7 +400,6 @@ export function useSceneEditorViewport(opts: {
 
   function onMouseUp(e: MouseEvent): void {
     if (e.button !== 0) return
-    // Ignore orbit drags
     if (Math.abs(e.clientX - mouseDownX) > 5 || Math.abs(e.clientY - mouseDownY) > 5) return
 
     const canvas = canvasRef.value!
@@ -361,7 +428,7 @@ export function useSceneEditorViewport(opts: {
       }
     }
 
-    // 3. Floor hit
+    // 3. Floor hit (GLB mesh or invisible plane)
     const floorHits = raycaster.intersectObjects(floorMeshes, true)
     if (floorHits.length > 0) {
       if (pathEditActive && onFloorHitCb) {
@@ -403,6 +470,7 @@ export function useSceneEditorViewport(opts: {
     dotGeo.dispose()
     scene?.clear()
     floorMeshes = []
+    sceneObjects = []
     npcSpheres.clear()
     zoneRingPips.clear()
     npcPathViz.clear()
@@ -419,5 +487,6 @@ export function useSceneEditorViewport(opts: {
     setPathEditMode,
     updateNpcPath,
     clearNpcPath,
+    reinitScene,
   }
 }

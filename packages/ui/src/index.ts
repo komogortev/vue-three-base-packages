@@ -34,6 +34,7 @@ export { useSceneEditorViewport } from './editor/useSceneEditorViewport'
 export type { SceneEditorViewportReturn } from './editor/useSceneEditorViewport'
 export type {
   SceneEditorConfig,
+  SceneEditorEntry,
   EditorNpcEntry,
   EditorZoneEntry,
   EditorSelection,
