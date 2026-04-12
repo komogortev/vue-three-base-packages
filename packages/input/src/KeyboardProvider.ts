@@ -34,6 +34,9 @@ export class KeyboardProvider {
         e.preventDefault()
       }
       if (e.repeat) return
+      if (this.bindings.toggle_camera.includes(e.code)) {
+        e.preventDefault()
+      }
       this.held.add(e.code)
       this.checkButton(e.code, 'pressed')
     }
@@ -97,6 +100,9 @@ export class KeyboardProvider {
       ['confirm',  b.confirm],
       ['cancel',   b.cancel],
       ['jump',     b.jump],
+      ['ability_primary',   b.ability_primary],
+      ['ability_secondary', b.ability_secondary],
+      ['toggle_camera',     b.toggle_camera],
     ]
     for (const [action, keys] of checks) {
       if (keys.includes(code)) {

@@ -2,7 +2,18 @@
  * Abstract button actions — game-agnostic identifiers that providers map device input onto.
  * Game modules listen for these; they never care which key or button produced them.
  */
-export type ButtonAction = 'interact' | 'pause' | 'confirm' | 'cancel' | 'jump'
+export type ButtonAction =
+  | 'interact'
+  | 'pause'
+  | 'confirm'
+  | 'cancel'
+  | 'jump'
+  /** Generic harness / game ability slot — defaults unbound in {@link DEFAULT_BINDINGS}. */
+  | 'ability_primary'
+  /** Generic harness / game ability slot — defaults unbound in {@link DEFAULT_BINDINGS}. */
+  | 'ability_secondary'
+  /** Third ↔ first person (or other camera view) — defaults unbound. */
+  | 'toggle_camera'
 
 /**
  * Abstract axis names. Each axis carries a normalized { x, y } value in [-1, 1].
@@ -53,6 +64,12 @@ export interface KeyboardBindings {
   confirm: string[]
   cancel: string[]
   jump: string[]
+  /** @default [] */
+  ability_primary: string[]
+  /** @default [] */
+  ability_secondary: string[]
+  /** @default [] — e.g. `Tab` to avoid browser focus ring (see {@link KeyboardProvider}). */
+  toggle_camera: string[]
 }
 
 export interface GamepadAxisBindings {
@@ -77,6 +94,12 @@ export interface GamepadBindings {
   confirm: number[]
   cancel: number[]
   jump: number[]
+  /** @default [] */
+  ability_primary: number[]
+  /** @default [] */
+  ability_secondary: number[]
+  /** @default [] */
+  toggle_camera: number[]
 }
 
 export interface InputBindings {
@@ -104,6 +127,9 @@ export const DEFAULT_BINDINGS: InputBindings = {
     confirm:  ['Enter', 'Space'],
     cancel:   ['Escape', 'Backspace'],
     jump:     ['Space'],
+    ability_primary: [],
+    ability_secondary: [],
+    toggle_camera: ['Tab'],
   },
   gamepad: {
     moveAxis: { x: 0, y: 1 },  // left stick
@@ -116,6 +142,30 @@ export const DEFAULT_BINDINGS: InputBindings = {
     confirm:  [0],              // A / Cross
     cancel:   [1],              // B / Circle
     jump:     [0],              // A / Cross
+    ability_primary: [],
+    ability_secondary: [],
+    toggle_camera: [],
   },
   deadzone: 0.12,
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * Shallow-merge user overrides onto base bindings.
+ * Each action array is replaced entirely when the override key is present.
+ *
+ * @example
+ * const active = mergeBindings(GAME_DEFAULT_BINDINGS, userOverrides)
+ * new InputModule(active)
+ */
+export function mergeBindings(
+  base: InputBindings,
+  overrides: Partial<InputBindings>,
+): InputBindings {
+  return {
+    keyboard: { ...base.keyboard, ...(overrides.keyboard ?? {}) },
+    gamepad:  { ...base.gamepad,  ...(overrides.gamepad  ?? {}) },
+    deadzone: overrides.deadzone ?? base.deadzone,
+  }
 }

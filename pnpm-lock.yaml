@@ -45,6 +45,31 @@ importers:
         specifier: ^5.4.0
         version: 5.9.3
 
+  packages/gameplay:
+    dependencies:
+      '@base/camera-three':
+        specifier: workspace:*
+        version: link:../camera-three
+      '@base/engine-core':
+        specifier: workspace:*
+        version: link:../engine-core
+      '@base/input':
+        specifier: workspace:*
+        version: link:../input
+      '@base/player-three':
+        specifier: workspace:*
+        version: link:../player-three
+    devDependencies:
+      '@types/three':
+        specifier: ^0.172.0
+        version: 0.172.0
+      three:
+        specifier: ^0.172.0
+        version: 0.172.0
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
   packages/input:
     dependencies:
       '@base/engine-core':
