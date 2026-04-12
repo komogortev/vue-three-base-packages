@@ -5,3 +5,6 @@ dist/
 .env.*
 !.env.example
 coverage/
+
+# Large local animation sources (Mixamo FBX); add via LFS if they must live in-repo
+packages/player-three/assets/sources/

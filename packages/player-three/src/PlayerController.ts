@@ -425,6 +425,11 @@ export class PlayerController {
   private readonly pendingEvents: PlayerControllerEvent[] = []
   /** World-space XZ velocity (m/s) from ability knockback / bursts; decays each tick. */
   private readonly carryVelocityXZ = { x: 0, z: 0 }
+  /**
+   * OW1 Doomfist-style **Rocket Bounce** approximation: jump while planar carry is high
+   * → lighter gravity + slower carry decay for a short window (momentum skim / glide).
+   */
+  private punchSkimRemaining = 0
   private readonly state: PlayerControllerInternalState = {
     mode: 'grounded',
     hazardMode: 'none',
@@ -890,7 +895,9 @@ export class PlayerController {
       })
     }
 
-    this.verticalVelocity -= gravity * delta
+    const skim = this.punchSkimRemaining > 0
+    const gravityMul = skim ? 0.34 : 1
+    this.verticalVelocity -= gravity * gravityMul * delta
     if (this.verticalVelocity <= 0) this.state.airMode = 'jump_fall'
     character.position.y += this.verticalVelocity * delta
     this.state.airborneTimeSeconds += Math.max(0, delta)
@@ -1089,17 +1096,75 @@ export class PlayerController {
   }
 
   /**
+   * Sets world-space horizontal carry velocity (m/s), replacing any previous punch / ability
+   * carry on XZ. Use for burst abilities that should **cancel** decaying carry from another move.
+   */
+  setPlanarCarryVelocity(worldVx: number, worldVz: number): void {
+    if (this.state.mode === 'water') return
+    this.carryVelocityXZ.x = worldVx
+    this.carryVelocityXZ.z = worldVz
+  }
+
+  /** Current magnitude of planar carry velocity (m/s), before this frame's decay. */
+  getPlanarCarryMagnitude(): number {
+    return Math.hypot(this.carryVelocityXZ.x, this.carryVelocityXZ.z)
+  }
+
+  /**
+   * World-space XZ carry from abilities (m/s). Not folded into {@link getSnapshot}.velocity,
+   * which tracks locomotion / vertical only.
+   */
+  getPlanarCarryVelocity(): { x: number; z: number } {
+    return { x: this.carryVelocityXZ.x, z: this.carryVelocityXZ.z }
+  }
+
+  /**
+   * Rocket-punch skim / bounce: call from gameplay when **jump** is pressed while
+   * {@link addPlanarCarryImpulse} has built significant horizontal carry (OW1 “jump cancel”
+   * off punch momentum — especially useful near ramps and low ceilings).
+   *
+   * @returns `true` if the jump press was consumed here (skip normal jump buffer).
+   */
+  tryActivateRocketPunchSkimJump(character: THREE.Object3D, minCarrySpeed: number): boolean {
+    if (this.state.mode === 'water' || this.state.recoveryLockRemaining > 0) return false
+    const mag = this.getPlanarCarryMagnitude()
+    if (mag < minCarrySpeed) return false
+
+    this.punchSkimRemaining = 0.72
+    const nudge = 2.4 + Math.min(7, mag * 0.045)
+    if (this.grounded) {
+      this.applyVerticalAbilityImpulse(5.2 + Math.min(3.5, mag * 0.018), character)
+    } else {
+      this.verticalVelocity += nudge
+      if (this.verticalVelocity > 0) this.state.airMode = 'jump_rise'
+    }
+    return true
+  }
+
+  /**
    * Vertical boost for hero-style abilities.
    * - **Grounded** + positive `deltaVy`: leaves ground (`jump_rise`) with that initial upward speed.
-   * - **Airborne** + any `deltaVy`: adds to vertical velocity (e.g. slam acceleration downward).
+   * - **Airborne** + any `deltaVy`: by default **adds** to vertical velocity (e.g. slam). With
+   *   `opts.verticalBlend === 'replace'`, **sets** `verticalVelocity` to `deltaVy`, cancelling
+   *   fall/rise from other moves (rocket punch overtaking uppercut gravity).
    * No-op in water or recovery lock; grounded negative impulse is ignored.
    */
-  applyVerticalAbilityImpulse(deltaVy: number, character: THREE.Object3D): void {
+  applyVerticalAbilityImpulse(
+    deltaVy: number,
+    character: THREE.Object3D,
+    opts?: { verticalBlend?: 'add' | 'replace' },
+  ): void {
     if (this.state.mode === 'water' || this.state.recoveryLockRemaining > 0) return
+    const blend = opts?.verticalBlend ?? 'add'
     if (!this.grounded) {
       if (deltaVy === 0) return
-      this.verticalVelocity += deltaVy
-      if (deltaVy > 0 && this.state.airMode === 'jump_fall') this.state.airMode = 'jump_rise'
+      if (blend === 'replace') {
+        this.verticalVelocity = deltaVy
+        this.state.airMode = deltaVy > 0 ? 'jump_rise' : 'jump_fall'
+      } else {
+        this.verticalVelocity += deltaVy
+        if (deltaVy > 0 && this.state.airMode === 'jump_fall') this.state.airMode = 'jump_rise'
+      }
       return
     }
     if (deltaVy > 0) {
@@ -1165,6 +1230,7 @@ export class PlayerController {
     this.wallStumbleCooldownSeconds = Math.max(0, this.wallStumbleCooldownSeconds - delta)
     this.state.pitBypassRemaining = Math.max(0, this.state.pitBypassRemaining - delta)
     this.state.recoveryLockRemaining = Math.max(0, this.state.recoveryLockRemaining - delta)
+    this.punchSkimRemaining = Math.max(0, this.punchSkimRemaining - delta)
 
     const { x, y } = this.moveIntent
     const recoveryLocked = this.isRecoveryLocked()
@@ -1401,7 +1467,8 @@ export class PlayerController {
     // Planar carry from abilities (world XZ, m/s); decays exponentially; skipped in water.
     if (this.state.mode !== 'water') {
       const decayPerSec = this.cfg.carryImpulseDecayPerSecond ?? 8
-      const decay = Math.exp(-decayPerSec * delta)
+      const decayMul = this.punchSkimRemaining > 0 ? 0.24 : 1
+      const decay = Math.exp(-decayPerSec * decayMul * delta)
       character.position.x += this.carryVelocityXZ.x * delta
       character.position.z += this.carryVelocityXZ.z * delta
       this.carryVelocityXZ.x *= decay
@@ -1562,6 +1629,7 @@ export class PlayerController {
     this.velocity.set(0, 0, 0)
     this.carryVelocityXZ.x = 0
     this.carryVelocityXZ.z = 0
+    this.punchSkimRemaining = 0
     this.crouchHeld = false
     this.sprintHeld = false
     this.crouchGroundBlend = 0

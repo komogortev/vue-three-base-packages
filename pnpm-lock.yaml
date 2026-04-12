@@ -113,9 +113,15 @@ importers:
 
   packages/ui:
     devDependencies:
+      '@types/three':
+        specifier: ^0.172.0
+        version: 0.172.0
       '@vitejs/plugin-vue':
         specifier: ^5.2.0
         version: 5.2.4(vite@5.4.21)(vue@3.5.30(typescript@5.9.3))
+      three:
+        specifier: ^0.172.0
+        version: 0.172.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
