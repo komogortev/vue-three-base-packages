@@ -198,13 +198,26 @@ export class PlayerCameraCoordinator {
   // ─── Per-frame tick ─────────────────────────────────────────────────────────
 
   /**
-   * Drive player + camera for one frame. Call from the host module's render
-   * system callback (after `onBeforeGameplayTick`, before `animRig.update()`).
+   * Drive player + camera for one frame. Convenience wrapper that calls
+   * {@link tickPlayer} then {@link tickCamera} back-to-back.
+   *
+   * When the host module needs to run game logic between the player tick and
+   * the camera update (e.g. `consumeEvents`, `animRig.update`, exit zones),
+   * call `tickPlayer` and `tickCamera` separately instead.
    *
    * Does NOT call `player.consumeEvents()` — the host module does that so it
    * can act on jump/land events for animation triggers.
    */
   tick(delta: number, ctx: CoordinatorTickContext): void {
+    this.tickPlayer(delta, ctx)
+    this.tickCamera(delta, ctx)
+  }
+
+  /**
+   * Drive look input, move intent, and {@link PlayerController.tick} for one frame.
+   * Call before host game logic (consumeEvents, animRig, exit zones, etc.).
+   */
+  tickPlayer(delta: number, ctx: CoordinatorTickContext): void {
     const { camera, character, sampler, playableRadius } = ctx
 
     // ── Apply look input ────────────────────────────────────────────────────
@@ -250,12 +263,18 @@ export class PlayerCameraCoordinator {
       sprintHeld,
       crouchHeld,
     })
+  }
 
-    // ── Camera update ───────────────────────────────────────────────────────
+  /**
+   * Drive {@link GameplayCameraController.update} for one frame.
+   * Call after host game logic has run (animRig, consumeEvents, etc.).
+   */
+  tickCamera(delta: number, ctx: CoordinatorTickContext): void {
+    const isThirdPerson = this.gameplayCam.getMode() === 'third-person'
     this.gameplayCam.update(
-      camera,
+      ctx.camera,
       delta,
-      character,
+      ctx.character,
       this.player.getFacing(),
       this.player.getCrouchGroundBlend(),
       isThirdPerson ? 0 : this.fpPitch,
