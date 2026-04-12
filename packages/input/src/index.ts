@@ -5,7 +5,7 @@ export { GamepadProvider } from './GamepadProvider'
 export { TouchProvider } from './TouchProvider'
 export { PointerLookProvider } from './PointerLookProvider'
 export type { PointerLookProviderOptions } from './PointerLookProvider'
-export { DEFAULT_BINDINGS } from './types'
+export { DEFAULT_BINDINGS, mergeBindings } from './types'
 export type {
   ButtonAction,
   AxisAction,

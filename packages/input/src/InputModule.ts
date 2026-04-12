@@ -34,7 +34,7 @@ export interface InputModuleOptions {
  * - PointerLookProvider (optional): pointer lock on mount container → `look` axis (desktop FPS)
  *
  * Emits on context.eventBus:
- * - `input:action`  — { action: ButtonAction, type: 'pressed' | 'released' }
+ * - `input:action`  — { action: ButtonAction, type: 'pressed' | 'released' } (includes optional `ability_*` / `toggle_camera` when bound)
  * - `input:axis`    — value `{ x, y, z? }` (`locomotion`: sprint=x, crouch=y, jog/slow-run=z; default crouch **C**, jog **V**)
  *
  * Both keyboard move-axis and gamepad axes fire every frame via the poll loop.
