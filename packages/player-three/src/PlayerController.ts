@@ -304,6 +304,12 @@ export interface PlayerControllerConfig {
    * Values < 1 create drag; default **0.88** gives a smooth deceleration feel.
    */
   waterDragFactor?: number
+
+  /**
+   * Exponential decay rate (per second) for {@link PlayerController.addPlanarCarryImpulse}
+   * world-space XZ carry velocity. Higher = shorter slides. Default **8**.
+   */
+  carryImpulseDecayPerSecond?: number
   /**
    * Swim speed as a fraction of `characterSpeed`. Default **0.4**.
    */
@@ -417,6 +423,8 @@ export class PlayerController {
 
   private debugMovementLogAcc = 0
   private readonly pendingEvents: PlayerControllerEvent[] = []
+  /** World-space XZ velocity (m/s) from ability knockback / bursts; decays each tick. */
+  private readonly carryVelocityXZ = { x: 0, z: 0 }
   private readonly state: PlayerControllerInternalState = {
     mode: 'grounded',
     hazardMode: 'none',
@@ -1069,6 +1077,43 @@ export class PlayerController {
     this.jumpBufferTime = Math.max(this.jumpBufferTime, bufferSeconds)
   }
 
+  /**
+   * Adds world-space horizontal carry velocity (m/s), e.g. rocket-punch style burst.
+   * Each tick the controller moves the character by `carry * delta` and decays carry toward zero.
+   * Ignored while in water mode.
+   */
+  addPlanarCarryImpulse(worldVx: number, worldVz: number): void {
+    if (this.state.mode === 'water') return
+    this.carryVelocityXZ.x += worldVx
+    this.carryVelocityXZ.z += worldVz
+  }
+
+  /**
+   * Vertical boost for hero-style abilities.
+   * - **Grounded** + positive `deltaVy`: leaves ground (`jump_rise`) with that initial upward speed.
+   * - **Airborne** + any `deltaVy`: adds to vertical velocity (e.g. slam acceleration downward).
+   * No-op in water or recovery lock; grounded negative impulse is ignored.
+   */
+  applyVerticalAbilityImpulse(deltaVy: number, character: THREE.Object3D): void {
+    if (this.state.mode === 'water' || this.state.recoveryLockRemaining > 0) return
+    if (!this.grounded) {
+      if (deltaVy === 0) return
+      this.verticalVelocity += deltaVy
+      if (deltaVy > 0 && this.state.airMode === 'jump_fall') this.state.airMode = 'jump_rise'
+      return
+    }
+    if (deltaVy > 0) {
+      const prev = this.captureTransitionSnapshot()
+      this.verticalVelocity = deltaVy
+      this.beginAirborne('jump_rise', character)
+      this.jumpBufferTime = 0
+      this.jumpTakeoffXZ.set(character.position.x, character.position.z)
+      this.emitTransitionEvents(prev, this.captureTransitionSnapshot(), {
+        jumpStarted: { jumpIndex: 1 },
+      })
+    }
+  }
+
   getSnapshot(): PlayerControllerState {
     return {
       position: {
@@ -1353,6 +1398,18 @@ export class PlayerController {
       }
     }
 
+    // Planar carry from abilities (world XZ, m/s); decays exponentially; skipped in water.
+    if (this.state.mode !== 'water') {
+      const decayPerSec = this.cfg.carryImpulseDecayPerSecond ?? 8
+      const decay = Math.exp(-decayPerSec * delta)
+      character.position.x += this.carryVelocityXZ.x * delta
+      character.position.z += this.carryVelocityXZ.z * delta
+      this.carryVelocityXZ.x *= decay
+      this.carryVelocityXZ.z *= decay
+      if (Math.abs(this.carryVelocityXZ.x) < 1e-4) this.carryVelocityXZ.x = 0
+      if (Math.abs(this.carryVelocityXZ.z) < 1e-4) this.carryVelocityXZ.z = 0
+    }
+
     const baseYOffset =
       this.terrainYOffset + this.crouchGroundBlend * this.crouchTerrainYOffsetDelta
 
@@ -1503,6 +1560,8 @@ export class PlayerController {
     this.moveIntent.x = 0
     this.moveIntent.y = 0
     this.velocity.set(0, 0, 0)
+    this.carryVelocityXZ.x = 0
+    this.carryVelocityXZ.z = 0
     this.crouchHeld = false
     this.sprintHeld = false
     this.crouchGroundBlend = 0

@@ -124,6 +124,37 @@ describe('PlayerController', () => {
     expect(ctrl.getSnapshot().jumpBuffered).toBe(false)
   })
 
+  it('decays planar carry impulse so motion settles', () => {
+    const camera = setupCameraAtOriginLookingDownMinusZ()
+    const character = new THREE.Mesh()
+    character.position.set(0, 0.85, 0)
+
+    const ctrl = new PlayerController({ characterSpeed: 0, carryImpulseDecayPerSecond: 24 })
+    ctrl.setMoveIntent(0, 0)
+    ctrl.addPlanarCarryImpulse(10, 0)
+    const delta = 1 / 60
+    let maxX = 0
+    let prevX = 0
+    let settledTicks = 0
+    for (let i = 0; i < 360; i++) {
+      ctrl.tick(delta, {
+        camera,
+        character,
+        sampler: undefined,
+        playableRadius: 50,
+        sprintHeld: false,
+        crouchHeld: false,
+      })
+      const ax = Math.abs(character.position.x)
+      maxX = Math.max(maxX, ax)
+      if (i > 0 && Math.abs(ax - prevX) < 1e-5) settledTicks += 1
+      else settledTicks = 0
+      prevX = ax
+    }
+    expect(maxX).toBeGreaterThan(0.08)
+    expect(settledTicks).toBeGreaterThan(30)
+  })
+
   it('uses minimum terrain height inside footprint when radius > 0', () => {
     const camera = setupCameraAtOriginLookingDownMinusZ()
     const character = new THREE.Mesh()
