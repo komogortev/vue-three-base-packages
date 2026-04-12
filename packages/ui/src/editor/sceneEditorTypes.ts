@@ -81,6 +81,17 @@ export interface SceneEditorEntry {
   config: SceneEditorConfig
 }
 
+// ─── Editor orbit bookmarks ───────────────────────────────────────────────────
+
+export interface EditorOrbitBookmark {
+  /** Stable id used for locomotion-mode lookup (e.g. 'author', 'bird'). */
+  id: string
+  /** Short label shown in the top bar button. */
+  label: string
+  camera: [number, number, number]
+  target: [number, number, number]
+}
+
 // ─── Selection state ──────────────────────────────────────────────────────────
 
 export type EditorSelection =
