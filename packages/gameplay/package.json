@@ -1,0 +1,37 @@
+{
+  "name": "@base/gameplay",
+  "version": "0.1.0",
+  "description": "Player-camera coordination kernel: input routing, mode switching, and per-frame tick for Three.js gameplay scenes",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@base/engine-core": "workspace:*",
+    "@base/input": "workspace:*",
+    "@base/player-three": "workspace:*",
+    "@base/camera-three": "workspace:*"
+  },
+  "peerDependencies": {
+    "three": ">=0.160.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.172.0",
+    "three": "^0.172.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  }
+}
