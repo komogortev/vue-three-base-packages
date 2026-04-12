@@ -133,6 +133,17 @@ export class CharacterAnimationRig {
     const mixerRoot = clipsUseSkinnedMeshMixerRoot(clips) ? skinned : rigRoot
     this.mixer = new THREE.AnimationMixer(mixerRoot)
 
+    const resolved = resolveCharacterLocomotionClips(clips)
+    // Index-based overrides for GLB packs with non-Mixamo clip names (e.g. Blender NLA defaults).
+    // Applied after name matching so explicitly-set indices always win.
+    const idxOverrides = root.userData['locomotionClipIndices'] as Record<string, number> | undefined
+    if (idxOverrides) {
+      for (const [key, idx] of Object.entries(idxOverrides)) {
+        if (typeof idx === 'number' && clips[idx]) {
+          ;(resolved as Record<string, THREE.AnimationClip | undefined>)[key] = clips[idx]
+        }
+      }
+    }
     const {
       idleStand,
       walkFwdStand,
@@ -144,7 +155,7 @@ export class CharacterAnimationRig {
       strafeLCrouch,
       strafeRCrouch,
       runFwdStand,
-    } = resolveCharacterLocomotionClips(clips)
+    } = resolved
 
     const overlayClips = resolveCharacterOverlayClips(clips)
     const {

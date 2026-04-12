@@ -508,6 +508,9 @@ export class SceneBuilder {
           }
         }
         root.userData['gltfAnimations'] = sanitizeMixamoClips(mergedClips)
+        if (charDesc.locomotionClipIndices) {
+          root.userData['locomotionClipIndices'] = charDesc.locomotionClipIndices
+        }
 
         // First fit used `model` off-scene; parenting + yaw can change the world AABB slightly.
         // A second pass scales against `root` so world height matches `modelFitHeight` when it drifted.
