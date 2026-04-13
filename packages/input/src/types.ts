@@ -12,6 +12,10 @@ export type ButtonAction =
   | 'ability_primary'
   /** Generic harness / game ability slot — defaults unbound in {@link DEFAULT_BINDINGS}. */
   | 'ability_secondary'
+  /** Generic harness / game ability slot — defaults unbound in {@link DEFAULT_BINDINGS}. */
+  | 'ability_tertiary'
+  /** Generic harness / game ability slot — defaults unbound in {@link DEFAULT_BINDINGS}. */
+  | 'ability_quaternary'
   /** Third ↔ first person (or other camera view) — defaults unbound. */
   | 'toggle_camera'
 
@@ -68,6 +72,10 @@ export interface KeyboardBindings {
   ability_primary: string[]
   /** @default [] */
   ability_secondary: string[]
+  /** @default [] */
+  ability_tertiary: string[]
+  /** @default [] */
+  ability_quaternary: string[]
   /** @default [] — e.g. `Tab` to avoid browser focus ring (see {@link KeyboardProvider}). */
   toggle_camera: string[]
 }
@@ -99,6 +107,10 @@ export interface GamepadBindings {
   /** @default [] */
   ability_secondary: number[]
   /** @default [] */
+  ability_tertiary: number[]
+  /** @default [] */
+  ability_quaternary: number[]
+  /** @default [] */
   toggle_camera: number[]
 }
 
@@ -127,8 +139,10 @@ export const DEFAULT_BINDINGS: InputBindings = {
     confirm:  ['Enter', 'Space'],
     cancel:   ['Escape', 'Backspace'],
     jump:     ['Space'],
-    ability_primary: [],
-    ability_secondary: [],
+    ability_primary:    [],
+    ability_secondary:  [],
+    ability_tertiary:   [],
+    ability_quaternary: [],
     toggle_camera: ['Tab'],
   },
   gamepad: {
@@ -142,8 +156,10 @@ export const DEFAULT_BINDINGS: InputBindings = {
     confirm:  [0],              // A / Cross
     cancel:   [1],              // B / Circle
     jump:     [0],              // A / Cross
-    ability_primary: [],
-    ability_secondary: [],
+    ability_primary:    [],
+    ability_secondary:  [],
+    ability_tertiary:   [],
+    ability_quaternary: [],
     toggle_camera: [],
   },
   deadzone: 0.12,

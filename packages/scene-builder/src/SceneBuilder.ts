@@ -514,7 +514,10 @@ export class SceneBuilder {
 
         // First fit used `model` off-scene; parenting + yaw can change the world AABB slightly.
         // A second pass scales against `root` so world height matches `modelFitHeight` when it drifted.
+        // Reset bind pose before measuring: retargetClip leaves skeleton in last-frame pose, which
+        // yields a shorter AABB (crouch/sit) and produces an incorrect upward scale correction.
         if (fitH != null && fitH > 0) {
+          SceneBuilder.resetSkinnedBindPose(root)
           root.updateMatrixWorld(true)
           const hRoot = SceneBuilder.measureWorldAabbHeight(root, true)
           if (hRoot > 1e-3 && Math.abs(hRoot - fitH) / fitH > 0.025) {

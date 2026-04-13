@@ -1119,6 +1119,15 @@ export class PlayerController {
   }
 
   /**
+   * Sync internal position tracking after an external position correction (e.g. wall
+   * collision push-out). Call after directly modifying the character mesh position so
+   * that {@link getSnapshot} returns the corrected value on subsequent reads.
+   */
+  syncPosition(x: number, y: number, z: number): void {
+    this.lastCharacterPos.set(x, y, z)
+  }
+
+  /**
    * Rocket-punch skim / bounce: call from gameplay when **jump** is pressed while
    * {@link addPlanarCarryImpulse} has built significant horizontal carry (OW1 “jump cancel”
    * off punch momentum — especially useful near ramps and low ceilings).

@@ -46,13 +46,30 @@ export class KeyboardProvider {
       this.checkButton(e.code, 'released')
     }
 
+    // Mouse buttons stored as "MouseN" (e.g. Mouse2 = RMB) so they can be bound like keys.
+    const onMouseDown = (e: MouseEvent): void => {
+      const code = `Mouse${e.button}`
+      this.held.add(code)
+      this.checkButton(code, 'pressed')
+    }
+
+    const onMouseUp = (e: MouseEvent): void => {
+      const code = `Mouse${e.button}`
+      this.held.delete(code)
+      this.checkButton(code, 'released')
+    }
+
     const opts: AddEventListenerOptions = { capture: true }
     window.addEventListener('keydown', onKeyDown, opts)
     window.addEventListener('keyup', onKeyUp, opts)
+    window.addEventListener('mousedown', onMouseDown, opts)
+    window.addEventListener('mouseup', onMouseUp, opts)
 
     this.cleanup.push(
       () => window.removeEventListener('keydown', onKeyDown, opts),
       () => window.removeEventListener('keyup', onKeyUp, opts),
+      () => window.removeEventListener('mousedown', onMouseDown, opts),
+      () => window.removeEventListener('mouseup', onMouseUp, opts),
     )
   }
 
@@ -100,9 +117,11 @@ export class KeyboardProvider {
       ['confirm',  b.confirm],
       ['cancel',   b.cancel],
       ['jump',     b.jump],
-      ['ability_primary',   b.ability_primary],
-      ['ability_secondary', b.ability_secondary],
-      ['toggle_camera',     b.toggle_camera],
+      ['ability_primary',    b.ability_primary],
+      ['ability_secondary',  b.ability_secondary],
+      ['ability_tertiary',   b.ability_tertiary],
+      ['ability_quaternary', b.ability_quaternary],
+      ['toggle_camera',      b.toggle_camera],
     ]
     for (const [action, keys] of checks) {
       if (keys.includes(code)) {

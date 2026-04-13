@@ -85,9 +85,11 @@ export class GamepadProvider {
       ['confirm',  this.bindings.confirm],
       ['cancel',   this.bindings.cancel],
       ['jump',     this.bindings.jump],
-      ['ability_primary',   this.bindings.ability_primary],
-      ['ability_secondary', this.bindings.ability_secondary],
-      ['toggle_camera',     this.bindings.toggle_camera],
+      ['ability_primary',    this.bindings.ability_primary],
+      ['ability_secondary',  this.bindings.ability_secondary],
+      ['ability_tertiary',   this.bindings.ability_tertiary],
+      ['ability_quaternary', this.bindings.ability_quaternary],
+      ['toggle_camera',      this.bindings.toggle_camera],
     ]
 
     for (const [action, indices] of buttonMap) {
