@@ -21,6 +21,9 @@
       <span v-else-if="sceneLabel" class="scene-badge">{{ sceneLabel }}</span>
     </header>
 
+    <!-- Assets section (uploaded GLB/FBX registry) -->
+    <SceneEditorAssetsSection />
+
     <!-- Scene settings row -->
     <div
       class="row row-group"
@@ -77,6 +80,7 @@
 </template>
 
 <script setup lang="ts">
+import SceneEditorAssetsSection from './SceneEditorAssetsSection.vue'
 import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, SceneEditorEntry } from './sceneEditorTypes'
 
 const props = defineProps<{
