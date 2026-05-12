@@ -2,11 +2,11 @@
 
 ## Status
 
-_Last updated: 2026-03-29_
+_Last updated: 2026-04-20_
 
-**What's working:** All 9 packages build cleanly. `@base/player-three` test suite passes at 47 tests. Swimming v1 (`water` PlayerMode, `SwimmableVolume`, tread/swim FBX slots) landed. Five-tier landing severity (`LandImpactTier`) wired with pattern-matched animation resolution. Third-person orbit camera in `@base/camera-three` (via `facingLerpThirdPerson`). Checkpoint `checkpoint/session-09-10-2026-03-28` tagged at `be61e99`.
+**What's working:** All 9 packages build cleanly. Test coverage significantly expanded — now 240+ tests across 5 packages: `engine-core` (EventBus + BaseModule), `scene-builder` (Seeder, resolvePublicUrl, HeightmapLoader, TerrainSampler), `player-three` (existing 47 + mixamo utils/retarget), `camera-three` (presets + GameplayCameraController), `gameplay` (PlayerCameraCoordinator). All suites run via `pnpm -r test`. Swimming v1 (`water` PlayerMode, `SwimmableVolume`, tread/swim FBX slots) landed. Five-tier landing severity (`LandImpactTier`) wired with pattern-matched animation resolution. Third-person orbit camera in `@base/camera-three` (via `facingLerpThirdPerson`). Checkpoint `checkpoint/session-09-10-2026-03-28` tagged at `be61e99`.
 
-**What's broken / incomplete:** `water__entry__fall.fbx` is a placeholder — no real water-entry animation. `failJump` uses "Straight Landing" as a mild substitute. Some landing tiers may not resolve correctly due to Mixamo internal clip name variance (enable `debugClipResolution` in harness to diagnose). `@base/pwa-core` is a stub (SW registration scaffolded, not fully implemented).
+**What's broken / incomplete:** `water__entry__fall.fbx` is a placeholder — no real water-entry animation. `failJump` uses "Straight Landing" as a mild substitute. Some landing tiers may not resolve correctly due to Mixamo internal clip name variance (enable `debugClipResolution` in harness to diagnose). `@base/pwa-core` is a stub (SW registration scaffolded, not fully implemented). `retargetMixamoClipsToCharacter` untested (requires WebGL context — integration-test only).
 
 ## Active Work
 
@@ -26,6 +26,7 @@ _Last updated: 2026-03-29_
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-04-20** — Test coverage gap closed across 5 packages (~195 new tests, commit `169386d`). Uses real Three.js/EventBus instances, no `vi.mock('three')` — tests exercise actual math. WebGL-dependent paths (`retargetMixamoClipsToCharacter`) deliberately deferred to integration tests.
 - **2026-03-29** — NPC stub/respawn mechanics confirmed as game-layer concern (in `three-dreams/GameplaySceneConfig`), not a shared package concern. `@base/player-three` and `@base/scene-builder` APIs require no changes for Phase 4A NPC system.
 - **2026-03-28** — Five-tier `LandImpactTier` landed: soft / medium / hard / critical / fatal. Four-tier was insufficient for nuanced animation responses.
 - **2026-03-28** — `SwimmableVolume` per-body rather than global `seaLevel` scalar. Supports pools at any elevation.

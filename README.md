@@ -12,12 +12,14 @@ pnpm monorepo of **shared libraries** for Vue + Three.js PWAs in the **@base** e
 |--------|------|
 | `@base/engine-core` | `BaseModule`, `EventBus`, shell/engine mount contract |
 | `@base/threejs-engine` | Renderer, scene, camera, RAF loop, `ThreeModule`, assets |
-| `@base/input` | Keyboard/gamepad/touch → `input:axis` / `input:action` on the bus |
-| `@base/player-three` | `PlayerController`, terrain snap, Mixamo-oriented animation helpers |
-| `@base/camera-three` | `GameplayCameraController`, third-person presets, first-person eye offset |
+| `@base/input` | Keyboard/gamepad/touch → `input:axis` / `input:action` on the bus; 4-ability slots, mouse button rebinding, `mergeBindings` |
+| `@base/player-three` | `PlayerController`, terrain snap, animation helpers; carry impulse + vertical ability hooks (rocket punch, skim jump) |
+| `@base/scene-builder` | `SceneDescriptor`, `SceneBuilder`, `TerrainSampler`, `SwimmableVolume`; `animationPackUrls` + `NpcGltfEntry` for NPC animation packs |
+| `@base/camera-three` | `GameplayCameraController`, third-person presets, first-person eye offset; Phase 4C cinematic is additive |
+| `@base/gameplay` | `PlayerCameraCoordinator` — wires input→player→camera; `tickPlayer`/`tickCamera` split for host injection; `GameplaySceneModule` |
 | `@base/pwa-core` | PWA-oriented helpers (shell integration) |
-| `@base/audio` | Audio utilities |
-| `@base/ui` | Vue UI kit (workspace member) |
+| `@base/audio` | Spatial audio, music layers, SFX; autoplay policy resume |
+| `@base/ui` | Vue UI kit: `SceneEditorView` (multi-scene switcher), `WaypointEditor` (composable + HUD + panel), input settings components |
 
 Each package has its own `package.json`, `tsconfig`, and **`dist/`** produced by `tsc` (or Vite for `ui`). **`dist/` is gitignored** — run **`pnpm build`** before linking into apps.
 
