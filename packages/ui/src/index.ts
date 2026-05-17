@@ -49,7 +49,9 @@ export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
 //   useAssetStore        → Pinia store (upload / getById / resolveBlobUrl / remove)
 //   AssetRow, AssetKind  → row + enum types
 //   UploadError          → typed error thrown by useAssetStore.upload()
+//   AssetPicker          → modal asset selector (props: open, kindFilter; emits: close, select)
 
 export { useAssetStore, UploadError } from './editor/useAssetStore'
 export type { UploadErrorKind } from './editor/useAssetStore'
 export type { AssetRow, AssetKind } from './editor/assetDb'
+export { default as AssetPicker } from './editor/AssetPicker.vue'
