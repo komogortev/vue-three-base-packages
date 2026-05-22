@@ -22,7 +22,7 @@
     </header>
 
     <!-- Assets section (uploaded GLB/FBX registry) -->
-    <SceneEditorAssetsSection />
+    <SceneEditorAssetsSection @asset-picked="emit('asset-picked', $event)" />
 
     <!-- Scene settings row -->
     <div
@@ -72,8 +72,26 @@
       </div>
     </div>
 
+    <!-- Placed Objects -->
+    <div v-if="placedObjects.length > 0" class="section">
+      <div class="section-header">
+        <span>Placed Objects</span>
+        <span class="section-count">{{ placedObjects.length }}</span>
+      </div>
+      <div
+        v-for="obj in placedObjects"
+        :key="obj.id"
+        class="row"
+        :class="{ active: modelValue?.kind === 'placed' && modelValue.objectId === obj.id }"
+        @click="emit('update:modelValue', { kind: 'placed', objectId: obj.id })"
+      >
+        <span class="row-icon placed-dot">◈</span>
+        <span class="row-label">{{ obj.label }}</span>
+      </div>
+    </div>
+
     <!-- Empty state -->
-    <p v-if="npcs.length === 0 && zones.length === 0" class="empty">
+    <p v-if="npcs.length === 0 && zones.length === 0 && placedObjects.length === 0" class="empty">
       No NPCs or zones configured.
     </p>
   </aside>
@@ -81,13 +99,15 @@
 
 <script setup lang="ts">
 import SceneEditorAssetsSection from './SceneEditorAssetsSection.vue'
-import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, SceneEditorEntry } from './sceneEditorTypes'
+import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry } from './sceneEditorTypes'
 
 const props = defineProps<{
   modelValue: EditorSelection
   sceneLabel?: string
   npcs: EditorNpcEntry[]
   zones: EditorZoneEntry[]
+  /** Placed objects authored this session — shown in the hierarchy. */
+  placedObjects: EditorPlacedObject[]
   /** Set of entityIds that currently have waypoint data. */
   npcPathIds?: Set<string>
   /** When provided, renders a scene switcher dropdown instead of the label badge. */
@@ -99,6 +119,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: EditorSelection]
   'switch-scene': [sceneId: string]
+  'asset-picked': [assetId: string]
 }>()
 
 function npcHasPath(entityId: string): boolean {
@@ -210,6 +231,7 @@ function npcHasPath(entityId: string): boolean {
 .row-icon.npc-dot { color: #00aaff; }
 .row-icon.exit-dot { color: #ffdd44; }
 .row-icon.prox-dot { color: #44ff88; }
+.row-icon.placed-dot { color: #c099ff; }
 
 .row-label {
   flex: 1;

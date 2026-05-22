@@ -3,11 +3,21 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
-import type { SceneEditorConfig, EditorSelection } from './sceneEditorTypes'
+import type { SceneEditorConfig, EditorSelection, EditorPlacedObject } from './sceneEditorTypes'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type TransformMode = 'translate' | 'rotate' | 'scale'
+
+interface PlaceMode {
+  active: boolean
+  objectId: string
+  assetId: string
+  blobUrl: string
+  label: string
+}
+
+const PLACE_MODE_IDLE: PlaceMode = { active: false, objectId: '', assetId: '', blobUrl: '', label: '' }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -16,6 +26,10 @@ export interface SceneEditorViewportReturn {
   statusMessage: Readonly<Ref<string>>
   selection: Readonly<Ref<EditorSelection>>
   transformMode: Readonly<Ref<TransformMode>>
+  /** Live list of placed objects — reactive, readable by hierarchy. */
+  placedObjects: Readonly<Ref<EditorPlacedObject[]>>
+  /** True while waiting for a floor click to place an asset. */
+  isInPlaceMode: Readonly<Ref<boolean>>
   /** Set selection from the hierarchy panel (bypasses click raycasting). */
   setSelection: (s: EditorSelection) => void
   /** Set the active TransformControls mode (translate / rotate / scale). */
@@ -34,6 +48,14 @@ export interface SceneEditorViewportReturn {
    * Keeps renderer / camera / controls / lights alive — only reloads GLBs + markers.
    */
   reinitScene: (newConfig: SceneEditorConfig) => Promise<void>
+  /**
+   * Enter place mode — next floor click drops the asset at that position.
+   * Auto-exits after one placement and auto-selects the placed object.
+   * Press Esc to cancel without placing.
+   */
+  enterPlaceMode: (objectId: string, assetId: string, blobUrl: string, label: string) => void
+  /** Cancel place mode without placing anything. */
+  exitPlaceMode: () => void
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -51,6 +73,8 @@ export function useSceneEditorViewport(opts: {
   const statusMessage = ref('Initializing…')
   const selection = ref<EditorSelection>(null)
   const transformMode = ref<TransformMode>('translate')
+  const placedObjects = ref<EditorPlacedObject[]>([])
+  const isInPlaceMode = ref(false)
 
   // Three.js core — created once, kept alive across scene switches
   let renderer: THREE.WebGLRenderer
@@ -69,6 +93,16 @@ export function useSceneEditorViewport(opts: {
   const npcMarkerGroup = new THREE.Group()
   const zoneMarkerGroup = new THREE.Group()
   const pathGroup = new THREE.Group()
+
+  // Placed objects group — persistent container, children cleared on scene switch
+  const placedGroup = new THREE.Group()
+  // objectId → Three.js root group (for TC attachment)
+  const placedMeshRoots = new Map<string, THREE.Group>()
+  // objectId → invisible hit box mesh (for raycasting)
+  const placedHitBoxes = new Map<string, THREE.Mesh>()
+
+  // Place mode state — plain object (not reactive; status + isInPlaceMode carry the UI signal)
+  let placeMode: PlaceMode = { ...PLACE_MODE_IDLE }
 
   // Selection maps: entityId/zoneId → clickable mesh (for raycasting + highlight)
   const npcSpheres = new Map<string, THREE.Mesh>()
@@ -160,6 +194,7 @@ export function useSceneEditorViewport(opts: {
     scene.add(npcMarkerGroup)
     scene.add(zoneMarkerGroup)
     scene.add(pathGroup)
+    scene.add(placedGroup)
 
     canvas.addEventListener('mousedown', onMouseDown)
     canvas.addEventListener('mouseup', onMouseUp)
@@ -216,6 +251,10 @@ export function useSceneEditorViewport(opts: {
     transformControls.detach()
     transformControls.enabled = false
 
+    // Cancel place mode
+    placeMode = { ...PLACE_MODE_IDLE }
+    isInPlaceMode.value = false
+
     // Remove all objects added during loadScene
     for (const obj of sceneObjects) {
       scene.remove(obj)
@@ -230,6 +269,12 @@ export function useSceneEditorViewport(opts: {
     npcSpheres.clear()
     zoneRingPips.clear()
     npcMarkerRoots.clear()
+
+    // Clear placed objects
+    placedGroup.clear()
+    placedMeshRoots.clear()
+    placedHitBoxes.clear()
+    placedObjects.value = []
 
     // Clear all path visualizations
     for (const [, viz] of npcPathViz) {
@@ -380,6 +425,15 @@ export function useSceneEditorViewport(opts: {
         transformControls.detach()
         transformControls.enabled = false
       }
+    } else if (s?.kind === 'placed') {
+      const root = placedMeshRoots.get(s.objectId)
+      if (root) {
+        transformControls.attach(root)
+        transformControls.enabled = true
+      } else {
+        transformControls.detach()
+        transformControls.enabled = false
+      }
     } else {
       transformControls.detach()
       transformControls.enabled = false
@@ -408,6 +462,10 @@ export function useSceneEditorViewport(opts: {
       const zone = config.zones?.find(z => z.id === s.id)
       return `Zone: ${zone?.label ?? s.id} (${zone?.type ?? 'unknown'}, r=${zone?.radius ?? '?'}m)`
     }
+    if (s.kind === 'placed') {
+      const obj = placedObjects.value.find(p => p.id === s.objectId)
+      return `Object: ${obj?.label ?? s.objectId}`
+    }
     return ''
   }
 
@@ -430,6 +488,81 @@ export function useSceneEditorViewport(opts: {
     pathEditActive = active
     onFloorHitCb = cb
     statusMessage.value = describeSelection(selection.value)
+  }
+
+  // ─── Place mode ──────────────────────────────────────────────────────────────
+
+  function enterPlaceMode(objectId: string, assetId: string, blobUrl: string, label: string): void {
+    placeMode = { active: true, objectId, assetId, blobUrl, label }
+    isInPlaceMode.value = true
+    // Deselect current object so TC doesn't block the viewport click
+    setSelection({ kind: 'scene' })
+    statusMessage.value = `Click floor to place "${label}" — Esc to cancel`
+  }
+
+  function exitPlaceMode(): void {
+    placeMode = { ...PLACE_MODE_IDLE }
+    isInPlaceMode.value = false
+    statusMessage.value = describeSelection(selection.value)
+  }
+
+  async function placeObject(pos: THREE.Vector3): Promise<void> {
+    // Snapshot and clear place mode immediately — prevents double-placement during async load
+    const { objectId, assetId, blobUrl, label } = placeMode
+    placeMode = { ...PLACE_MODE_IDLE }
+    isInPlaceMode.value = false
+    statusMessage.value = `Placing "${label}"…`
+
+    const root = new THREE.Group()
+    root.position.copy(pos)
+
+    const loader = new GLTFLoader()
+    let localBbox = new THREE.Box3()
+
+    try {
+      const gltf = await loader.loadAsync(blobUrl)
+      // Compute bbox in GLB's own local space before parenting
+      localBbox.setFromObject(gltf.scene)
+      root.add(gltf.scene)
+    } catch (e) {
+      console.warn('[SceneEditor] Could not load placed GLB:', e)
+      // Fallback proxy so placement is still visible
+      const proxy = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: '#c099ff', wireframe: true }),
+      )
+      proxy.position.set(0, 0.5, 0)
+      root.add(proxy)
+      localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+    }
+
+    if (localBbox.isEmpty()) {
+      localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+    }
+
+    // Invisible hit box sized to the GLB bbox — used for raycasting / selection
+    const bboxSize = localBbox.getSize(new THREE.Vector3())
+    const bboxCenter = localBbox.getCenter(new THREE.Vector3())
+    const hitBox = new THREE.Mesh(
+      new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
+      new THREE.MeshBasicMaterial({ visible: false }),
+    )
+    hitBox.position.copy(bboxCenter)
+    root.add(hitBox)
+
+    placedGroup.add(root)
+    // Also track in sceneObjects so clearScene removes it from the group
+    // (clearScene calls placedGroup.clear() directly — no need to add to sceneObjects)
+    placedMeshRoots.set(objectId, root)
+    placedHitBoxes.set(objectId, hitBox)
+
+    placedObjects.value = [
+      ...placedObjects.value,
+      { id: objectId, assetId, label, x: pos.x, y: pos.y, z: pos.z },
+    ]
+
+    // Auto-select the freshly placed object
+    setSelection({ kind: 'placed', objectId })
   }
 
   // ─── Path visualization ──────────────────────────────────────────────────────
@@ -499,6 +632,15 @@ export function useSceneEditorViewport(opts: {
     )
     raycaster.setFromCamera(mouse, camera)
 
+    // In place mode: only check the floor for the drop point; skip all selection logic.
+    if (placeMode.active) {
+      const floorHits = raycaster.intersectObjects(floorMeshes, true)
+      if (floorHits.length > 0) {
+        void placeObject(floorHits[0].point.clone())
+      }
+      return
+    }
+
     // 1. NPC sphere hit?
     const npcHits = raycaster.intersectObjects([...npcSpheres.values()])
     if (npcHits.length > 0) {
@@ -517,7 +659,16 @@ export function useSceneEditorViewport(opts: {
       }
     }
 
-    // 3. Floor hit (GLB mesh or invisible plane)
+    // 3. Placed object hit?
+    const placedHits = raycaster.intersectObjects([...placedHitBoxes.values()])
+    if (placedHits.length > 0) {
+      const hit = placedHits[0].object as THREE.Mesh
+      for (const [id, m] of placedHitBoxes) {
+        if (m === hit) { setSelection({ kind: 'placed', objectId: id }); return }
+      }
+    }
+
+    // 4. Floor hit (GLB mesh or invisible plane)
     const floorHits = raycaster.intersectObjects(floorMeshes, true)
     if (floorHits.length > 0) {
       if (pathEditActive && onFloorHitCb) {
@@ -533,7 +684,10 @@ export function useSceneEditorViewport(opts: {
   function onKeyDown(e: KeyboardEvent): void {
     const tag = (e.target as HTMLElement)?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA') return
-    if (e.code === 'Escape') setSelection({ kind: 'scene' })
+    if (e.code === 'Escape') {
+      if (placeMode.active) { exitPlaceMode(); return }
+      setSelection({ kind: 'scene' })
+    }
     if (e.code === 'KeyT') setTransformMode('translate')
     if (e.code === 'KeyR') setTransformMode('rotate')
     if (e.code === 'KeyS') setTransformMode('scale')
@@ -571,6 +725,8 @@ export function useSceneEditorViewport(opts: {
     zoneRingPips.clear()
     npcMarkerRoots.clear()
     npcPathViz.clear()
+    placedMeshRoots.clear()
+    placedHitBoxes.clear()
   }
 
   onMounted(init)
@@ -581,11 +737,15 @@ export function useSceneEditorViewport(opts: {
     statusMessage: shallowReadonly(statusMessage),
     selection: shallowReadonly(selection),
     transformMode: shallowReadonly(transformMode),
+    placedObjects: shallowReadonly(placedObjects),
+    isInPlaceMode: shallowReadonly(isInPlaceMode),
     setSelection,
     setTransformMode,
     setPathEditMode,
     updateNpcPath,
     clearNpcPath,
     reinitScene,
+    enterPlaceMode,
+    exitPlaceMode,
   }
 }

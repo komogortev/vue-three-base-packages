@@ -26,10 +26,12 @@
       :scene-label="activeSceneLabel"
       :npcs="activeConfig.npcs ?? []"
       :zones="activeConfig.zones ?? []"
+      :placed-objects="placedObjects"
       :npc-path-ids="npcPathIds"
       :scenes="scenes"
       :active-scene-id="activeSceneId"
       @switch-scene="onSwitchScene"
+      @asset-picked="onAssetPicked"
     />
 
     <!-- Centre: Viewport -->
@@ -47,13 +49,15 @@
 
       <!-- Hint strip (top-left) -->
       <div class="hint-strip">
-        <span><kbd>Click</kbd> select</span>
-        <span><kbd>Drag</kbd> orbit</span>
-        <span><kbd>Scroll</kbd> zoom</span>
-        <span v-if="hasObjectSelected && !isPathEditing"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale</span>
-        <span v-if="hasObjectSelected"><kbd>Esc</kbd> deselect</span>
+        <span v-if="!isInPlaceMode"><kbd>Click</kbd> select</span>
+        <span v-if="!isInPlaceMode"><kbd>Drag</kbd> orbit</span>
+        <span v-if="!isInPlaceMode"><kbd>Scroll</kbd> zoom</span>
+        <span v-if="hasObjectSelected && !isPathEditing && !isInPlaceMode"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale</span>
+        <span v-if="hasObjectSelected && !isInPlaceMode"><kbd>Esc</kbd> deselect</span>
         <span v-if="isPathEditing"><kbd>Click floor</kbd> add waypoint &nbsp;<kbd>Ctrl+Z</kbd> undo</span>
         <span v-if="isPathEditing"><kbd>Esc</kbd> stop editing</span>
+        <span v-if="isInPlaceMode"><kbd>Click floor</kbd> place object</span>
+        <span v-if="isInPlaceMode"><kbd>Esc</kbd> cancel</span>
       </div>
 
       <!-- Transform toolbar (top-right, visible when object selected) -->
@@ -94,7 +98,9 @@
 import { ref, computed, watch } from 'vue'
 import { onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
+import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
+import { useAssetStore } from './useAssetStore'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import type { SceneEditorConfig, SceneEditorEntry, EditorSelection } from './sceneEditorTypes'
@@ -149,13 +155,29 @@ const {
   statusMessage,
   selection: viewportSelection,
   transformMode,
+  placedObjects,
+  isInPlaceMode,
   setSelection,
   setTransformMode,
   setPathEditMode,
   updateNpcPath,
   clearNpcPath,
   reinitScene,
+  enterPlaceMode,
 } = useSceneEditorViewport({ canvas: canvasRef, config: activeConfig.value })
+
+// ─── Asset store (for place mode) ────────────────────────────────────────────
+
+const assetStore = useAssetStore()
+
+function onAssetPicked(assetId: string): void {
+  const asset = assetStore.getById(assetId)
+  if (!asset) return
+  const blobUrl = assetStore.resolveBlobUrl(assetId)
+  if (!blobUrl) return
+  const objectId = `placed-${nanoid(6)}`
+  enterPlaceMode(objectId, assetId, blobUrl, asset.name)
+}
 
 // ─── Scene switching ──────────────────────────────────────────────────────────
 
@@ -255,9 +277,11 @@ const npcPathIds = computed(() => {
 
 // ─── Derived selection state ──────────────────────────────────────────────────
 
-/** True when an NPC or zone is selected (gizmo is visible). */
+/** True when an NPC, zone, or placed object is selected (gizmo is visible). */
 const hasObjectSelected = computed(() =>
-  selection.value?.kind === 'npc' || selection.value?.kind === 'zone'
+  selection.value?.kind === 'npc' ||
+  selection.value?.kind === 'zone' ||
+  selection.value?.kind === 'placed'
 )
 
 // ─── Path edit mode coordination ──────────────────────────────────────────────

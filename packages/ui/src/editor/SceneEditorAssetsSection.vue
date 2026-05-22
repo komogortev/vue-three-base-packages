@@ -89,11 +89,6 @@
       No assets uploaded.
     </p>
 
-    <!-- Ephemeral selection feedback (W3 picker demo) -->
-    <p v-if="showStatus" class="status-line" role="status">
-      Selected asset: {{ lastSelectedAssetId }}
-    </p>
-
     <AssetPicker
       :open="pickerOpen"
       :kind-filter="pickerKindFilter"
@@ -112,12 +107,13 @@ import type { AssetKind } from './assetDb'
 const store = useAssetStore()
 const assets = computed(() => store.assets)
 
+const emit = defineEmits<{
+  'asset-picked': [assetId: string]
+}>()
+
 // ── Picker (W3) ────────────────────────────────────────────────────────────
 const pickerOpen = ref(false)
 const pickerKindFilter = ref<AssetKind | undefined>(undefined)
-const lastSelectedAssetId = ref<string | null>(null)
-const showStatus = ref(false)
-let statusTimer: ReturnType<typeof setTimeout> | null = null
 
 function openPicker(kind: AssetKind): void {
   pickerKindFilter.value = kind
@@ -125,14 +121,7 @@ function openPicker(kind: AssetKind): void {
 }
 
 function onPickerSelect(assetId: string): void {
-  lastSelectedAssetId.value = assetId
-  // eslint-disable-next-line no-console
-  console.log(`[AssetPicker] Selected asset: ${assetId}`)
-  showStatus.value = true
-  if (statusTimer) clearTimeout(statusTimer)
-  statusTimer = setTimeout(() => {
-    showStatus.value = false
-  }, 3000)
+  emit('asset-picked', assetId)
 }
 
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -227,10 +216,6 @@ onBeforeUnmount(() => {
     URL.revokeObjectURL(url)
   }
   thumbnailUrls.value.clear()
-  if (statusTimer) {
-    clearTimeout(statusTimer)
-    statusTimer = null
-  }
 })
 
 function formatBytes(n: number): string {
@@ -403,15 +388,4 @@ function formatBytes(n: number): string {
   line-height: 1.5;
 }
 
-.status-line {
-  margin: 4px 12px;
-  padding: 4px 6px;
-  font-size: 10px;
-  font-family: monospace;
-  color: #5ab0f5;
-  background: rgba(90, 176, 245, 0.08);
-  border-left: 2px solid #5ab0f5;
-  line-height: 1.3;
-  word-break: break-all;
-}
 </style>

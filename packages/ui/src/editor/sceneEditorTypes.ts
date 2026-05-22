@@ -92,10 +92,31 @@ export interface EditorOrbitBookmark {
   target: [number, number, number]
 }
 
+// ─── Placed objects ───────────────────────────────────────────────────────────
+
+/**
+ * A GLB asset placed into the scene by the editor.
+ * Position captured at place time; transforms are live on the Three.js root group.
+ * Persisted to sandbox descriptor by D-6 save/load.
+ */
+export interface EditorPlacedObject {
+  /** Unique instance id — 'placed-<nanoid6>'. Distinct from assetId. */
+  id: string
+  /** Source asset in the registry. */
+  assetId: string
+  /** Human-readable label (asset filename). */
+  label: string
+  /** World position at placement time (authoritative until D-6 write-back). */
+  x: number
+  y: number
+  z: number
+}
+
 // ─── Selection state ──────────────────────────────────────────────────────────
 
 export type EditorSelection =
   | { kind: 'npc'; entityId: string }
   | { kind: 'zone'; id: string }
+  | { kind: 'placed'; objectId: string }
   | { kind: 'scene' }
   | null
