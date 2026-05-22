@@ -5,7 +5,7 @@ import { computeThirdPersonCamera } from './computeThirdPersonRig'
 import type { ThirdPersonCameraPreset, ThirdPersonViewCam } from './thirdPersonPresets'
 import { resolveThirdPersonViewCam } from './thirdPersonPresets'
 
-export type GameplayCameraMode = 'third-person' | 'first-person'
+export type GameplayCameraMode = 'third-person' | 'first-person' | 'free-float'
 
 export interface GameplayCameraControllerOptions {
   /** Smoothing for third-person position lerp; higher = snappier. Ignored in first-person (instant). */

@@ -2,7 +2,12 @@ import { ref, onMounted, onUnmounted, shallowReadonly, type Ref } from 'vue'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection } from './sceneEditorTypes'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type TransformMode = 'translate' | 'rotate' | 'scale'
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -10,8 +15,11 @@ export interface SceneEditorViewportReturn {
   isReady: Readonly<Ref<boolean>>
   statusMessage: Readonly<Ref<string>>
   selection: Readonly<Ref<EditorSelection>>
+  transformMode: Readonly<Ref<TransformMode>>
   /** Set selection from the hierarchy panel (bypasses click raycasting). */
   setSelection: (s: EditorSelection) => void
+  /** Set the active TransformControls mode (translate / rotate / scale). */
+  setTransformMode: (mode: TransformMode) => void
   /**
    * Toggle path-edit mode for the current NPC selection.
    * When active, floor clicks call onFloorHit instead of selecting scene root.
@@ -42,12 +50,14 @@ export function useSceneEditorViewport(opts: {
   const isReady = ref(false)
   const statusMessage = ref('Initializing…')
   const selection = ref<EditorSelection>(null)
+  const transformMode = ref<TransformMode>('translate')
 
   // Three.js core — created once, kept alive across scene switches
   let renderer: THREE.WebGLRenderer
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
   let controls: OrbitControls
+  let transformControls: TransformControls
   let raycaster: THREE.Raycaster
   let animId: number
 
@@ -60,9 +70,12 @@ export function useSceneEditorViewport(opts: {
   const zoneMarkerGroup = new THREE.Group()
   const pathGroup = new THREE.Group()
 
-  // Selection maps: entityId/zoneId → clickable mesh
+  // Selection maps: entityId/zoneId → clickable mesh (for raycasting + highlight)
   const npcSpheres = new Map<string, THREE.Mesh>()
   const zoneRingPips = new Map<string, THREE.Mesh>()
+
+  // Per-NPC root groups — used for TransformControls attachment so all parts move together
+  const npcMarkerRoots = new Map<string, THREE.Group>()
 
   // Per-NPC path visualization
   const npcPathViz = new Map<string, { line: THREE.Line; dots: THREE.Group }>()
@@ -74,6 +87,9 @@ export function useSceneEditorViewport(opts: {
   // Drag detection
   let mouseDownX = 0
   let mouseDownY = 0
+
+  // Gizmo interaction flag — prevents onMouseUp from deselecting after gizmo click
+  let gizmoMouseDown = false
 
   // Path-edit mode
   let pathEditActive = false
@@ -104,6 +120,32 @@ export function useSceneEditorViewport(opts: {
     controls.update()
 
     raycaster = new THREE.Raycaster()
+
+    // ── TransformControls ────────────────────────────────────────────────────
+    // r170+: TransformControls extends Controls, not Object3D — add getHelper() to the scene.
+    transformControls = new TransformControls(camera, canvas)
+    transformControls.setMode('translate')
+    // Disabled until an object is selected — prevents TC stealing pointer from OrbitControls.
+    transformControls.enabled = false
+    scene.add(transformControls.getHelper())
+
+    // Set gizmo flag so onMouseUp skips selection logic when user clicks a gizmo handle.
+    // Reset on TC's own mouseUp so the flag doesn't stick if the drag ends off-canvas.
+    transformControls.addEventListener('mouseDown', () => { gizmoMouseDown = true })
+    transformControls.addEventListener('mouseUp', () => { gizmoMouseDown = false })
+
+    // Disable OrbitControls while gizmo dragged.
+    transformControls.addEventListener('dragging-changed', (e) => {
+      controls.enabled = !(e as unknown as { value: boolean }).value
+    })
+
+    // Enforce uniform scale in scale mode (mirrors legacy editor behavior).
+    transformControls.addEventListener('objectChange', () => {
+      if (transformMode.value === 'scale') {
+        const obj = transformControls.object
+        if (obj) { const s = obj.scale.x; obj.scale.set(s, s, s) }
+      }
+    })
 
     // Lighting — editor-neutral, persistent across scene switches
     scene.add(new THREE.AmbientLight('#c8d8f0', 0.65))
@@ -170,6 +212,10 @@ export function useSceneEditorViewport(opts: {
   // ─── Scene clearing (before scene switch) ────────────────────────────────────
 
   function clearScene(): void {
+    // Detach gizmo before clearing objects it may reference
+    transformControls.detach()
+    transformControls.enabled = false
+
     // Remove all objects added during loadScene
     for (const obj of sceneObjects) {
       scene.remove(obj)
@@ -183,6 +229,7 @@ export function useSceneEditorViewport(opts: {
 
     npcSpheres.clear()
     zoneRingPips.clear()
+    npcMarkerRoots.clear()
 
     // Clear all path visualizations
     for (const [, viz] of npcPathViz) {
@@ -224,23 +271,28 @@ export function useSceneEditorViewport(opts: {
   function buildNpcMarkers(cfg: SceneEditorConfig): void {
     npcMarkerGroup.clear()
     npcSpheres.clear()
+    npcMarkerRoots.clear()
 
     for (const npc of cfg.npcs ?? []) {
       const yBase = npc.y ?? 0
 
-      // Sphere body
+      // Each NPC's parts are grouped so TransformControls moves the whole marker.
+      const markerRoot = new THREE.Group()
+      markerRoot.position.set(npc.x, yBase, npc.z)
+
+      // Sphere body (positioned relative to group root)
       const mat = new THREE.MeshBasicMaterial({ color: '#00aaff' })
       const sphere = new THREE.Mesh(npcSphereGeo, mat)
-      sphere.position.set(npc.x, yBase + 0.9, npc.z)
-      npcMarkerGroup.add(sphere)
+      sphere.position.set(0, 0.9, 0)
+      markerRoot.add(sphere)
       npcSpheres.set(npc.entityId, sphere)
 
       // Vertical stem so sphere is clearly above ground
       const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.9, 6)
       const stemMat = new THREE.MeshBasicMaterial({ color: '#0077bb' })
       const stem = new THREE.Mesh(stemGeo, stemMat)
-      stem.position.set(npc.x, yBase + 0.45, npc.z)
-      npcMarkerGroup.add(stem)
+      stem.position.set(0, 0.45, 0)
+      markerRoot.add(stem)
 
       // Proximity ring (flat disc outline)
       if (npc.proximityRadius && npc.proximityRadius > 0) {
@@ -251,9 +303,12 @@ export function useSceneEditorViewport(opts: {
           color: '#00aaff', transparent: true, opacity: 0.22, side: THREE.DoubleSide,
         })
         const ring = new THREE.Mesh(ringGeo, ringMat)
-        ring.position.set(npc.x, yBase + 0.03, npc.z)
-        npcMarkerGroup.add(ring)
+        ring.position.set(0, 0.03, 0)
+        markerRoot.add(ring)
       }
+
+      npcMarkerGroup.add(markerRoot)
+      npcMarkerRoots.set(npc.entityId, markerRoot)
     }
   }
 
@@ -304,6 +359,31 @@ export function useSceneEditorViewport(opts: {
     selection.value = s
     refreshNpcHighlights()
     statusMessage.value = describeSelection(s)
+
+    // Attach TransformControls to the selected object's root group / pip.
+    // Disabled when nothing is selected to avoid TC stealing pointer from OrbitControls.
+    if (s?.kind === 'npc') {
+      const root = npcMarkerRoots.get(s.entityId)
+      if (root) {
+        transformControls.attach(root)
+        transformControls.enabled = true
+      } else {
+        transformControls.detach()
+        transformControls.enabled = false
+      }
+    } else if (s?.kind === 'zone') {
+      const pip = zoneRingPips.get(s.id)
+      if (pip) {
+        transformControls.attach(pip)
+        transformControls.enabled = true
+      } else {
+        transformControls.detach()
+        transformControls.enabled = false
+      }
+    } else {
+      transformControls.detach()
+      transformControls.enabled = false
+    }
   }
 
   function refreshNpcHighlights(): void {
@@ -335,6 +415,13 @@ export function useSceneEditorViewport(opts: {
     const n = cfg.npcs?.length ?? 0
     const z = cfg.zones?.length ?? 0
     return `Scene loaded — ${n} NPC${n !== 1 ? 's' : ''}, ${z} zone${z !== 1 ? 's' : ''}`
+  }
+
+  // ─── Transform mode ───────────────────────────────────────────────────────────
+
+  function setTransformMode(mode: TransformMode): void {
+    transformMode.value = mode
+    transformControls.setMode(mode)
   }
 
   // ─── Path edit mode ──────────────────────────────────────────────────────────
@@ -400,6 +487,8 @@ export function useSceneEditorViewport(opts: {
 
   function onMouseUp(e: MouseEvent): void {
     if (e.button !== 0) return
+    // If the gizmo was clicked, skip selection logic (let TransformControls handle it).
+    if (gizmoMouseDown) { gizmoMouseDown = false; return }
     if (Math.abs(e.clientX - mouseDownX) > 5 || Math.abs(e.clientY - mouseDownY) > 5) return
 
     const canvas = canvasRef.value!
@@ -445,6 +534,9 @@ export function useSceneEditorViewport(opts: {
     const tag = (e.target as HTMLElement)?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA') return
     if (e.code === 'Escape') setSelection({ kind: 'scene' })
+    if (e.code === 'KeyT') setTransformMode('translate')
+    if (e.code === 'KeyR') setTransformMode('rotate')
+    if (e.code === 'KeyS') setTransformMode('scale')
   }
 
   function onResize(): void {
@@ -464,6 +556,10 @@ export function useSceneEditorViewport(opts: {
     canvas?.removeEventListener('mouseup', onMouseUp)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('resize', onResize)
+    if (transformControls) {
+      scene?.remove(transformControls.getHelper())
+      transformControls.dispose()
+    }
     controls?.dispose()
     renderer?.dispose()
     npcSphereGeo.dispose()
@@ -473,6 +569,7 @@ export function useSceneEditorViewport(opts: {
     sceneObjects = []
     npcSpheres.clear()
     zoneRingPips.clear()
+    npcMarkerRoots.clear()
     npcPathViz.clear()
   }
 
@@ -483,7 +580,9 @@ export function useSceneEditorViewport(opts: {
     isReady: shallowReadonly(isReady),
     statusMessage: shallowReadonly(statusMessage),
     selection: shallowReadonly(selection),
+    transformMode: shallowReadonly(transformMode),
     setSelection,
+    setTransformMode,
     setPathEditMode,
     updateNpcPath,
     clearNpcPath,

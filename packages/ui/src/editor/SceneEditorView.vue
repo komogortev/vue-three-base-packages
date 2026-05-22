@@ -50,8 +50,29 @@
         <span><kbd>Click</kbd> select</span>
         <span><kbd>Drag</kbd> orbit</span>
         <span><kbd>Scroll</kbd> zoom</span>
+        <span v-if="hasObjectSelected && !isPathEditing"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale</span>
+        <span v-if="hasObjectSelected"><kbd>Esc</kbd> deselect</span>
         <span v-if="isPathEditing"><kbd>Click floor</kbd> add waypoint &nbsp;<kbd>Ctrl+Z</kbd> undo</span>
         <span v-if="isPathEditing"><kbd>Esc</kbd> stop editing</span>
+      </div>
+
+      <!-- Transform toolbar (top-right, visible when object selected) -->
+      <div v-if="hasObjectSelected" class="transform-toolbar">
+        <button
+          :class="['tb-btn', { active: transformMode === 'translate' }]"
+          title="Translate (T)"
+          @click="setTransformMode('translate')"
+        >T</button>
+        <button
+          :class="['tb-btn', { active: transformMode === 'rotate' }]"
+          title="Rotate (R)"
+          @click="setTransformMode('rotate')"
+        >R</button>
+        <button
+          :class="['tb-btn', { active: transformMode === 'scale' }]"
+          title="Scale (S)"
+          @click="setTransformMode('scale')"
+        >S</button>
       </div>
     </div>
 
@@ -127,7 +148,9 @@ const {
   isReady,
   statusMessage,
   selection: viewportSelection,
+  transformMode,
   setSelection,
+  setTransformMode,
   setPathEditMode,
   updateNpcPath,
   clearNpcPath,
@@ -229,6 +252,13 @@ const npcPathIds = computed(() => {
   }
   return ids
 })
+
+// ─── Derived selection state ──────────────────────────────────────────────────
+
+/** True when an NPC or zone is selected (gizmo is visible). */
+const hasObjectSelected = computed(() =>
+  selection.value?.kind === 'npc' || selection.value?.kind === 'zone'
+)
 
 // ─── Path edit mode coordination ──────────────────────────────────────────────
 
@@ -355,5 +385,39 @@ kbd {
   border-radius: 3px;
   border: 1px solid #1a3050;
   margin-right: 2px;
+}
+
+/* ── Transform toolbar ────────────────────────────────────────────────────── */
+.transform-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 4px;
+}
+
+.tb-btn {
+  background: rgba(0, 0, 0, 0.70);
+  color: #3a6080;
+  border: 1px solid #1a3050;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: bold;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tb-btn:hover {
+  color: #7ab0d8;
+  border-color: rgba(90, 176, 245, 0.3);
+}
+.tb-btn.active {
+  background: rgba(0, 170, 255, 0.15);
+  color: #00aaff;
+  border-color: rgba(0, 170, 255, 0.5);
 }
 </style>

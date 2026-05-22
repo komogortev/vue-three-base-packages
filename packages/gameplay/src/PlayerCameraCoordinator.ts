@@ -41,6 +41,14 @@ export interface CoordinatorTickContext {
   playableRadius: number
 }
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+/** Tab cycle order for toggle_camera action. */
+const CAMERA_MODE_ORDER: GameplayCameraMode[] = ['third-person', 'first-person', 'free-float']
+
+/** Free-float translation speed in m/s. */
+const FF_SPEED = 12
+
 // ─── Coordinator ─────────────────────────────────────────────────────────────
 
 /**
@@ -75,6 +83,14 @@ export class PlayerCameraCoordinator {
   // First-person pitch state (radians, YXZ order)
   private fpPitch = 0
   private readonly fpPitchLimit: number
+
+  // Free-float camera state — seeded from camera transform on mode entry
+  private ffYaw = 0
+  private ffPitch = 0
+  private readonly ffPosition = new THREE.Vector3()
+
+  // Last camera seen in tick() — used to seed free-float when toggle passes camera=null
+  private lastCamera: THREE.PerspectiveCamera | null = null
 
   constructor(
     private readonly player: PlayerController,
@@ -115,8 +131,8 @@ export class PlayerCameraCoordinator {
     this.offInputAction = eventBus.on('input:action', (raw) => {
       const e = raw as InputActionEvent
       if (e.action === 'toggle_camera' && e.type === 'pressed') {
-        const next: GameplayCameraMode =
-          this.gameplayCam.getMode() === 'third-person' ? 'first-person' : 'third-person'
+        const idx = CAMERA_MODE_ORDER.indexOf(this.gameplayCam.getMode())
+        const next = CAMERA_MODE_ORDER[(idx + 1) % CAMERA_MODE_ORDER.length]
         this.setCameraMode(next, null, null, eventBus)
       }
     })
@@ -159,13 +175,31 @@ export class PlayerCameraCoordinator {
       this.lookYawAcc = 0
       this.lookPitchAcc = 0
       this.player.setMovementBasis('facing')
+    } else if (mode === 'free-float') {
+      // Camera detaches from character; player stands still.
+      // Seed ff state from current camera transform so the view doesn't jump.
+      // Falls back to lastCamera (cached each tick) when caller passes null —
+      // the Tab toggle always passes null, so the fallback is the common path.
+      this.player.setMovementBasis('facing')
+      this.lookYawAcc = 0
+      this.lookPitchAcc = 0
+      const seedCam = camera ?? this.lastCamera
+      if (seedCam) {
+        this.ffPosition.copy(seedCam.position)
+        const euler = new THREE.Euler().setFromQuaternion(seedCam.quaternion, 'YXZ')
+        this.ffYaw = euler.y
+        this.ffPitch = euler.x
+      }
     } else {
+      // first-person
       this.player.setMovementBasis('camera')
     }
 
     this.gameplayCam.setMode(mode)
 
-    if (camera && character) {
+    // Snap only for modes that follow the character; free-float stays where the
+    // camera already is (seeded from camera.position above).
+    if (mode !== 'free-float' && camera && character) {
       this.gameplayCam.snapToCharacter(
         camera,
         character,
@@ -216,13 +250,25 @@ export class PlayerCameraCoordinator {
   /**
    * Drive look input, move intent, and {@link PlayerController.tick} for one frame.
    * Call before host game logic (consumeEvents, animRig, exit zones, etc.).
+   *
+   * In free-float mode the player tick is skipped; look input is routed into
+   * the free-float yaw/pitch state instead.
    */
   tickPlayer(delta: number, ctx: CoordinatorTickContext): void {
     const { camera, character, sampler, playableRadius } = ctx
+    this.lastCamera = camera
+    const mode = this.gameplayCam.getMode()
 
     // ── Apply look input ────────────────────────────────────────────────────
     if (this.lookYawAcc !== 0 || this.lookPitchAcc !== 0) {
-      if (this.gameplayCam.getMode() === 'first-person') {
+      if (mode === 'free-float') {
+        this.ffYaw += this.lookYawAcc
+        this.ffPitch = THREE.MathUtils.clamp(
+          this.ffPitch + this.lookPitchAcc,
+          -this.fpPitchLimit,
+          this.fpPitchLimit,
+        )
+      } else if (mode === 'first-person') {
         this.player.addFacingDelta(this.lookYawAcc)
         this.fpPitch = THREE.MathUtils.clamp(
           this.fpPitch + this.lookPitchAcc,
@@ -242,6 +288,13 @@ export class PlayerCameraCoordinator {
       this.lookPitchAcc = 0
     }
 
+    // ── Free-float: player stands still; WASD drives camera in tickCamera ──
+    if (mode === 'free-float') {
+      this.locoSprintOr = false
+      this.locoCrouchOr = false
+      return
+    }
+
     // ── Move intent ─────────────────────────────────────────────────────────
     this.player.setMoveIntent(this.moveX, this.moveY)
 
@@ -251,7 +304,7 @@ export class PlayerCameraCoordinator {
     this.locoSprintOr = false
     this.locoCrouchOr = false
 
-    const isThirdPerson = this.gameplayCam.getMode() === 'third-person'
+    const isThirdPerson = mode === 'third-person'
     this.player.tick(delta, {
       camera,
       character,
@@ -268,9 +321,35 @@ export class PlayerCameraCoordinator {
   /**
    * Drive {@link GameplayCameraController.update} for one frame.
    * Call after host game logic has run (animRig, consumeEvents, etc.).
+   *
+   * In free-float mode the camera is driven directly (WASD + mouse-look);
+   * {@link GameplayCameraController.update} is bypassed.
    */
   tickCamera(delta: number, ctx: CoordinatorTickContext): void {
-    const isThirdPerson = this.gameplayCam.getMode() === 'third-person'
+    const mode = this.gameplayCam.getMode()
+
+    if (mode === 'free-float') {
+      // Translate in the full 3D direction the camera is pointing.
+      // With YXZ Euler (yaw, pitch):
+      //   forward = (−sinYaw·cosPitch,  sinPitch,  −cosYaw·cosPitch)
+      //   right   = ( cosYaw,           0,         −sinYaw)          ← stays horizontal
+      const sinY = Math.sin(this.ffYaw)
+      const cosY = Math.cos(this.ffYaw)
+      const sinP = Math.sin(this.ffPitch)
+      const cosP = Math.cos(this.ffPitch)
+      this.ffPosition.x += (-sinY * cosP * this.moveY + cosY * this.moveX) * FF_SPEED * delta
+      this.ffPosition.y +=  sinP * this.moveY * FF_SPEED * delta
+      this.ffPosition.z += (-cosY * cosP * this.moveY - sinY * this.moveX) * FF_SPEED * delta
+
+      ctx.camera.position.copy(this.ffPosition)
+      ctx.camera.rotation.order = 'YXZ'
+      ctx.camera.rotation.y = this.ffYaw
+      ctx.camera.rotation.x = this.ffPitch
+      ctx.camera.rotation.z = 0
+      return
+    }
+
+    const isThirdPerson = mode === 'third-person'
     this.gameplayCam.update(
       ctx.camera,
       delta,
@@ -291,5 +370,6 @@ export class PlayerCameraCoordinator {
     this.lookYawAcc = 0
     this.lookPitchAcc = 0
     this.fpPitch = 0
+    this.lastCamera = null
   }
 }
