@@ -24,6 +24,17 @@
     <!-- Assets section (uploaded GLB/FBX registry) -->
     <SceneEditorAssetsSection @asset-picked="emit('asset-picked', $event)" />
 
+    <!-- Player row — always present; click to enter follow-3p mode -->
+    <div
+      class="row row-group"
+      :class="{ active: modelValue?.kind === 'player' }"
+      @click="emit('update:modelValue', { kind: 'player' })"
+    >
+      <span class="row-icon player-icon">▶</span>
+      <span class="row-label">Player</span>
+      <span v-if="editorCamMode && editorCamMode !== 'orbit'" class="badge-cam">{{ editorCamMode }}</span>
+    </div>
+
     <!-- Scene settings row -->
     <div
       class="row row-group"
@@ -99,7 +110,7 @@
 
 <script setup lang="ts">
 import SceneEditorAssetsSection from './SceneEditorAssetsSection.vue'
-import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry } from './sceneEditorTypes'
+import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry, EditorCamMode } from './sceneEditorTypes'
 
 const props = defineProps<{
   modelValue: EditorSelection
@@ -114,6 +125,8 @@ const props = defineProps<{
   scenes?: SceneEditorEntry[]
   /** Currently active scene id — controls the dropdown selection. */
   activeSceneId?: string
+  /** Current editor camera mode — shown as a badge on the Player row. */
+  editorCamMode?: EditorCamMode
 }>()
 
 const emit = defineEmits<{
@@ -232,6 +245,18 @@ function npcHasPath(entityId: string): boolean {
 .row-icon.exit-dot { color: #ffdd44; }
 .row-icon.prox-dot { color: #44ff88; }
 .row-icon.placed-dot { color: #c099ff; }
+.row-icon.player-icon { color: #00d4aa; }
+
+.badge-cam {
+  font-family: monospace;
+  font-size: 8px;
+  background: rgba(0, 212, 170, 0.12);
+  color: #00d4aa;
+  border: 1px solid rgba(0, 212, 170, 0.25);
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
 
 .row-label {
   flex: 1;

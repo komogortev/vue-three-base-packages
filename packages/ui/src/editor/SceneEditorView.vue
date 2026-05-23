@@ -30,6 +30,7 @@
       :npc-path-ids="npcPathIds"
       :scenes="scenes"
       :active-scene-id="activeSceneId"
+      :editor-cam-mode="editorCamMode"
       @switch-scene="onSwitchScene"
       @asset-picked="onAssetPicked"
     />
@@ -49,15 +50,26 @@
 
       <!-- Hint strip (top-left) -->
       <div class="hint-strip">
-        <span v-if="!isInPlaceMode"><kbd>Click</kbd> select</span>
-        <span v-if="!isInPlaceMode"><kbd>Drag</kbd> orbit</span>
-        <span v-if="!isInPlaceMode"><kbd>Scroll</kbd> zoom</span>
+        <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Click</kbd> select</span>
+        <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Drag</kbd> orbit</span>
+        <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Scroll</kbd> zoom</span>
         <span v-if="hasObjectSelected && !isPathEditing && !isInPlaceMode"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale</span>
         <span v-if="hasObjectSelected && !isInPlaceMode"><kbd>Esc</kbd> deselect</span>
         <span v-if="isPathEditing"><kbd>Click floor</kbd> add waypoint &nbsp;<kbd>Ctrl+Z</kbd> undo</span>
         <span v-if="isPathEditing"><kbd>Esc</kbd> stop editing</span>
         <span v-if="isInPlaceMode"><kbd>Click floor</kbd> place object</span>
         <span v-if="isInPlaceMode"><kbd>Esc</kbd> cancel</span>
+        <span v-if="editorCamMode === 'follow-3p'"><kbd>WASD</kbd> move player</span>
+        <span v-if="editorCamMode === 'follow-3p'"><kbd>Drag</kbd> orbit camera</span>
+        <span v-if="editorCamMode === 'free-float'"><kbd>WASD</kbd> fly · <kbd>E/Q</kbd> up/down</span>
+        <span v-if="editorCamMode === 'free-float'"><kbd>Mouse</kbd> look</span>
+        <span v-if="!isInPlaceMode"><kbd>Tab</kbd> cycle camera</span>
+        <span v-if="isPlayerMode"><kbd>Esc</kbd> back to orbit</span>
+      </div>
+
+      <!-- Camera mode pill (top-right corner, always visible) -->
+      <div class="cam-mode-pill" :class="`cam-${editorCamMode}`">
+        {{ editorCamMode === 'orbit' ? 'Orbit' : editorCamMode === 'follow-3p' ? 'Follow 3P' : 'Free Float' }}
       </div>
 
       <!-- Transform toolbar (top-right, visible when object selected) -->
@@ -155,6 +167,7 @@ const {
   statusMessage,
   selection: viewportSelection,
   transformMode,
+  editorCamMode,
   placedObjects,
   isInPlaceMode,
   setSelection,
@@ -277,12 +290,14 @@ const npcPathIds = computed(() => {
 
 // ─── Derived selection state ──────────────────────────────────────────────────
 
-/** True when an NPC, zone, or placed object is selected (gizmo is visible). */
+/** True when an NPC, zone, or placed object is selected (gizmo is visible; excludes player). */
 const hasObjectSelected = computed(() =>
   selection.value?.kind === 'npc' ||
   selection.value?.kind === 'zone' ||
   selection.value?.kind === 'placed'
 )
+
+const isPlayerMode = computed(() => editorCamMode.value !== 'orbit')
 
 // ─── Path edit mode coordination ──────────────────────────────────────────────
 
@@ -411,10 +426,40 @@ kbd {
   margin-right: 2px;
 }
 
+/* ── Camera mode pill ─────────────────────────────────────────────────────── */
+.cam-mode-pill {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid;
+  pointer-events: none;
+}
+.cam-mode-pill.cam-orbit {
+  background: rgba(0,0,0,0.55);
+  color: #3a6080;
+  border-color: #1a3050;
+}
+.cam-mode-pill.cam-follow-3p {
+  background: rgba(0, 212, 170, 0.12);
+  color: #00d4aa;
+  border-color: rgba(0, 212, 170, 0.3);
+}
+.cam-mode-pill.cam-free-float {
+  background: rgba(90, 140, 255, 0.12);
+  color: #7aaaff;
+  border-color: rgba(90, 140, 255, 0.3);
+}
+
 /* ── Transform toolbar ────────────────────────────────────────────────────── */
 .transform-toolbar {
   position: absolute;
-  top: 10px;
+  top: 38px;  /* shifted down to clear the camera mode pill */
   right: 10px;
   display: flex;
   gap: 4px;

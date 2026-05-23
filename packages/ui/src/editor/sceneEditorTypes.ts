@@ -112,11 +112,17 @@ export interface EditorPlacedObject {
   z: number
 }
 
+// ─── Camera mode ─────────────────────────────────────────────────────────────
+
+/** Editor viewport camera mode — cycles via Tab. */
+export type EditorCamMode = 'orbit' | 'follow-3p' | 'free-float'
+
 // ─── Selection state ──────────────────────────────────────────────────────────
 
 export type EditorSelection =
   | { kind: 'npc'; entityId: string }
   | { kind: 'zone'; id: string }
   | { kind: 'placed'; objectId: string }
+  | { kind: 'player' }
   | { kind: 'scene' }
   | null

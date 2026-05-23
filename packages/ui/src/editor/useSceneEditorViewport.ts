@@ -3,7 +3,8 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
-import type { SceneEditorConfig, EditorSelection, EditorPlacedObject } from './sceneEditorTypes'
+import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
+export type { EditorCamMode } from './sceneEditorTypes'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +27,8 @@ export interface SceneEditorViewportReturn {
   statusMessage: Readonly<Ref<string>>
   selection: Readonly<Ref<EditorSelection>>
   transformMode: Readonly<Ref<TransformMode>>
+  /** Current camera / player mode — orbit | follow-3p | free-float. */
+  editorCamMode: Readonly<Ref<EditorCamMode>>
   /** Live list of placed objects — reactive, readable by hierarchy. */
   placedObjects: Readonly<Ref<EditorPlacedObject[]>>
   /** True while waiting for a floor click to place an asset. */
@@ -129,6 +132,24 @@ export function useSceneEditorViewport(opts: {
   let pathEditActive = false
   let onFloorHitCb: ((pos: THREE.Vector3) => void) | undefined
 
+  // ─── Player & camera mode ─────────────────────────────────────────────────
+  const editorCamMode = ref<EditorCamMode>('orbit')
+
+  // Player capsule proxy (no character GLB dependency for D-5)
+  let playerMesh: THREE.Mesh | null = null
+
+  // Delta time
+  const clock = new THREE.Clock()
+
+  // Keys currently held (WASD + modifiers); polled each frame for smooth movement
+  const keyState = new Set<string>()
+
+  // Free-float camera state (mirrors D-1 PlayerCameraCoordinator pattern)
+  let ffYaw = 0
+  let ffPitch = 0
+  const ffPos = new THREE.Vector3()
+  let ffPointerLocked = false
+
   // ─── Init ───────────────────────────────────────────────────────────────────
   // Creates renderer/camera/controls/lights once. Then calls loadScene().
 
@@ -199,8 +220,12 @@ export function useSceneEditorViewport(opts: {
     canvas.addEventListener('mousedown', onMouseDown)
     canvas.addEventListener('mouseup', onMouseUp)
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('pointerlockchange', onPointerLockChange)
     window.addEventListener('resize', onResize)
 
+    initPlayer()
     animate()
 
     await loadScene(config)
@@ -405,6 +430,17 @@ export function useSceneEditorViewport(opts: {
     refreshNpcHighlights()
     statusMessage.value = describeSelection(s)
 
+    if (s?.kind === 'player') {
+      // Player selected: enter follow-3p mode, TC inactive (player moves via WASD)
+      if (editorCamMode.value !== 'follow-3p') setEditorCamMode('follow-3p')
+      transformControls.detach()
+      transformControls.enabled = false
+      return
+    }
+
+    // Non-player selection: exit follow-3p (return camera to free orbit)
+    if (editorCamMode.value === 'follow-3p') setEditorCamMode('orbit')
+
     // Attach TransformControls to the selected object's root group / pip.
     // Disabled when nothing is selected to avoid TC stealing pointer from OrbitControls.
     if (s?.kind === 'npc') {
@@ -451,6 +487,9 @@ export function useSceneEditorViewport(opts: {
   function describeSelection(s: EditorSelection): string {
     if (!s || s.kind === 'scene') {
       return sceneStatus(config)
+    }
+    if (s.kind === 'player') {
+      return 'Player — WASD to move · Tab to cycle camera'
     }
     if (s.kind === 'npc') {
       const npc = config.npcs?.find(n => n.entityId === s.entityId)
@@ -603,10 +642,108 @@ export function useSceneEditorViewport(opts: {
     updateNpcPath(entityId, [])
   }
 
+  // ─── Player proxy ─────────────────────────────────────────────────────────────
+
+  function initPlayer(): void {
+    // CapsuleGeometry(radius, length, capSegs, radialSegs): total height = length + 2*radius
+    // radius=0.35, length=1.1 → height=1.8m; mesh center at local y=0, bottom at y=-0.9
+    const geo = new THREE.CapsuleGeometry(0.35, 1.1, 4, 8)
+    const mat = new THREE.MeshStandardMaterial({ color: 0x00d4aa, roughness: 0.6 })
+    playerMesh = new THREE.Mesh(geo, mat)
+    playerMesh.name = '__player__'
+    playerMesh.position.set(0, 0.9, 0) // bottom of capsule at y=0
+    playerMesh.visible = false
+    scene.add(playerMesh)
+  }
+
+  // ─── Camera mode ─────────────────────────────────────────────────────────────
+
+  const CAM_MODE_ORDER: EditorCamMode[] = ['orbit', 'follow-3p', 'free-float']
+
+  /** Switch camera mode — handles Three.js state only, no selection changes. */
+  function setEditorCamMode(mode: EditorCamMode): void {
+    editorCamMode.value = mode
+    const mesh = playerMesh
+    if (mode === 'orbit') {
+      controls.enabled = true
+      if (mesh) mesh.visible = false
+      if (ffPointerLocked) document.exitPointerLock()
+    } else if (mode === 'follow-3p') {
+      controls.enabled = true
+      if (mesh) mesh.visible = true
+      if (ffPointerLocked) document.exitPointerLock()
+      // Snap OrbitControls target to player so camera doesn't jump
+      if (mesh) controls.target.copy(mesh.position)
+      controls.update()
+    } else {
+      // free-float
+      controls.enabled = false
+      if (mesh) mesh.visible = false
+      // Seed free-float state from current camera orientation
+      ffPos.copy(camera.position)
+      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
+      ffYaw = euler.y
+      ffPitch = euler.x
+      canvasRef.value?.requestPointerLock()
+    }
+  }
+
+  /** Tab cycles orbit → follow-3p → free-float → orbit, syncing selection. */
+  function cycleEditorCamMode(): void {
+    const next = CAM_MODE_ORDER[(CAM_MODE_ORDER.indexOf(editorCamMode.value) + 1) % CAM_MODE_ORDER.length]
+    setEditorCamMode(next)
+    if (next === 'follow-3p') {
+      // Auto-select player when entering follow mode
+      setSelection({ kind: 'player' })
+    } else if (selection.value?.kind === 'player') {
+      setSelection({ kind: 'scene' })
+    }
+  }
+
   // ─── Render loop ─────────────────────────────────────────────────────────────
 
   function animate(): void {
     animId = requestAnimationFrame(animate)
+    const delta = Math.min(clock.getDelta(), 0.05)
+
+    if (editorCamMode.value === 'follow-3p' && playerMesh) {
+      const moveX = (keyState.has('KeyD') ? 1 : 0) - (keyState.has('KeyA') ? 1 : 0)
+      const moveZ = (keyState.has('KeyS') ? 1 : 0) - (keyState.has('KeyW') ? 1 : 0)
+      if (moveX !== 0 || moveZ !== 0) {
+        const spd = 6 * delta
+        // Camera-relative WASD: forward = camera's XZ look direction
+        const camFwd = new THREE.Vector3()
+        camera.getWorldDirection(camFwd)
+        camFwd.y = 0
+        camFwd.normalize()
+        const camRight = new THREE.Vector3().crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize()
+        const move = new THREE.Vector3()
+          .addScaledVector(camFwd, -moveZ)   // W = forward, S = back
+          .addScaledVector(camRight, moveX)  // D = right, A = left
+        move.normalize()
+        playerMesh.position.addScaledVector(move, spd)
+        playerMesh.position.y = 0.9 // stay grounded on flat editor floor
+      }
+      // OrbitControls target lerps to player so camera smoothly follows
+      controls.target.lerp(playerMesh.position, 0.1)
+    } else if (editorCamMode.value === 'free-float') {
+      const spd = 10 * delta
+      const sinY = Math.sin(ffYaw)
+      const cosY = Math.cos(ffYaw)
+      const cosP = Math.cos(ffPitch)
+      const sinP = Math.sin(ffPitch)
+      const fwd = new THREE.Vector3(-sinY * cosP, sinP, -cosY * cosP)
+      const right = new THREE.Vector3(cosY, 0, -sinY)
+      if (keyState.has('KeyW')) ffPos.addScaledVector(fwd, spd)
+      if (keyState.has('KeyS')) ffPos.addScaledVector(fwd, -spd)
+      if (keyState.has('KeyA')) ffPos.addScaledVector(right, -spd)
+      if (keyState.has('KeyD')) ffPos.addScaledVector(right, spd)
+      if (keyState.has('KeyE') || keyState.has('Space')) ffPos.y += spd
+      if (keyState.has('KeyQ')) ffPos.y -= spd
+      camera.position.copy(ffPos)
+      camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
+    }
+
     controls.update()
     renderer.render(scene, camera)
   }
@@ -620,6 +757,8 @@ export function useSceneEditorViewport(opts: {
 
   function onMouseUp(e: MouseEvent): void {
     if (e.button !== 0) return
+    // Free-float uses pointer lock — ignore canvas clicks while locked
+    if (editorCamMode.value === 'free-float') return
     // If the gizmo was clicked, skip selection logic (let TransformControls handle it).
     if (gizmoMouseDown) { gizmoMouseDown = false; return }
     if (Math.abs(e.clientX - mouseDownX) > 5 || Math.abs(e.clientY - mouseDownY) > 5) return
@@ -639,6 +778,15 @@ export function useSceneEditorViewport(opts: {
         void placeObject(floorHits[0].point.clone())
       }
       return
+    }
+
+    // 0. Player mesh hit? (only when visible — invisible in orbit/free-float)
+    if (playerMesh && playerMesh.visible) {
+      const playerHits = raycaster.intersectObject(playerMesh, false)
+      if (playerHits.length > 0) {
+        setSelection({ kind: 'player' })
+        return
+      }
     }
 
     // 1. NPC sphere hit?
@@ -684,13 +832,56 @@ export function useSceneEditorViewport(opts: {
   function onKeyDown(e: KeyboardEvent): void {
     const tag = (e.target as HTMLElement)?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA') return
-    if (e.code === 'Escape') {
-      if (placeMode.active) { exitPlaceMode(); return }
-      setSelection({ kind: 'scene' })
+
+    keyState.add(e.code)
+
+    if (e.code === 'Tab') {
+      e.preventDefault()
+      cycleEditorCamMode()
+      return
     }
-    if (e.code === 'KeyT') setTransformMode('translate')
-    if (e.code === 'KeyR') setTransformMode('rotate')
-    if (e.code === 'KeyS') setTransformMode('scale')
+
+    if (e.code === 'Escape') {
+      if (editorCamMode.value === 'free-float') {
+        // Browser releases pointer lock on Esc; pointerlockchange will handle mode switch
+        return
+      }
+      if (placeMode.active) { exitPlaceMode(); return }
+      if (editorCamMode.value === 'follow-3p') {
+        setEditorCamMode('orbit')
+        setSelection({ kind: 'scene' })
+        return
+      }
+      setSelection({ kind: 'scene' })
+      return
+    }
+
+    // T/R/S transform shortcuts — only in orbit mode (WASD drives player/camera otherwise)
+    if (editorCamMode.value === 'orbit') {
+      if (e.code === 'KeyT') setTransformMode('translate')
+      if (e.code === 'KeyR') setTransformMode('rotate')
+      if (e.code === 'KeyS') setTransformMode('scale')
+    }
+  }
+
+  function onKeyUp(e: KeyboardEvent): void {
+    keyState.delete(e.code)
+  }
+
+  function onMouseMove(e: MouseEvent): void {
+    if (editorCamMode.value !== 'free-float' || !ffPointerLocked) return
+    const sensitivity = 0.002
+    ffYaw -= e.movementX * sensitivity
+    ffPitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, ffPitch - e.movementY * sensitivity))
+  }
+
+  function onPointerLockChange(): void {
+    ffPointerLocked = document.pointerLockElement === canvasRef.value
+    // If the user pressed Esc to exit pointer lock while in free-float, return to orbit
+    if (!ffPointerLocked && editorCamMode.value === 'free-float') {
+      setEditorCamMode('orbit')
+      if (selection.value?.kind === 'player') setSelection({ kind: 'scene' })
+    }
   }
 
   function onResize(): void {
@@ -709,7 +900,18 @@ export function useSceneEditorViewport(opts: {
     canvas?.removeEventListener('mousedown', onMouseDown)
     canvas?.removeEventListener('mouseup', onMouseUp)
     window.removeEventListener('keydown', onKeyDown)
+    window.removeEventListener('keyup', onKeyUp)
+    window.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('pointerlockchange', onPointerLockChange)
     window.removeEventListener('resize', onResize)
+    if (ffPointerLocked) document.exitPointerLock()
+    keyState.clear()
+    if (playerMesh) {
+      playerMesh.geometry.dispose()
+      ;(playerMesh.material as THREE.Material).dispose()
+      scene?.remove(playerMesh)
+      playerMesh = null
+    }
     if (transformControls) {
       scene?.remove(transformControls.getHelper())
       transformControls.dispose()
@@ -737,6 +939,7 @@ export function useSceneEditorViewport(opts: {
     statusMessage: shallowReadonly(statusMessage),
     selection: shallowReadonly(selection),
     transformMode: shallowReadonly(transformMode),
+    editorCamMode: shallowReadonly(editorCamMode),
     placedObjects: shallowReadonly(placedObjects),
     isInPlaceMode: shallowReadonly(isInPlaceMode),
     setSelection,
