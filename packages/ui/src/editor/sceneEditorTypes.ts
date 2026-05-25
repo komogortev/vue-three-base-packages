@@ -96,8 +96,8 @@ export interface EditorOrbitBookmark {
 
 /**
  * A GLB asset placed into the scene by the editor.
- * Position captured at place time; transforms are live on the Three.js root group.
- * Persisted to sandbox descriptor by D-6 save/load.
+ * Position/rotation/scale are written at placement time with defaults,
+ * then snapshotted from live Three.js roots via snapshotPlacedTransforms() on save.
  */
 export interface EditorPlacedObject {
   /** Unique instance id — 'placed-<nanoid6>'. Distinct from assetId. */
@@ -106,10 +106,18 @@ export interface EditorPlacedObject {
   assetId: string
   /** Human-readable label (asset filename). */
   label: string
-  /** World position at placement time (authoritative until D-6 write-back). */
+  /** World position. */
   x: number
   y: number
   z: number
+  /** World rotation in Euler XYZ (radians). Defaults to 0 at placement. */
+  rotationX: number
+  rotationY: number
+  rotationZ: number
+  /** Uniform scale (TC enforces uniform). Defaults to 1 at placement. */
+  scaleX: number
+  scaleY: number
+  scaleZ: number
 }
 
 // ─── Camera mode ─────────────────────────────────────────────────────────────

@@ -59,6 +59,12 @@ export interface SceneEditorViewportReturn {
   enterPlaceMode: (objectId: string, assetId: string, blobUrl: string, label: string) => void
   /** Cancel place mode without placing anything. */
   exitPlaceMode: () => void
+  /**
+   * Snapshot the live transforms (position/rotation/scale) from Three.js roots
+   * for all placed objects. Call this immediately before serializing to avoid
+   * reading stale placement-time values.
+   */
+  snapshotPlacedTransforms: () => EditorPlacedObject[]
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -597,7 +603,12 @@ export function useSceneEditorViewport(opts: {
 
     placedObjects.value = [
       ...placedObjects.value,
-      { id: objectId, assetId, label, x: pos.x, y: pos.y, z: pos.z },
+      {
+        id: objectId, assetId, label,
+        x: pos.x, y: pos.y, z: pos.z,
+        rotationX: 0, rotationY: 0, rotationZ: 0,
+        scaleX: 1, scaleY: 1, scaleZ: 1,
+      },
     ]
 
     // Auto-select the freshly placed object
@@ -892,6 +903,27 @@ export function useSceneEditorViewport(opts: {
     renderer.setSize(canvas.clientWidth, canvas.clientHeight)
   }
 
+  // ─── Snapshot ────────────────────────────────────────────────────────────────
+
+  function snapshotPlacedTransforms(): EditorPlacedObject[] {
+    return placedObjects.value.map(obj => {
+      const root = placedMeshRoots.get(obj.id)
+      if (!root) return { ...obj }
+      return {
+        ...obj,
+        x: root.position.x,
+        y: root.position.y,
+        z: root.position.z,
+        rotationX: root.rotation.x,
+        rotationY: root.rotation.y,
+        rotationZ: root.rotation.z,
+        scaleX: root.scale.x,
+        scaleY: root.scale.y,
+        scaleZ: root.scale.z,
+      }
+    })
+  }
+
   // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
   function dispose(): void {
@@ -950,5 +982,6 @@ export function useSceneEditorViewport(opts: {
     reinitScene,
     enterPlaceMode,
     exitPlaceMode,
+    snapshotPlacedTransforms,
   }
 }

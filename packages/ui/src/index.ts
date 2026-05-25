@@ -54,4 +54,9 @@ export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
 export { useAssetStore, UploadError } from './editor/useAssetStore'
 export type { UploadErrorKind } from './editor/useAssetStore'
 export type { AssetRow, AssetKind } from './editor/assetDb'
+export { assetDb } from './editor/assetDb'
 export { default as AssetPicker } from './editor/AssetPicker.vue'
+
+// ── Sandbox scene schema ─────────────────────────────────────────────────────
+// Used by SandboxView (threejs-engine-dev) to load editor-saved scenes.
+export type { SavedPlacedObject, SandboxSceneSave } from './editor/sandboxSceneSchema'

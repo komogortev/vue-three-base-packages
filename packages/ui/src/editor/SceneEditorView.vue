@@ -72,6 +72,22 @@
         {{ editorCamMode === 'orbit' ? 'Orbit' : editorCamMode === 'follow-3p' ? 'Follow 3P' : 'Free Float' }}
       </div>
 
+      <!-- Save / Export toolbar (bottom-right) -->
+      <div class="save-toolbar">
+        <button
+          class="save-btn"
+          :disabled="placedObjects.length === 0"
+          title="Write placed objects to localStorage['sandbox:scene'] — enables Sandbox route"
+          @click="saveAsSandbox"
+        >Save as Sandbox</button>
+        <button
+          class="save-btn export-btn"
+          :disabled="placedObjects.length === 0 || isExporting"
+          title="Download a ZIP containing the scene manifest and all asset blobs"
+          @click="onExportZip"
+        >{{ isExporting ? 'Exporting…' : 'Export ZIP' }}</button>
+      </div>
+
       <!-- Transform toolbar (top-right, visible when object selected) -->
       <div v-if="hasObjectSelected" class="transform-toolbar">
         <button
@@ -113,6 +129,8 @@ import * as THREE from 'three'
 import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
+import { exportSandboxZip } from './exportSandboxZip'
+import type { SandboxSceneSave } from './sandboxSceneSchema'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import type { SceneEditorConfig, SceneEditorEntry, EditorSelection } from './sceneEditorTypes'
@@ -177,6 +195,7 @@ const {
   clearNpcPath,
   reinitScene,
   enterPlaceMode,
+  snapshotPlacedTransforms,
 } = useSceneEditorViewport({ canvas: canvasRef, config: activeConfig.value })
 
 // ─── Asset store (for place mode) ────────────────────────────────────────────
@@ -331,6 +350,43 @@ function flashStatus(msg: string): void {
     statusFlash.value = false
     displayStatus.value = statusMessage.value
   }, 2500)
+}
+
+// ─── Save / Export ───────────────────────────────────────────────────────────
+
+function buildSave(): SandboxSceneSave {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    placedObjects: snapshotPlacedTransforms(),
+  }
+}
+
+function saveAsSandbox(): void {
+  const save = buildSave()
+  try {
+    localStorage.setItem('sandbox:scene', JSON.stringify(save))
+    const n = save.placedObjects.length
+    flashStatus(`Saved to Sandbox — ${n} object${n !== 1 ? 's' : ''}`)
+  } catch {
+    flashStatus('Save failed — localStorage full?')
+  }
+}
+
+const isExporting = ref(false)
+
+async function onExportZip(): Promise<void> {
+  if (isExporting.value) return
+  isExporting.value = true
+  try {
+    await exportSandboxZip(buildSave())
+    const n = placedObjects.value.length
+    flashStatus(`ZIP exported — ${n} object${n !== 1 ? 's' : ''}`)
+  } catch {
+    flashStatus('ZIP export failed')
+  } finally {
+    isExporting.value = false
+  }
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
@@ -488,5 +544,40 @@ kbd {
   background: rgba(0, 170, 255, 0.15);
   color: #00aaff;
   border-color: rgba(0, 170, 255, 0.5);
+}
+
+/* ── Save / Export toolbar ────────────────────────────────────────────────── */
+.save-toolbar {
+  position: absolute;
+  bottom: 44px; /* above the status bar */
+  right: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+.save-btn {
+  background: rgba(0, 0, 0, 0.70);
+  color: #3a6080;
+  border: 1px solid #1a3050;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: bold;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.save-btn:hover:not(:disabled) {
+  color: #7ab0d8;
+  border-color: rgba(90, 176, 245, 0.3);
+}
+.save-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.save-btn.export-btn:hover:not(:disabled) {
+  color: #c099ff;
+  border-color: rgba(192, 153, 255, 0.3);
 }
 </style>
