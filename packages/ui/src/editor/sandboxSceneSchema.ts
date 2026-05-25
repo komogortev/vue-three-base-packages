@@ -27,6 +27,8 @@ export interface SavedPlacedObject {
 
 export interface SandboxSceneSave {
   version: 1
+  /** User-provided scene name. Optional for backward compat with legacy localStorage saves. */
+  name?: string
   /** ISO 8601 timestamp of when the scene was saved. */
   savedAt: string
   placedObjects: SavedPlacedObject[]

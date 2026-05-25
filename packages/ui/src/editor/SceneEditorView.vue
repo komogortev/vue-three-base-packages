@@ -74,12 +74,19 @@
 
       <!-- Save / Export toolbar (bottom-right) -->
       <div class="save-toolbar">
+        <input
+          v-model="sceneName"
+          class="scene-name-input"
+          placeholder="Scene name…"
+          maxlength="60"
+          spellcheck="false"
+        />
         <button
           class="save-btn"
-          :disabled="placedObjects.length === 0"
-          title="Write placed objects to localStorage['sandbox:scene'] — enables Sandbox route"
-          @click="saveAsSandbox"
-        >Save as Sandbox</button>
+          :disabled="placedObjects.length === 0 || isSaving"
+          title="Save scene to browser IndexedDB — accessible from Sandbox"
+          @click="saveScene"
+        >{{ isSaving ? 'Saving…' : 'Save Scene' }}</button>
         <button
           class="save-btn export-btn"
           :disabled="placedObjects.length === 0 || isExporting"
@@ -131,6 +138,7 @@ import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { exportSandboxZip } from './exportSandboxZip'
 import type { SandboxSceneSave } from './sandboxSceneSchema'
+import { assetDb } from './assetDb'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import type { SceneEditorConfig, SceneEditorEntry, EditorSelection } from './sceneEditorTypes'
@@ -216,6 +224,9 @@ function onAssetPicked(assetId: string): void {
 async function onSwitchScene(sceneId: string): Promise<void> {
   if (sceneId === activeSceneId.value) return
   activeSceneId.value = sceneId
+  // Reset saved-scene tracking so the next save creates a new Dexie row for this scene.
+  currentSceneId.value = null
+  sceneName.value = 'Untitled Scene'
   // Clear waypoint display — new scene has its own localStorage keys
   waypointMap.value = new Map()
   // Reset path-edit mode
@@ -354,22 +365,41 @@ function flashStatus(msg: string): void {
 
 // ─── Save / Export ───────────────────────────────────────────────────────────
 
+/** Scene name shown in the save toolbar input. */
+const sceneName = ref('Untitled Scene')
+/** Non-null after first save — used to overwrite rather than create a new row. */
+const currentSceneId = ref<string | null>(null)
+const isSaving = ref(false)
+
 function buildSave(): SandboxSceneSave {
   return {
     version: 1,
+    name: sceneName.value.trim() || 'Untitled Scene',
     savedAt: new Date().toISOString(),
     placedObjects: snapshotPlacedTransforms(),
   }
 }
 
-function saveAsSandbox(): void {
-  const save = buildSave()
+async function saveScene(): Promise<void> {
+  if (isSaving.value) return
+  isSaving.value = true
   try {
-    localStorage.setItem('sandbox:scene', JSON.stringify(save))
+    const save = buildSave()
+    if (!currentSceneId.value) {
+      currentSceneId.value = `scene-${nanoid(8)}`
+    }
+    await assetDb.scenes.put({
+      id: currentSceneId.value,
+      name: save.name!,
+      savedAt: save.savedAt,
+      placedObjects: save.placedObjects,
+    })
     const n = save.placedObjects.length
-    flashStatus(`Saved to Sandbox — ${n} object${n !== 1 ? 's' : ''}`)
+    flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}`)
   } catch {
-    flashStatus('Save failed — localStorage full?')
+    flashStatus('Save failed')
+  } finally {
+    isSaving.value = false
   }
 }
 
@@ -579,5 +609,24 @@ kbd {
 .save-btn.export-btn:hover:not(:disabled) {
   color: #c099ff;
   border-color: rgba(192, 153, 255, 0.3);
+}
+.scene-name-input {
+  background: rgba(0, 0, 0, 0.70);
+  color: #a0c4e0;
+  border: 1px solid #1a3050;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 10px;
+  padding: 4px 8px;
+  width: 140px;
+  outline: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+.scene-name-input:focus {
+  border-color: rgba(90, 176, 245, 0.4);
+  color: #c8e0f0;
+}
+.scene-name-input::placeholder {
+  color: #2a4060;
 }
 </style>

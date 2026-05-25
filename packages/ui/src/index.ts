@@ -53,7 +53,7 @@ export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
 
 export { useAssetStore, UploadError } from './editor/useAssetStore'
 export type { UploadErrorKind } from './editor/useAssetStore'
-export type { AssetRow, AssetKind } from './editor/assetDb'
+export type { AssetRow, AssetKind, SceneRow } from './editor/assetDb'
 export { assetDb } from './editor/assetDb'
 export { default as AssetPicker } from './editor/AssetPicker.vue'
 
