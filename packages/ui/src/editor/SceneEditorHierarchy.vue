@@ -8,14 +8,17 @@
   <aside class="hierarchy">
     <header class="hierarchy-header">
       <span class="title">Scene</span>
-      <!-- Multi-scene switcher dropdown -->
+      <!-- Scene switcher: static configs + saved Dexie scenes -->
       <select
-        v-if="scenes && scenes.length > 1"
+        v-if="scenes && scenes.length > 0"
         class="scene-select"
-        :value="activeSceneId"
-        @change="emit('switch-scene', ($event.target as HTMLSelectElement).value)"
+        :value="activeSavedSceneId ?? activeSceneId"
+        @change="onDropdownChange"
       >
         <option v-for="s in scenes" :key="s.id" :value="s.id">{{ s.label }}</option>
+        <optgroup v-if="savedScenes.length > 0" label="Saved">
+          <option v-for="ss in savedScenes" :key="ss.id" :value="ss.id">{{ ss.name }}</option>
+        </optgroup>
       </select>
       <!-- Single-scene label badge (backward compat) -->
       <span v-else-if="sceneLabel" class="scene-badge">{{ sceneLabel }}</span>
@@ -110,6 +113,8 @@
 
 <script setup lang="ts">
 import SceneEditorAssetsSection from './SceneEditorAssetsSection.vue'
+import { useLiveQuery } from './useLiveQuery'
+import { assetDb, type SceneRow } from './assetDb'
 import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry, EditorCamMode } from './sceneEditorTypes'
 
 const props = defineProps<{
@@ -123,8 +128,10 @@ const props = defineProps<{
   npcPathIds?: Set<string>
   /** When provided, renders a scene switcher dropdown instead of the label badge. */
   scenes?: SceneEditorEntry[]
-  /** Currently active scene id — controls the dropdown selection. */
+  /** Currently active static scene id — controls the dropdown selection when no saved scene is active. */
   activeSceneId?: string
+  /** ID of the currently loaded Dexie saved scene, or null/undefined when none is active. */
+  activeSavedSceneId?: string | null
   /** Current editor camera mode — shown as a badge on the Player row. */
   editorCamMode?: EditorCamMode
 }>()
@@ -133,7 +140,24 @@ const emit = defineEmits<{
   'update:modelValue': [value: EditorSelection]
   'switch-scene': [sceneId: string]
   'asset-picked': [assetId: string]
+  'load-scene': [sceneId: string]
 }>()
+
+// Live-queried saved scenes — most-recently-saved first.
+const savedScenes = useLiveQuery<SceneRow[]>(
+  () => assetDb.scenes.orderBy('savedAt').reverse().toArray(),
+  [],
+)
+
+function onDropdownChange(ev: Event): void {
+  const value = (ev.target as HTMLSelectElement).value
+  const isSaved = savedScenes.value.some(ss => ss.id === value)
+  if (isSaved) {
+    emit('load-scene', value)
+  } else {
+    emit('switch-scene', value)
+  }
+}
 
 function npcHasPath(entityId: string): boolean {
   return props.npcPathIds?.has(entityId) ?? false

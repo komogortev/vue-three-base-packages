@@ -123,7 +123,7 @@ export interface EditorPlacedObject {
 // ─── Camera mode ─────────────────────────────────────────────────────────────
 
 /** Editor viewport camera mode — cycles via Tab. */
-export type EditorCamMode = 'orbit' | 'follow-3p' | 'free-float'
+export type EditorCamMode = 'orbit' | 'follow-3p' | 'first-person' | 'free-float'
 
 // ─── Selection state ──────────────────────────────────────────────────────────
 

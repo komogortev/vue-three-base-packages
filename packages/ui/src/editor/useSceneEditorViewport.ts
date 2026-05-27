@@ -4,7 +4,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
+import type { SavedPlacedObject } from './sandboxSceneSchema'
 export type { EditorCamMode } from './sceneEditorTypes'
+
+/** A saved placed object with its blob URL resolved — input to restorePlacedObjects. */
+export type RestorableObject = SavedPlacedObject & { blobUrl: string }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +69,17 @@ export interface SceneEditorViewportReturn {
    * reading stale placement-time values.
    */
   snapshotPlacedTransforms: () => EditorPlacedObject[]
+  /**
+   * Restore a saved set of placed objects directly into the scene, bypassing
+   * place-mode interaction. Call after reinitScene (which clears placed objects).
+   * Objects whose blob URL could not be resolved are skipped (asset deleted).
+   */
+  restorePlacedObjects: (objects: RestorableObject[]) => Promise<void>
+  /**
+   * Switch camera mode from outside the viewport (e.g. UI buttons).
+   * Handles selection sync alongside Three.js state changes.
+   */
+  setCamMode: (mode: EditorCamMode) => void
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -72,6 +87,8 @@ export interface SceneEditorViewportReturn {
 export function useSceneEditorViewport(opts: {
   canvas: Ref<HTMLCanvasElement | null>
   config: SceneEditorConfig
+  /** Called when Esc cancels path-edit mode from inside the viewport. */
+  onPathEditCancel?: () => void
 }): SceneEditorViewportReturn {
   const { canvas: canvasRef } = opts
 
@@ -140,6 +157,9 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Player & camera mode ─────────────────────────────────────────────────
   const editorCamMode = ref<EditorCamMode>('orbit')
+
+  // Camera at player eye level — capsule center y=0.9, eye y≈1.65 from ground
+  const FPV_EYE_OFFSET = 0.75
 
   // Player capsule proxy (no character GLB dependency for D-5)
   let playerMesh: THREE.Mesh | null = null
@@ -437,15 +457,19 @@ export function useSceneEditorViewport(opts: {
     statusMessage.value = describeSelection(s)
 
     if (s?.kind === 'player') {
-      // Player selected: enter follow-3p mode, TC inactive (player moves via WASD)
-      if (editorCamMode.value !== 'follow-3p') setEditorCamMode('follow-3p')
+      // Player selected: enter follow-3p unless already in a player-attached mode (first-person)
+      if (editorCamMode.value !== 'follow-3p' && editorCamMode.value !== 'first-person') {
+        setEditorCamMode('follow-3p')
+      }
       transformControls.detach()
       transformControls.enabled = false
       return
     }
 
-    // Non-player selection: exit follow-3p (return camera to free orbit)
-    if (editorCamMode.value === 'follow-3p') setEditorCamMode('orbit')
+    // Non-player selection: exit any player-attached camera mode back to orbit
+    if (editorCamMode.value === 'follow-3p' || editorCamMode.value === 'first-person') {
+      setEditorCamMode('orbit')
+    }
 
     // Attach TransformControls to the selected object's root group / pip.
     // Disabled when nothing is selected to avoid TC stealing pointer from OrbitControls.
@@ -615,6 +639,62 @@ export function useSceneEditorViewport(opts: {
     setSelection({ kind: 'placed', objectId })
   }
 
+  // ─── Restore placed objects (load saved scene) ───────────────────────────────
+
+  async function restorePlacedObjects(objects: RestorableObject[]): Promise<void> {
+    const loader = new GLTFLoader()
+    const restored: EditorPlacedObject[] = []
+
+    for (const obj of objects) {
+      const root = new THREE.Group()
+      root.position.set(obj.x, obj.y, obj.z)
+      root.rotation.set(obj.rotationX, obj.rotationY, obj.rotationZ)
+      root.scale.set(obj.scaleX, obj.scaleY, obj.scaleZ)
+
+      let localBbox = new THREE.Box3()
+      try {
+        const gltf = await loader.loadAsync(obj.blobUrl)
+        localBbox.setFromObject(gltf.scene)
+        root.add(gltf.scene)
+      } catch {
+        const proxy = new THREE.Mesh(
+          new THREE.BoxGeometry(1, 1, 1),
+          new THREE.MeshBasicMaterial({ color: '#c099ff', wireframe: true }),
+        )
+        proxy.position.set(0, 0.5, 0)
+        root.add(proxy)
+        localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+      }
+
+      if (localBbox.isEmpty()) {
+        localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+      }
+
+      const bboxSize = localBbox.getSize(new THREE.Vector3())
+      const bboxCenter = localBbox.getCenter(new THREE.Vector3())
+      const hitBox = new THREE.Mesh(
+        new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
+        new THREE.MeshBasicMaterial({ visible: false }),
+      )
+      hitBox.position.copy(bboxCenter)
+      root.add(hitBox)
+
+      placedGroup.add(root)
+      placedMeshRoots.set(obj.id, root)
+      placedHitBoxes.set(obj.id, hitBox)
+
+      restored.push({
+        id: obj.id, assetId: obj.assetId, label: obj.label,
+        x: obj.x, y: obj.y, z: obj.z,
+        rotationX: obj.rotationX, rotationY: obj.rotationY, rotationZ: obj.rotationZ,
+        scaleX: obj.scaleX, scaleY: obj.scaleY, scaleZ: obj.scaleZ,
+      })
+    }
+
+    placedObjects.value = restored
+    setSelection({ kind: 'scene' })
+  }
+
   // ─── Path visualization ──────────────────────────────────────────────────────
 
   function updateNpcPath(entityId: string, waypoints: THREE.Vector3[]): void {
@@ -669,7 +749,7 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Camera mode ─────────────────────────────────────────────────────────────
 
-  const CAM_MODE_ORDER: EditorCamMode[] = ['orbit', 'follow-3p', 'free-float']
+  const CAM_MODE_ORDER: EditorCamMode[] = ['orbit', 'follow-3p', 'first-person', 'free-float']
 
   /** Switch camera mode — handles Three.js state only, no selection changes. */
   function setEditorCamMode(mode: EditorCamMode): void {
@@ -686,6 +766,14 @@ export function useSceneEditorViewport(opts: {
       // Snap OrbitControls target to player so camera doesn't jump
       if (mesh) controls.target.copy(mesh.position)
       controls.update()
+    } else if (mode === 'first-person') {
+      controls.enabled = false
+      if (mesh) mesh.visible = false  // hidden — camera is the player's eyes
+      // Seed look direction from current camera orientation
+      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
+      ffYaw = euler.y
+      ffPitch = 0  // look level on entry
+      canvasRef.value?.requestPointerLock()
     } else {
       // free-float
       controls.enabled = false
@@ -699,16 +787,20 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  /** Tab cycles orbit → follow-3p → free-float → orbit, syncing selection. */
-  function cycleEditorCamMode(): void {
-    const next = CAM_MODE_ORDER[(CAM_MODE_ORDER.indexOf(editorCamMode.value) + 1) % CAM_MODE_ORDER.length]
-    setEditorCamMode(next)
-    if (next === 'follow-3p') {
-      // Auto-select player when entering follow mode
+  /** Public camera-mode setter — syncs selection alongside Three.js state. */
+  function setCamMode(mode: EditorCamMode): void {
+    setEditorCamMode(mode)
+    if (mode === 'follow-3p' || mode === 'first-person') {
       setSelection({ kind: 'player' })
     } else if (selection.value?.kind === 'player') {
       setSelection({ kind: 'scene' })
     }
+  }
+
+  /** Tab cycles orbit → follow-3p → first-person → free-float → orbit, syncing selection. */
+  function cycleEditorCamMode(): void {
+    const next = CAM_MODE_ORDER[(CAM_MODE_ORDER.indexOf(editorCamMode.value) + 1) % CAM_MODE_ORDER.length]
+    setCamMode(next)
   }
 
   // ─── Render loop ─────────────────────────────────────────────────────────────
@@ -737,6 +829,27 @@ export function useSceneEditorViewport(opts: {
       }
       // OrbitControls target lerps to player so camera smoothly follows
       controls.target.lerp(playerMesh.position, 0.1)
+    } else if (editorCamMode.value === 'first-person' && playerMesh) {
+      if (ffPointerLocked) {
+        const spd = 6 * delta
+        // Move player in look-yaw direction (XZ only — no flying)
+        const sinY = Math.sin(ffYaw)
+        const cosY = Math.cos(ffYaw)
+        const fwd = new THREE.Vector3(-sinY, 0, -cosY)
+        const right = new THREE.Vector3(cosY, 0, -sinY)
+        if (keyState.has('KeyW')) playerMesh.position.addScaledVector(fwd, spd)
+        if (keyState.has('KeyS')) playerMesh.position.addScaledVector(fwd, -spd)
+        if (keyState.has('KeyA')) playerMesh.position.addScaledVector(right, -spd)
+        if (keyState.has('KeyD')) playerMesh.position.addScaledVector(right, spd)
+        playerMesh.position.y = 0.9
+      }
+      // Camera locked to player eye level, driven by mouse look
+      camera.position.set(
+        playerMesh.position.x,
+        playerMesh.position.y + FPV_EYE_OFFSET,
+        playerMesh.position.z,
+      )
+      camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
     } else if (editorCamMode.value === 'free-float') {
       const spd = 10 * delta
       const sinY = Math.sin(ffYaw)
@@ -768,8 +881,8 @@ export function useSceneEditorViewport(opts: {
 
   function onMouseUp(e: MouseEvent): void {
     if (e.button !== 0) return
-    // Free-float uses pointer lock — ignore canvas clicks while locked
-    if (editorCamMode.value === 'free-float') return
+    // Pointer-lock modes: ignore canvas clicks while locked
+    if (editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person') return
     // If the gizmo was clicked, skip selection logic (let TransformControls handle it).
     if (gizmoMouseDown) { gizmoMouseDown = false; return }
     if (Math.abs(e.clientX - mouseDownX) > 5 || Math.abs(e.clientY - mouseDownY) > 5) return
@@ -853,15 +966,18 @@ export function useSceneEditorViewport(opts: {
     }
 
     if (e.code === 'Escape') {
-      if (editorCamMode.value === 'free-float') {
-        // Browser releases pointer lock on Esc; pointerlockchange will handle mode switch
-        return
-      }
+      // Pointer-lock modes: browser releases lock → pointerlockchange handles mode switch
+      if (editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person') return
       if (placeMode.active) { exitPlaceMode(); return }
       if (editorCamMode.value === 'follow-3p') {
         setEditorCamMode('orbit')
         setSelection({ kind: 'scene' })
         return
+      }
+      // Orbit: cancel path editing if active, then deselect everything
+      if (pathEditActive) {
+        setPathEditMode(false)
+        opts.onPathEditCancel?.()
       }
       setSelection({ kind: 'scene' })
       return
@@ -880,7 +996,8 @@ export function useSceneEditorViewport(opts: {
   }
 
   function onMouseMove(e: MouseEvent): void {
-    if (editorCamMode.value !== 'free-float' || !ffPointerLocked) return
+    const isLockedMode = editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person'
+    if (!isLockedMode || !ffPointerLocked) return
     const sensitivity = 0.002
     ffYaw -= e.movementX * sensitivity
     ffPitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, ffPitch - e.movementY * sensitivity))
@@ -888,8 +1005,8 @@ export function useSceneEditorViewport(opts: {
 
   function onPointerLockChange(): void {
     ffPointerLocked = document.pointerLockElement === canvasRef.value
-    // If the user pressed Esc to exit pointer lock while in free-float, return to orbit
-    if (!ffPointerLocked && editorCamMode.value === 'free-float') {
+    // Pointer lock released (Esc or programmatic) — return to orbit from any locked mode
+    if (!ffPointerLocked && (editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person')) {
       setEditorCamMode('orbit')
       if (selection.value?.kind === 'player') setSelection({ kind: 'scene' })
     }
@@ -983,5 +1100,7 @@ export function useSceneEditorViewport(opts: {
     enterPlaceMode,
     exitPlaceMode,
     snapshotPlacedTransforms,
+    restorePlacedObjects,
+    setCamMode,
   }
 }

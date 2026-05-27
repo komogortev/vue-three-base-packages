@@ -31,8 +31,10 @@
       :scenes="scenes"
       :active-scene-id="activeSceneId"
       :editor-cam-mode="editorCamMode"
+      :active-saved-scene-id="activeSavedSceneId"
       @switch-scene="onSwitchScene"
       @asset-picked="onAssetPicked"
+      @load-scene="onLoadScene"
     />
 
     <!-- Centre: Viewport -->
@@ -61,15 +63,22 @@
         <span v-if="isInPlaceMode"><kbd>Esc</kbd> cancel</span>
         <span v-if="editorCamMode === 'follow-3p'"><kbd>WASD</kbd> move player</span>
         <span v-if="editorCamMode === 'follow-3p'"><kbd>Drag</kbd> orbit camera</span>
+        <span v-if="editorCamMode === 'first-person'"><kbd>WASD</kbd> move · <kbd>Mouse</kbd> look</span>
         <span v-if="editorCamMode === 'free-float'"><kbd>WASD</kbd> fly · <kbd>E/Q</kbd> up/down</span>
         <span v-if="editorCamMode === 'free-float'"><kbd>Mouse</kbd> look</span>
         <span v-if="!isInPlaceMode"><kbd>Tab</kbd> cycle camera</span>
         <span v-if="isPlayerMode"><kbd>Esc</kbd> back to orbit</span>
       </div>
 
-      <!-- Camera mode pill (top-right corner, always visible) -->
-      <div class="cam-mode-pill" :class="`cam-${editorCamMode}`">
-        {{ editorCamMode === 'orbit' ? 'Orbit' : editorCamMode === 'follow-3p' ? 'Follow 3P' : 'Free Float' }}
+      <!-- Camera mode buttons (top-right corner) -->
+      <div class="cam-buttons">
+        <button
+          v-for="cam in CAM_OPTIONS"
+          :key="cam.mode"
+          :class="['cam-btn', { active: editorCamMode === cam.mode }]"
+          :title="cam.title"
+          @click="setCamMode(cam.mode)"
+        >{{ cam.label }}</button>
       </div>
 
       <!-- Save / Export toolbar (bottom-right) -->
@@ -141,7 +150,14 @@ import type { SandboxSceneSave } from './sandboxSceneSchema'
 import { assetDb } from './assetDb'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
-import type { SceneEditorConfig, SceneEditorEntry, EditorSelection } from './sceneEditorTypes'
+import type { SceneEditorConfig, SceneEditorEntry, EditorSelection, EditorCamMode } from './sceneEditorTypes'
+
+const CAM_OPTIONS: { mode: EditorCamMode; label: string; title: string }[] = [
+  { mode: 'orbit',        label: 'Orbit', title: 'Orbit — free camera (Tab)' },
+  { mode: 'follow-3p',   label: '3P',    title: 'Third-person follow (Tab)' },
+  { mode: 'first-person', label: 'FPV',  title: 'First-person view (Tab)' },
+  { mode: 'free-float',  label: 'Float', title: 'Free-fly camera (Tab)' },
+]
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -204,7 +220,15 @@ const {
   reinitScene,
   enterPlaceMode,
   snapshotPlacedTransforms,
-} = useSceneEditorViewport({ canvas: canvasRef, config: activeConfig.value })
+  restorePlacedObjects,
+  setCamMode,
+} = useSceneEditorViewport({
+  canvas: canvasRef,
+  config: activeConfig.value,
+  onPathEditCancel: () => {
+    isPathEditing.value = false
+  },
+})
 
 // ─── Asset store (for place mode) ────────────────────────────────────────────
 
@@ -226,6 +250,7 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   activeSceneId.value = sceneId
   // Reset saved-scene tracking so the next save creates a new Dexie row for this scene.
   currentSceneId.value = null
+  activeSavedSceneId.value = null
   sceneName.value = 'Untitled Scene'
   // Clear waypoint display — new scene has its own localStorage keys
   waypointMap.value = new Map()
@@ -236,6 +261,43 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   await reinitScene(activeConfig.value)
   // Restore waypoints for new scene
   restoreWaypoints()
+}
+
+// ─── Load saved scene ────────────────────────────────────────────────────────
+
+const isLoading = ref(false)
+
+async function onLoadScene(sceneId: string): Promise<void> {
+  if (isLoading.value) return
+  isLoading.value = true
+  try {
+    const row = await assetDb.scenes.get(sceneId)
+    if (!row) { flashStatus('Scene not found'); return }
+
+    // Reload scene geometry (clears all placed objects)
+    await reinitScene(activeConfig.value)
+
+    // Resolve blob URLs — skip objects whose asset was deleted
+    const resolvable = row.placedObjects.flatMap(obj => {
+      const blobUrl = assetStore.resolveBlobUrl(obj.assetId)
+      return blobUrl ? [{ ...obj, blobUrl }] : []
+    })
+
+    await restorePlacedObjects(resolvable)
+
+    // Wire save tracking so subsequent "Save Scene" overwrites this row
+    currentSceneId.value = row.id
+    activeSavedSceneId.value = row.id
+    sceneName.value = row.name
+
+    const skipped = row.placedObjects.length - resolvable.length
+    const skipNote = skipped > 0 ? ` (${skipped} missing asset${skipped !== 1 ? 's' : ''} skipped)` : ''
+    flashStatus(`Loaded "${row.name}" — ${resolvable.length} object${resolvable.length !== 1 ? 's' : ''}${skipNote}`)
+  } catch {
+    flashStatus('Load failed')
+  } finally {
+    isLoading.value = false
+  }
 }
 
 // ─── Selection sync (hierarchy ↔ viewport) ───────────────────────────────────
@@ -369,6 +431,8 @@ function flashStatus(msg: string): void {
 const sceneName = ref('Untitled Scene')
 /** Non-null after first save — used to overwrite rather than create a new row. */
 const currentSceneId = ref<string | null>(null)
+/** ID of the Dexie saved scene currently loaded in the editor — drives dropdown selection. */
+const activeSavedSceneId = ref<string | null>(null)
 const isSaving = ref(false)
 
 function buildSave(): SandboxSceneSave {
@@ -385,8 +449,16 @@ async function saveScene(): Promise<void> {
   isSaving.value = true
   try {
     const save = buildSave()
+    // If we have a tracked scene ID but the user renamed it, unlink and fall through
+    // to upsert-by-name so we don't silently overwrite the original row under a new name.
+    if (currentSceneId.value) {
+      const tracked = await assetDb.scenes.get(currentSceneId.value)
+      if (tracked && tracked.name !== save.name) currentSceneId.value = null
+    }
     if (!currentSceneId.value) {
-      currentSceneId.value = `scene-${nanoid(8)}`
+      // Upsert by name — reuse the existing row if one with this name already exists.
+      const existing = await assetDb.scenes.where('name').equals(save.name!).first()
+      currentSceneId.value = existing?.id ?? `scene-${nanoid(8)}`
     }
     await assetDb.scenes.put({
       id: currentSceneId.value,
@@ -512,40 +584,42 @@ kbd {
   margin-right: 2px;
 }
 
-/* ── Camera mode pill ─────────────────────────────────────────────────────── */
-.cam-mode-pill {
+/* ── Camera mode buttons ─────────────────────────────────────────────────── */
+.cam-buttons {
   position: absolute;
   top: 10px;
   right: 10px;
-  font-family: monospace;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  padding: 3px 10px;
-  border-radius: 12px;
-  border: 1px solid;
-  pointer-events: none;
+  display: flex;
+  gap: 3px;
 }
-.cam-mode-pill.cam-orbit {
-  background: rgba(0,0,0,0.55);
+.cam-btn {
+  background: rgba(0, 0, 0, 0.70);
   color: #3a6080;
-  border-color: #1a3050;
+  border: 1px solid #1a3050;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.cam-mode-pill.cam-follow-3p {
-  background: rgba(0, 212, 170, 0.12);
-  color: #00d4aa;
-  border-color: rgba(0, 212, 170, 0.3);
+.cam-btn:hover {
+  color: #7ab0d8;
+  border-color: rgba(90, 176, 245, 0.3);
 }
-.cam-mode-pill.cam-free-float {
-  background: rgba(90, 140, 255, 0.12);
-  color: #7aaaff;
-  border-color: rgba(90, 140, 255, 0.3);
+.cam-btn.active {
+  background: rgba(0, 170, 255, 0.15);
+  color: #00aaff;
+  border-color: rgba(0, 170, 255, 0.5);
 }
 
 /* ── Transform toolbar ────────────────────────────────────────────────────── */
 .transform-toolbar {
   position: absolute;
-  top: 38px;  /* shifted down to clear the camera mode pill */
+  top: 38px;  /* shifted down to clear the camera buttons row */
   right: 10px;
   display: flex;
   gap: 4px;
