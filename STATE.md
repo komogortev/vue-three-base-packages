@@ -2,16 +2,16 @@
 
 ## Status
 
-_Last updated: 2026-05-20_
+_Last updated: 2026-05-28_
 
-**What's working:** All 11 packages build cleanly (`pnpm -r build` green). CI restored green on `main` 2026-05-20 after PR #25 (`engine-core` + `scene-builder` tsconfig — `skipLibCheck` + `exclude src/**/*.test.ts`). Editor asset pipeline Phase 2 complete in `@base/ui`: `assetDb.ts` (Dexie v1 `@base-assets`), `useAssetStore` (Pinia setup-store, upload + kind inference + blob-URL resolver), `useLiveQuery` (shallowRef for Blob safety), `thumbnailGenerator` (offscreen render), `SceneEditorAssetsSection.vue` (drag-drop + live list + Use… picker trigger), `AssetPicker.vue` (`<dialog>`-based modal, `kindFilter` prop, `select`+`close` emits). Test coverage still ~240 across 5 packages. Swimming v1, five-tier landing severity, third-person orbit camera all still live.
+**What's working:** All 11 packages build cleanly (`pnpm -r build` green). Editor Phase 3 writability complete — F-2/F-9/F-10/F-11/F-13 shipped on `feat/phase-3-editor-writability` (PR #28 open, awaiting merge). Inspector transform inputs two-way bound through `npcLivePositions`/`zoneLivePositions`; NPC Asset tab with character mesh + animation-pack pickers (`AssetPicker` modal wired in `SceneEditorView`); F-10 clip listing reads stored `clipNames[]`; F-11 add/remove NPCs/zones via hierarchy "+" buttons + inspector trash button; F-13 "Copy TS" writes serialised `SceneEditorConfig` literal to clipboard; `serializeEditorConfigTS` exported from `@base/ui` index. Advisory fixes: `_selSyncing` watcher guard, `saved-` ID namespace, FPV WASD ungated, zone TC group. Phase 2 asset pipeline still live: `assetDb.ts`, `useAssetStore`, `AssetPicker`, thumbnails, drag-drop section.
 
-**What's broken / incomplete:** `water__entry__fall.fbx` is a placeholder — no real water-entry animation. `failJump` uses "Straight Landing" as a mild substitute. Some landing tiers may not resolve correctly due to Mixamo internal clip name variance (enable `debugClipResolution` in harness to diagnose). `@base/pwa-core` is a stub (SW registration scaffolded, not fully implemented). `retargetMixamoClipsToCharacter` untested (requires WebGL context — integration-test only). AssetPicker a11y follow-ups deferred to Phase 3 F-9: dialog `aria-label`, row `role="option"`, Firefox backdrop spot-check.
+**What's broken / incomplete:** PR #28 not yet merged — Phase 3 features not on `main` yet. `water__entry__fall.fbx` is a placeholder. AssetPicker a11y deferred (dialog `aria-label`, row `role="option"`, Firefox backdrop). `@base/pwa-core` stub. `retargetMixamoClipsToCharacter` untested.
 
 ## Active Work
 
-- Editor Phase 3 (writability + asset binding) — next track in `@base/ui`: F-2 inspector writable transforms, F-9 NPC entry carries `assetId` (consumes `AssetPicker`), F-10 animation clip listing, F-11 add/remove NPCs/zones, F-13 SceneEditorConfig TS export
-- Awaiting Phase 3d camera strategy work in `threejs-engine-dev` before final player-track Phase 3 sign-off
+- **PR #28** — `feat/phase-3-editor-writability` → merge once CI green
+- Next after merge: Phase 4 editor depth (NPC rendered-character preview, play-sim placement, zone behaviour wiring) or T-F7 GLB normalization
 
 ## Blockers & Open Questions
 
@@ -20,12 +20,13 @@ _Last updated: 2026-05-20_
 
 ## Next Session
 
-> **First action of next Claude Code session:** smoke-test custom subagents — invoke `CodeReview` with a single-file Read request; success = `tool_uses ≥ 1`. If still `tool_uses: 0`, rename `*.agent.md` → `*.md` per `feedback_codereview_agent_broken_session.md`. Then start Phase 3 F-9 (NPC mesh binding via AssetPicker).
+> **First action:** merge PR #28 (`feat/phase-3-editor-writability`). Then start next editor phase planning (Phase 4 depth items) or T-F7 GLB normalization — pick based on DASHBOARD state.
 
 ## Decision Log
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-05-28** — Phase 3 editor writability closed (PR #28 open). F-2: inspector transforms two-way bound via `npcLivePositions`/`zoneLivePositions`; TC drag + text inputs both sync. F-9: `AssetPicker` modal wired in `SceneEditorView`; character mesh + animation-pack slots in inspector Asset tab. F-10: `availableClips` reads stored `clipNames[]` — no extra storage work. F-11: hierarchy "+" buttons (always-visible section headers) + composable `addNpcMarker`/`removeNpcMarker`/`addZoneMarker`/`removeZoneMarker`. F-13: `serializeEditorConfigTS` exported from `@base/ui` index; "Copy TS" button in viewport toolbar. Advisory fixes bundled: `_selSyncing` watcher guard, `saved-` ID prefix, FPV WASD ungated, zone TC group.
 - **2026-05-20** — Editor Phase 2 closed: W3 PR #24 (`AssetPicker` modal + Use… wiring in AssetsSection + index.ts export) merged 2026-05-17; CI hotfix PR #25 (`engine-core` + `scene-builder` tsconfig `skipLibCheck` + `exclude src/**/*.test.ts` to match sibling pattern) merged 2026-05-20 restoring green main since 2026-05-12 breakage. F-A1/F-A2/F-A3/F-A4 all ✅. AssetPicker exported from `@base/ui` ready for Phase 3 F-9 consumption.
 - **2026-05-11 EOD** — Editor Phase 2 W2 (asset registry + upload + thumbnails) shipped, merged as PR #23 on 2026-05-12.
 - **2026-05-11** — Editor Phase 2 W1 design doc (`packages/ui/docs/ASSET-PIPELINE.md`) shipped — three-layer model, frozen Dexie v1 schema, Q1-Q7 resolutions.
