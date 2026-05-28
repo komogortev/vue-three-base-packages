@@ -37,49 +37,35 @@ export interface SceneEditorViewportReturn {
   placedObjects: Readonly<Ref<EditorPlacedObject[]>>
   /** True while waiting for a floor click to place an asset. */
   isInPlaceMode: Readonly<Ref<boolean>>
+  /** Live NPC world positions — updated every TC objectChange tick. */
+  npcLivePositions: Readonly<Ref<Map<string, { x: number; y: number; z: number }>>>
+  /** Live zone world positions — updated every TC objectChange tick. */
+  zoneLivePositions: Readonly<Ref<Map<string, { x: number; z: number }>>>
   /** Set selection from the hierarchy panel (bypasses click raycasting). */
   setSelection: (s: EditorSelection) => void
   /** Set the active TransformControls mode (translate / rotate / scale). */
   setTransformMode: (mode: TransformMode) => void
-  /**
-   * Toggle path-edit mode for the current NPC selection.
-   * When active, floor clicks call onFloorHit instead of selecting scene root.
-   */
   setPathEditMode: (active: boolean, onFloorHit?: (pos: THREE.Vector3) => void) => void
-  /** Update the path line + dot markers for an NPC. Pass [] to clear. */
   updateNpcPath: (entityId: string, waypoints: THREE.Vector3[]) => void
-  /** Remove path visualization for an NPC without needing an empty array call. */
   clearNpcPath: (entityId: string) => void
-  /**
-   * Reload the scene with a new config (scene switcher).
-   * Keeps renderer / camera / controls / lights alive — only reloads GLBs + markers.
-   */
   reinitScene: (newConfig: SceneEditorConfig) => Promise<void>
-  /**
-   * Enter place mode — next floor click drops the asset at that position.
-   * Auto-exits after one placement and auto-selects the placed object.
-   * Press Esc to cancel without placing.
-   */
   enterPlaceMode: (objectId: string, assetId: string, blobUrl: string, label: string) => void
-  /** Cancel place mode without placing anything. */
   exitPlaceMode: () => void
-  /**
-   * Snapshot the live transforms (position/rotation/scale) from Three.js roots
-   * for all placed objects. Call this immediately before serializing to avoid
-   * reading stale placement-time values.
-   */
   snapshotPlacedTransforms: () => EditorPlacedObject[]
-  /**
-   * Restore a saved set of placed objects directly into the scene, bypassing
-   * place-mode interaction. Call after reinitScene (which clears placed objects).
-   * Objects whose blob URL could not be resolved are skipped (asset deleted).
-   */
   restorePlacedObjects: (objects: RestorableObject[]) => Promise<void>
-  /**
-   * Switch camera mode from outside the viewport (e.g. UI buttons).
-   * Handles selection sync alongside Three.js state changes.
-   */
   setCamMode: (mode: EditorCamMode) => void
+  /** Move an NPC marker programmatically (from inspector inputs). */
+  setNpcPosition: (entityId: string, x: number, z: number) => void
+  /** Move a zone marker programmatically (from inspector inputs). */
+  setZonePosition: (id: string, x: number, z: number) => void
+  /** Add a new NPC marker at runtime (F-11). */
+  addNpcMarker: (npc: import('./sceneEditorTypes').EditorNpcEntry) => void
+  /** Remove an NPC marker at runtime (F-11). */
+  removeNpcMarker: (entityId: string) => void
+  /** Add a new zone marker at runtime (F-11). */
+  addZoneMarker: (zone: import('./sceneEditorTypes').EditorZoneEntry) => void
+  /** Remove a zone marker at runtime (F-11). */
+  removeZoneMarker: (id: string) => void
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -136,6 +122,13 @@ export function useSceneEditorViewport(opts: {
 
   // Per-NPC root groups — used for TransformControls attachment so all parts move together
   const npcMarkerRoots = new Map<string, THREE.Group>()
+
+  // Per-zone root groups — ring + pip grouped so TC moves both together
+  const zoneMarkerRoots = new Map<string, THREE.Group>()
+
+  // Live positions — updated by TC objectChange; drives inspector two-way binding
+  const npcLivePositions = ref<Map<string, { x: number; y: number; z: number }>>(new Map())
+  const zoneLivePositions = ref<Map<string, { x: number; z: number }>>(new Map())
 
   // Per-NPC path visualization
   const npcPathViz = new Map<string, { line: THREE.Line; dots: THREE.Group }>()
@@ -220,11 +213,27 @@ export function useSceneEditorViewport(opts: {
       controls.enabled = !(e as unknown as { value: boolean }).value
     })
 
-    // Enforce uniform scale in scale mode (mirrors legacy editor behavior).
+    // Enforce uniform scale in scale mode + sync live positions for inspector reactivity.
     transformControls.addEventListener('objectChange', () => {
       if (transformMode.value === 'scale') {
         const obj = transformControls.object
         if (obj) { const s = obj.scale.x; obj.scale.set(s, s, s) }
+      }
+      const sel = selection.value
+      if (sel?.kind === 'npc') {
+        const root = npcMarkerRoots.get(sel.entityId)
+        if (root) {
+          const next = new Map(npcLivePositions.value)
+          next.set(sel.entityId, { x: root.position.x, y: root.position.y, z: root.position.z })
+          npcLivePositions.value = next
+        }
+      } else if (sel?.kind === 'zone') {
+        const root = zoneMarkerRoots.get(sel.id)
+        if (root) {
+          const next = new Map(zoneLivePositions.value)
+          next.set(sel.id, { x: root.position.x, z: root.position.z })
+          zoneLivePositions.value = next
+        }
       }
     })
 
@@ -320,6 +329,9 @@ export function useSceneEditorViewport(opts: {
     npcSpheres.clear()
     zoneRingPips.clear()
     npcMarkerRoots.clear()
+    zoneMarkerRoots.clear()
+    npcLivePositions.value = new Map()
+    zoneLivePositions.value = new Map()
 
     // Clear placed objects
     placedGroup.clear()
@@ -334,6 +346,70 @@ export function useSceneEditorViewport(opts: {
       viz.line.geometry.dispose()
     }
     npcPathViz.clear()
+  }
+
+  // ─── Live transform setters (inspector → viewport) ───────────────────────────
+
+  function setNpcPosition(entityId: string, x: number, z: number): void {
+    const root = npcMarkerRoots.get(entityId)
+    if (!root) return
+    root.position.x = x
+    root.position.z = z
+    const next = new Map(npcLivePositions.value)
+    next.set(entityId, { x, y: root.position.y, z })
+    npcLivePositions.value = next
+  }
+
+  function setZonePosition(id: string, x: number, z: number): void {
+    const root = zoneMarkerRoots.get(id)
+    if (!root) return
+    root.position.x = x
+    root.position.z = z
+    const next = new Map(zoneLivePositions.value)
+    next.set(id, { x, z })
+    zoneLivePositions.value = next
+  }
+
+  // ─── Dynamic marker add/remove (F-11) ─────────────────────────────────────────
+
+  function addNpcMarker(npc: import('./sceneEditorTypes').EditorNpcEntry): void {
+    _addNpcMarkerMesh(npc)
+    const next = new Map(npcLivePositions.value)
+    next.set(npc.entityId, { x: npc.x, y: npc.y ?? 0, z: npc.z })
+    npcLivePositions.value = next
+  }
+
+  function removeNpcMarker(entityId: string): void {
+    const root = npcMarkerRoots.get(entityId)
+    if (root) npcMarkerGroup.remove(root)
+    npcMarkerRoots.delete(entityId)
+    npcSpheres.delete(entityId)
+    const next = new Map(npcLivePositions.value)
+    next.delete(entityId)
+    npcLivePositions.value = next
+    if (selection.value?.kind === 'npc' && selection.value.entityId === entityId) {
+      setSelection({ kind: 'scene' })
+    }
+  }
+
+  function addZoneMarker(zone: import('./sceneEditorTypes').EditorZoneEntry): void {
+    _addZoneMarkerMesh(zone)
+    const next = new Map(zoneLivePositions.value)
+    next.set(zone.id, { x: zone.x, z: zone.z })
+    zoneLivePositions.value = next
+  }
+
+  function removeZoneMarker(id: string): void {
+    const root = zoneMarkerRoots.get(id)
+    if (root) zoneMarkerGroup.remove(root)
+    zoneMarkerRoots.delete(id)
+    zoneRingPips.delete(id)
+    const next = new Map(zoneLivePositions.value)
+    next.delete(id)
+    zoneLivePositions.value = next
+    if (selection.value?.kind === 'zone' && selection.value.id === id) {
+      setSelection({ kind: 'scene' })
+    }
   }
 
   // ─── reinitScene — public API for scene switcher ──────────────────────────────
@@ -369,73 +445,94 @@ export function useSceneEditorViewport(opts: {
     npcSpheres.clear()
     npcMarkerRoots.clear()
 
+    const liveNpcs = new Map<string, { x: number; y: number; z: number }>()
+
     for (const npc of cfg.npcs ?? []) {
-      const yBase = npc.y ?? 0
-
-      // Each NPC's parts are grouped so TransformControls moves the whole marker.
-      const markerRoot = new THREE.Group()
-      markerRoot.position.set(npc.x, yBase, npc.z)
-
-      // Sphere body (positioned relative to group root)
-      const mat = new THREE.MeshBasicMaterial({ color: '#00aaff' })
-      const sphere = new THREE.Mesh(npcSphereGeo, mat)
-      sphere.position.set(0, 0.9, 0)
-      markerRoot.add(sphere)
-      npcSpheres.set(npc.entityId, sphere)
-
-      // Vertical stem so sphere is clearly above ground
-      const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.9, 6)
-      const stemMat = new THREE.MeshBasicMaterial({ color: '#0077bb' })
-      const stem = new THREE.Mesh(stemGeo, stemMat)
-      stem.position.set(0, 0.45, 0)
-      markerRoot.add(stem)
-
-      // Proximity ring (flat disc outline)
-      if (npc.proximityRadius && npc.proximityRadius > 0) {
-        const r = npc.proximityRadius
-        const ringGeo = new THREE.RingGeometry(r - 0.06, r + 0.06, 56)
-        ringGeo.rotateX(-Math.PI / 2)
-        const ringMat = new THREE.MeshBasicMaterial({
-          color: '#00aaff', transparent: true, opacity: 0.22, side: THREE.DoubleSide,
-        })
-        const ring = new THREE.Mesh(ringGeo, ringMat)
-        ring.position.set(0, 0.03, 0)
-        markerRoot.add(ring)
-      }
-
-      npcMarkerGroup.add(markerRoot)
-      npcMarkerRoots.set(npc.entityId, markerRoot)
+      _addNpcMarkerMesh(npc)
+      liveNpcs.set(npc.entityId, { x: npc.x, y: npc.y ?? 0, z: npc.z })
     }
+
+    npcLivePositions.value = liveNpcs
+  }
+
+  /** Shared mesh-building logic used by buildNpcMarkers and addNpcMarker. */
+  function _addNpcMarkerMesh(npc: import('./sceneEditorTypes').EditorNpcEntry): void {
+    const yBase = npc.y ?? 0
+    const markerRoot = new THREE.Group()
+    markerRoot.position.set(npc.x, yBase, npc.z)
+
+    const mat = new THREE.MeshBasicMaterial({ color: '#00aaff' })
+    const sphere = new THREE.Mesh(npcSphereGeo, mat)
+    sphere.position.set(0, 0.9, 0)
+    markerRoot.add(sphere)
+    npcSpheres.set(npc.entityId, sphere)
+
+    const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.9, 6)
+    const stemMat = new THREE.MeshBasicMaterial({ color: '#0077bb' })
+    const stem = new THREE.Mesh(stemGeo, stemMat)
+    stem.position.set(0, 0.45, 0)
+    markerRoot.add(stem)
+
+    if (npc.proximityRadius && npc.proximityRadius > 0) {
+      const r = npc.proximityRadius
+      const ringGeo = new THREE.RingGeometry(r - 0.06, r + 0.06, 56)
+      ringGeo.rotateX(-Math.PI / 2)
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: '#00aaff', transparent: true, opacity: 0.22, side: THREE.DoubleSide,
+      })
+      const ring = new THREE.Mesh(ringGeo, ringMat)
+      ring.position.set(0, 0.03, 0)
+      markerRoot.add(ring)
+    }
+
+    npcMarkerGroup.add(markerRoot)
+    npcMarkerRoots.set(npc.entityId, markerRoot)
   }
 
   function buildZoneMarkers(cfg: SceneEditorConfig): void {
     zoneMarkerGroup.clear()
     zoneRingPips.clear()
+    zoneMarkerRoots.clear()
+
+    const liveZones = new Map<string, { x: number; z: number }>()
 
     for (const zone of cfg.zones ?? []) {
-      const defaultColor = zone.type === 'exit' ? '#ffdd44' : '#44ff88'
-      const colorHex = zone.color
-        ? `#${zone.color.toString(16).padStart(6, '0')}`
-        : defaultColor
-
-      // Outer ring
-      const r = zone.radius
-      const ringGeo = new THREE.RingGeometry(r - 0.07, r + 0.07, 56)
-      ringGeo.rotateX(-Math.PI / 2)
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: colorHex, transparent: true, opacity: 0.65, side: THREE.DoubleSide,
-      })
-      const ring = new THREE.Mesh(ringGeo, ringMat)
-      ring.position.set(zone.x, 0.04, zone.z)
-      zoneMarkerGroup.add(ring)
-
-      // Centre pip (clickable selection target)
-      const pipGeo = new THREE.SphereGeometry(0.15, 8, 6)
-      const pip = new THREE.Mesh(pipGeo, new THREE.MeshBasicMaterial({ color: colorHex }))
-      pip.position.set(zone.x, 0.18, zone.z)
-      zoneMarkerGroup.add(pip)
-      zoneRingPips.set(zone.id, pip)
+      _addZoneMarkerMesh(zone)
+      liveZones.set(zone.id, { x: zone.x, z: zone.z })
     }
+
+    zoneLivePositions.value = liveZones
+  }
+
+  /** Shared mesh-building logic used by buildZoneMarkers and addZoneMarker. */
+  function _addZoneMarkerMesh(zone: import('./sceneEditorTypes').EditorZoneEntry): void {
+    const defaultColor = zone.type === 'exit' ? '#ffdd44' : '#44ff88'
+    const colorHex = zone.color
+      ? `#${zone.color.toString(16).padStart(6, '0')}`
+      : defaultColor
+
+    // Group root — TC attaches here so ring + pip move together
+    const zoneRoot = new THREE.Group()
+    zoneRoot.position.set(zone.x, 0, zone.z)
+
+    const r = zone.radius
+    const ringGeo = new THREE.RingGeometry(r - 0.07, r + 0.07, 56)
+    ringGeo.rotateX(-Math.PI / 2)
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: colorHex, transparent: true, opacity: 0.65, side: THREE.DoubleSide,
+    })
+    const ring = new THREE.Mesh(ringGeo, ringMat)
+    ring.position.set(0, 0.04, 0)
+    zoneRoot.add(ring)
+
+    const pipGeo = new THREE.SphereGeometry(0.15, 8, 6)
+    const pip = new THREE.Mesh(pipGeo, new THREE.MeshBasicMaterial({ color: colorHex }))
+    pip.position.set(0, 0.18, 0)
+    zoneRoot.add(pip)
+    zoneRingPips.set(zone.id, pip)
+
+    zoneMarkerGroup.add(zoneRoot)
+    zoneMarkerRoots.set(zone.id, zoneRoot)
   }
 
   function buildSpawnMarker(cfg: SceneEditorConfig): void {
@@ -483,9 +580,9 @@ export function useSceneEditorViewport(opts: {
         transformControls.enabled = false
       }
     } else if (s?.kind === 'zone') {
-      const pip = zoneRingPips.get(s.id)
-      if (pip) {
-        transformControls.attach(pip)
+      const root = zoneMarkerRoots.get(s.id)
+      if (root) {
+        transformControls.attach(root)
         transformControls.enabled = true
       } else {
         transformControls.detach()
@@ -830,9 +927,10 @@ export function useSceneEditorViewport(opts: {
       // OrbitControls target lerps to player so camera smoothly follows
       controls.target.lerp(playerMesh.position, 0.1)
     } else if (editorCamMode.value === 'first-person' && playerMesh) {
-      if (ffPointerLocked) {
+      {
         const spd = 6 * delta
-        // Move player in look-yaw direction (XZ only — no flying)
+        // Move player in look-yaw direction (XZ only — no flying).
+        // WASD works regardless of pointer-lock state so the mode is never stuck.
         const sinY = Math.sin(ffYaw)
         const cosY = Math.cos(ffYaw)
         const fwd = new THREE.Vector3(-sinY, 0, -cosY)
@@ -1075,6 +1173,7 @@ export function useSceneEditorViewport(opts: {
     npcSpheres.clear()
     zoneRingPips.clear()
     npcMarkerRoots.clear()
+    zoneMarkerRoots.clear()
     npcPathViz.clear()
     placedMeshRoots.clear()
     placedHitBoxes.clear()
@@ -1091,6 +1190,8 @@ export function useSceneEditorViewport(opts: {
     editorCamMode: shallowReadonly(editorCamMode),
     placedObjects: shallowReadonly(placedObjects),
     isInPlaceMode: shallowReadonly(isInPlaceMode),
+    npcLivePositions: shallowReadonly(npcLivePositions),
+    zoneLivePositions: shallowReadonly(zoneLivePositions),
     setSelection,
     setTransformMode,
     setPathEditMode,
@@ -1102,5 +1203,11 @@ export function useSceneEditorViewport(opts: {
     snapshotPlacedTransforms,
     restorePlacedObjects,
     setCamMode,
+    setNpcPosition,
+    setZonePosition,
+    addNpcMarker,
+    removeNpcMarker,
+    addZoneMarker,
+    removeZoneMarker,
   }
 }

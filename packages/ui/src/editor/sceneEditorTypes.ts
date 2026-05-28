@@ -19,6 +19,17 @@ export interface EditorNpcEntry {
   y?: number
   /** Proximity trigger radius in metres. Renders as a faded ring in the viewport. */
   proximityRadius?: number
+  // ─── F-9: asset binding ────────────────────────────────────────────────────
+  /** Asset registry ID of the character mesh GLB. */
+  assetId?: string
+  /** Asset registry ID of the animation-pack GLB. */
+  animationPackAssetId?: string
+  /** Clip name to play by default (must be present in the animation pack). */
+  defaultClip?: string
+  /** Y-axis rotation in degrees (converted to radians at runtime). */
+  rotationY?: number
+  /** Uniform scale (1 = original size). */
+  scale?: number
 }
 
 export interface EditorZoneEntry {

@@ -24,8 +24,8 @@
     <SceneEditorHierarchy
       v-model="selection"
       :scene-label="activeSceneLabel"
-      :npcs="activeConfig.npcs ?? []"
-      :zones="activeConfig.zones ?? []"
+      :npcs="localNpcs"
+      :zones="localZones"
       :placed-objects="placedObjects"
       :npc-path-ids="npcPathIds"
       :scenes="scenes"
@@ -35,6 +35,8 @@
       @switch-scene="onSwitchScene"
       @asset-picked="onAssetPicked"
       @load-scene="onLoadScene"
+      @add-npc="onAddNpc"
+      @add-zone="onAddZone"
     />
 
     <!-- Centre: Viewport -->
@@ -102,6 +104,11 @@
           title="Download a ZIP containing the scene manifest and all asset blobs"
           @click="onExportZip"
         >{{ isExporting ? 'Exporting…' : 'Export ZIP' }}</button>
+        <button
+          class="save-btn ts-btn"
+          title="Copy scene config as TypeScript literal"
+          @click="onCopyConfigTs"
+        >{{ isCopyingTs ? 'Copied!' : 'Copy TS' }}</button>
       </div>
 
       <!-- Transform toolbar (top-right, visible when object selected) -->
@@ -127,12 +134,26 @@
     <!-- Right: Inspector -->
     <SceneEditorInspector
       :selection="selection"
-      :config="activeConfig"
+      :config="effectiveConfig"
+      :npcs="localNpcs"
+      :zones="localZones"
       :waypoint-map="waypointMap"
       @path-edit-start="onPathEditStart"
       @path-edit-stop="onPathEditStop"
       @waypoints-changed="onWaypointsChanged"
       @move-waypoint="onMoveWaypoint"
+      @npc-changed="(id, patch) => onNpcChanged(id, patch)"
+      @zone-changed="(id, patch) => onZoneChanged(id, patch)"
+      @remove-npc="onRemoveNpc"
+      @remove-zone="onRemoveZone"
+      @pick-npc-asset="onPickNpcAsset"
+    />
+
+    <!-- Asset picker modal (F-9) -->
+    <AssetPicker
+      :open="pickerOpen"
+      @close="pickerOpen = false"
+      @select="onPickerSelect"
     />
 
   </div>
@@ -146,11 +167,13 @@ import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { exportSandboxZip } from './exportSandboxZip'
+import { serializeEditorConfigTS } from './SceneEditorExporter'
 import type { SandboxSceneSave } from './sandboxSceneSchema'
 import { assetDb } from './assetDb'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
-import type { SceneEditorConfig, SceneEditorEntry, EditorSelection, EditorCamMode } from './sceneEditorTypes'
+import AssetPicker from './AssetPicker.vue'
+import type { SceneEditorConfig, SceneEditorEntry, EditorSelection, EditorCamMode, EditorNpcEntry, EditorZoneEntry } from './sceneEditorTypes'
 
 const CAM_OPTIONS: { mode: EditorCamMode; label: string; title: string }[] = [
   { mode: 'orbit',        label: 'Orbit', title: 'Orbit — free camera (Tab)' },
@@ -198,6 +221,23 @@ const activeSceneLabel = computed<string | undefined>(() => {
   return props.sceneLabel
 })
 
+// ─── Local NPC / zone state (mutable editor layer over read-only prop config) ──
+
+const localNpcs = ref<EditorNpcEntry[]>([])
+const localZones = ref<EditorZoneEntry[]>([])
+
+function initLocalEntries(): void {
+  localNpcs.value = (activeConfig.value.npcs ?? []).map(n => ({ ...n }))
+  localZones.value = (activeConfig.value.zones ?? []).map(z => ({ ...z }))
+}
+
+/** Config passed to composable — prop config with local NPC/zone edits overlaid. */
+const effectiveConfig = computed<SceneEditorConfig>(() => ({
+  ...activeConfig.value,
+  npcs: localNpcs.value,
+  zones: localZones.value,
+}))
+
 // ─── Canvas ref ───────────────────────────────────────────────────────────────
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
@@ -212,6 +252,8 @@ const {
   editorCamMode,
   placedObjects,
   isInPlaceMode,
+  npcLivePositions,
+  zoneLivePositions,
   setSelection,
   setTransformMode,
   setPathEditMode,
@@ -222,9 +264,15 @@ const {
   snapshotPlacedTransforms,
   restorePlacedObjects,
   setCamMode,
+  setNpcPosition,
+  setZonePosition,
+  addNpcMarker,
+  removeNpcMarker,
+  addZoneMarker,
+  removeZoneMarker,
 } = useSceneEditorViewport({
   canvas: canvasRef,
-  config: activeConfig.value,
+  config: effectiveConfig.value,
   onPathEditCancel: () => {
     isPathEditing.value = false
   },
@@ -248,6 +296,8 @@ function onAssetPicked(assetId: string): void {
 async function onSwitchScene(sceneId: string): Promise<void> {
   if (sceneId === activeSceneId.value) return
   activeSceneId.value = sceneId
+  // Reset local NPC/zone state to new scene's prop config
+  initLocalEntries()
   // Reset saved-scene tracking so the next save creates a new Dexie row for this scene.
   currentSceneId.value = null
   activeSavedSceneId.value = null
@@ -257,8 +307,8 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   // Reset path-edit mode
   isPathEditing.value = false
   setPathEditMode(false)
-  // Reload viewport with new config
-  await reinitScene(activeConfig.value)
+  // Reload viewport with effective config (local NPC/zone edits merged in)
+  await reinitScene(effectiveConfig.value)
   // Restore waypoints for new scene
   restoreWaypoints()
 }
@@ -304,13 +354,38 @@ async function onLoadScene(sceneId: string): Promise<void> {
 
 const selection = ref<EditorSelection>(null)
 
+// Guard prevents the two watchers below from bouncing off each other.
+let _selSyncing = false
+
 watch(viewportSelection, (s) => {
+  if (_selSyncing) return
+  _selSyncing = true
   selection.value = s
+  _selSyncing = false
 })
 
 watch(selection, (s) => {
+  if (_selSyncing) return
+  _selSyncing = true
   setSelection(s)
+  _selSyncing = false
 })
+
+// ─── TC drag → local NPC / zone position sync ────────────────────────────────
+
+watch(npcLivePositions, (positions) => {
+  for (const [id, pos] of positions) {
+    const npc = localNpcs.value.find(n => n.entityId === id)
+    if (npc) { npc.x = pos.x; npc.z = pos.z }
+  }
+}, { deep: false })
+
+watch(zoneLivePositions, (positions) => {
+  for (const [id, pos] of positions) {
+    const zone = localZones.value.find(z => z.id === id)
+    if (zone) { zone.x = pos.x; zone.z = pos.z }
+  }
+}, { deep: false })
 
 // ─── Waypoint state ───────────────────────────────────────────────────────────
 
@@ -458,7 +533,7 @@ async function saveScene(): Promise<void> {
     if (!currentSceneId.value) {
       // Upsert by name — reuse the existing row if one with this name already exists.
       const existing = await assetDb.scenes.where('name').equals(save.name!).first()
-      currentSceneId.value = existing?.id ?? `scene-${nanoid(8)}`
+      currentSceneId.value = existing?.id ?? `saved-${nanoid(8)}`
     }
     await assetDb.scenes.put({
       id: currentSceneId.value,
@@ -491,9 +566,93 @@ async function onExportZip(): Promise<void> {
   }
 }
 
+// ─── NPC / zone mutations (F-11) ─────────────────────────────────────────────
+
+function onAddNpc(): void {
+  const entityId = `npc-${nanoid(6)}`
+  const npc: EditorNpcEntry = { entityId, label: entityId, x: 0, z: 0 }
+  localNpcs.value = [...localNpcs.value, npc]
+  addNpcMarker(npc)
+  setSelection({ kind: 'npc', entityId })
+}
+
+function onRemoveNpc(entityId: string): void {
+  localNpcs.value = localNpcs.value.filter(n => n.entityId !== entityId)
+  removeNpcMarker(entityId)
+}
+
+function onAddZone(): void {
+  const id = `zone-${nanoid(6)}`
+  const zone: EditorZoneEntry = { id, type: 'proximity', label: id, x: 0, z: 0, radius: 3 }
+  localZones.value = [...localZones.value, zone]
+  addZoneMarker(zone)
+  setSelection({ kind: 'zone', id })
+}
+
+function onRemoveZone(id: string): void {
+  localZones.value = localZones.value.filter(z => z.id !== id)
+  removeZoneMarker(id)
+}
+
+function onNpcChanged(entityId: string, patch: Partial<EditorNpcEntry>): void {
+  const npc = localNpcs.value.find(n => n.entityId === entityId)
+  if (!npc) return
+  Object.assign(npc, patch)
+  if ('x' in patch || 'z' in patch) {
+    setNpcPosition(entityId, npc.x, npc.z)
+  }
+}
+
+function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
+  const zone = localZones.value.find(z => z.id === id)
+  if (!zone) return
+  Object.assign(zone, patch)
+  if ('x' in patch || 'z' in patch) {
+    setZonePosition(id, zone.x, zone.z)
+  }
+}
+
+// ─── TS config export (F-13) ─────────────────────────────────────────────────
+
+const isCopyingTs = ref(false)
+
+async function onCopyConfigTs(): Promise<void> {
+  const ts = serializeEditorConfigTS(localNpcs.value, localZones.value, effectiveConfig.value)
+  try {
+    await navigator.clipboard.writeText(ts)
+    isCopyingTs.value = true
+    flashStatus('Scene config TS copied to clipboard')
+    setTimeout(() => { isCopyingTs.value = false }, 1500)
+  } catch {
+    flashStatus('Clipboard write failed')
+  }
+}
+
+// ─── NPC asset picker (F-9) ──────────────────────────────────────────────────
+
+const pickerOpen = ref(false)
+const pickerEntityId = ref('')
+const pickerKind = ref<'character' | 'animation-pack'>('character')
+
+function onPickNpcAsset(entityId: string, kind: 'character' | 'animation-pack'): void {
+  pickerEntityId.value = entityId
+  pickerKind.value = kind
+  pickerOpen.value = true
+}
+
+function onPickerSelect(assetId: string): void {
+  pickerOpen.value = false
+  const patch: Partial<EditorNpcEntry> =
+    pickerKind.value === 'character'
+      ? { assetId }
+      : { animationPackAssetId: assetId }
+  onNpcChanged(pickerEntityId.value, patch)
+}
+
 // ─── Lifecycle ────────────────────────────────────────────────────────────────
 
 onMounted(() => {
+  initLocalEntries()
   setTimeout(restoreWaypoints, 100)
 })
 
@@ -683,6 +842,10 @@ kbd {
 .save-btn.export-btn:hover:not(:disabled) {
   color: #c099ff;
   border-color: rgba(192, 153, 255, 0.3);
+}
+.save-btn.ts-btn:hover:not(:disabled) {
+  color: #80ffcc;
+  border-color: rgba(128, 255, 204, 0.3);
 }
 .scene-name-input {
   background: rgba(0, 0, 0, 0.70);
