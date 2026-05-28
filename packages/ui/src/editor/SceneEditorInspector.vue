@@ -1,9 +1,10 @@
 <!--
   SceneEditorInspector — right panel, contextual tabs based on current selection.
 
-  nothing / scene → Scene tab (spawn, atmosphere label)
-  NPC selected    → Transform | Path tabs
+  nothing / scene → Scene tab (spawn, NPC/zone counts)
+  NPC selected    → Transform | Path | Asset tabs
   Zone selected   → Zone tab
+  placed selected → Placed tab (read-only summary)
 -->
 <template>
   <aside class="inspector">
@@ -12,9 +13,16 @@
     <header class="inspector-header">
       <span class="title">Inspector</span>
       <span class="context-label">{{ contextLabel }}</span>
+      <!-- Trash button for NPC / Zone -->
+      <button
+        v-if="selection?.kind === 'npc' || selection?.kind === 'zone'"
+        class="btn-trash"
+        title="Remove this entry"
+        @click="onRemove"
+      >🗑</button>
     </header>
 
-    <!-- ── Tab bar (only when NPC selected) ──────────────────────────────── -->
+    <!-- ── Tab bar ────────────────────────────────────────────────────────── -->
     <div v-if="selection?.kind === 'npc'" class="tab-bar">
       <button
         v-for="tab in npcTabs"
@@ -39,11 +47,11 @@
       </div>
       <div class="field-group">
         <label class="field-label">NPCs</label>
-        <p class="field-value">{{ config.npcs?.length ?? 0 }}</p>
+        <p class="field-value">{{ npcs.length }}</p>
       </div>
       <div class="field-group">
         <label class="field-label">Zones</label>
-        <p class="field-value">{{ config.zones?.length ?? 0 }}</p>
+        <p class="field-value">{{ zones.length }}</p>
       </div>
     </div>
 
@@ -56,20 +64,63 @@
         <code class="field-mono">{{ selectedNpc.entityId }}</code>
       </div>
       <div v-if="selectedNpc" class="field-group">
+        <label class="field-label">Label</label>
+        <input
+          class="field-input"
+          :value="selectedNpc.label ?? selectedNpc.entityId"
+          @change="emit('npc-changed', selectedNpc!.entityId, { label: ($event.target as HTMLInputElement).value })"
+        />
+      </div>
+      <div v-if="selectedNpc" class="field-group">
         <label class="field-label">Position</label>
-        <div class="coords-row">
-          <span class="coord-item">X <code>{{ fmt(selectedNpc.x) }}</code></span>
-          <span class="coord-item">Y <code>{{ fmt(selectedNpc.y ?? 0) }}</code></span>
-          <span class="coord-item">Z <code>{{ fmt(selectedNpc.z) }}</code></span>
+        <div class="coords-row editable">
+          <label class="coord-edit">
+            X
+            <input
+              type="number"
+              step="0.1"
+              class="coord-input"
+              :value="fmt(selectedNpc.x)"
+              @change="emit('npc-changed', selectedNpc!.entityId, { x: parseFloat(($event.target as HTMLInputElement).value) || 0 })"
+            />
+          </label>
+          <label class="coord-edit">
+            Z
+            <input
+              type="number"
+              step="0.1"
+              class="coord-input"
+              :value="fmt(selectedNpc.z)"
+              @change="emit('npc-changed', selectedNpc!.entityId, { z: parseFloat(($event.target as HTMLInputElement).value) || 0 })"
+            />
+          </label>
         </div>
+      </div>
+      <div v-if="selectedNpc" class="field-group">
+        <label class="field-label">Rotation Y (deg)</label>
+        <input
+          type="number"
+          step="5"
+          class="field-input-num"
+          :value="selectedNpc.rotationY ?? 0"
+          @change="emit('npc-changed', selectedNpc!.entityId, { rotationY: parseFloat(($event.target as HTMLInputElement).value) || 0 })"
+        />
+      </div>
+      <div v-if="selectedNpc" class="field-group">
+        <label class="field-label">Scale</label>
+        <input
+          type="number"
+          step="0.05"
+          min="0.01"
+          class="field-input-num"
+          :value="selectedNpc.scale ?? 1"
+          @change="emit('npc-changed', selectedNpc!.entityId, { scale: parseFloat(($event.target as HTMLInputElement).value) || 1 })"
+        />
       </div>
       <div v-if="selectedNpc?.proximityRadius" class="field-group">
         <label class="field-label">Proximity radius</label>
         <p class="field-value">{{ selectedNpc.proximityRadius }}m</p>
       </div>
-      <p class="field-hint">
-        Position is read-only in this version. Edit in the scene descriptor to move the NPC.
-      </p>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
@@ -100,12 +151,10 @@
         >✕</button>
       </div>
 
-      <!-- Hint when edit mode active -->
       <p v-if="pathEditMode" class="edit-hint">
         Click the floor in the viewport to place waypoints.
       </p>
 
-      <!-- Waypoint list -->
       <div class="wp-list">
         <div
           v-for="(wp, i) in currentWaypoints"
@@ -130,10 +179,62 @@
         </p>
       </div>
 
-      <!-- Footer actions -->
       <div class="path-footer" v-if="currentWaypoints.length > 0">
         <p class="wp-count">{{ currentWaypoints.length }} waypoint{{ currentWaypoints.length !== 1 ? 's' : '' }}</p>
         <button class="btn-copy" @click="copyTypeScript">Copy TypeScript</button>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         NPC — Asset tab (F-9 / F-10)
+    ═══════════════════════════════════════════════════════════════════════ -->
+    <div v-else-if="selection.kind === 'npc' && activeTab === 'Asset'" class="panel-body">
+      <div v-if="selectedNpc" class="field-group">
+        <label class="field-label">Character mesh</label>
+        <div class="asset-row">
+          <span class="asset-id" :class="{ unset: !selectedNpc.assetId }">
+            {{ selectedNpc.assetId ? assetName(selectedNpc.assetId) : 'none' }}
+          </span>
+          <button class="btn-asset-pick" @click="emit('pick-npc-asset', selectedNpc!.entityId, 'character')">
+            Set…
+          </button>
+          <button
+            v-if="selectedNpc.assetId"
+            class="btn-asset-clear"
+            @click="emit('npc-changed', selectedNpc!.entityId, { assetId: undefined })"
+          >✕</button>
+        </div>
+      </div>
+      <div v-if="selectedNpc" class="field-group">
+        <label class="field-label">Animation pack</label>
+        <div class="asset-row">
+          <span class="asset-id" :class="{ unset: !selectedNpc.animationPackAssetId }">
+            {{ selectedNpc.animationPackAssetId ? assetName(selectedNpc.animationPackAssetId) : 'none' }}
+          </span>
+          <button class="btn-asset-pick" @click="emit('pick-npc-asset', selectedNpc!.entityId, 'animation-pack')">
+            Set…
+          </button>
+          <button
+            v-if="selectedNpc.animationPackAssetId"
+            class="btn-asset-clear"
+            @click="emit('npc-changed', selectedNpc!.entityId, { animationPackAssetId: undefined })"
+          >✕</button>
+        </div>
+      </div>
+      <div v-if="selectedNpc" class="field-group">
+        <label class="field-label">Default clip</label>
+        <select
+          v-if="availableClips.length > 0"
+          class="field-select"
+          :value="selectedNpc.defaultClip ?? ''"
+          @change="emit('npc-changed', selectedNpc!.entityId, { defaultClip: ($event.target as HTMLSelectElement).value || undefined })"
+        >
+          <option value="">(none)</option>
+          <option v-for="clip in availableClips" :key="clip" :value="clip">{{ clip }}</option>
+        </select>
+        <p v-else class="field-hint">
+          {{ selectedNpc.animationPackAssetId ? 'No clips found in pack.' : 'Set an animation pack first.' }}
+        </p>
       </div>
     </div>
 
@@ -146,27 +247,76 @@
         <code class="field-mono">{{ selectedZone.id }}</code>
       </div>
       <div v-if="selectedZone" class="field-group">
+        <label class="field-label">Label</label>
+        <input
+          class="field-input"
+          :value="selectedZone.label ?? selectedZone.id"
+          @change="emit('zone-changed', selectedZone!.id, { label: ($event.target as HTMLInputElement).value })"
+        />
+      </div>
+      <div v-if="selectedZone" class="field-group">
         <label class="field-label">Type</label>
-        <p class="field-value">{{ selectedZone.type }}</p>
+        <select
+          class="field-select"
+          :value="selectedZone.type"
+          @change="emit('zone-changed', selectedZone!.id, { type: ($event.target as HTMLSelectElement).value as 'exit' | 'proximity' })"
+        >
+          <option value="proximity">proximity</option>
+          <option value="exit">exit</option>
+        </select>
       </div>
       <div v-if="selectedZone" class="field-group">
         <label class="field-label">Centre</label>
-        <div class="coords-row">
-          <span class="coord-item">X <code>{{ fmt(selectedZone.x) }}</code></span>
-          <span class="coord-item">Z <code>{{ fmt(selectedZone.z) }}</code></span>
+        <div class="coords-row editable">
+          <label class="coord-edit">
+            X
+            <input
+              type="number"
+              step="0.1"
+              class="coord-input"
+              :value="fmt(selectedZone.x)"
+              @change="emit('zone-changed', selectedZone!.id, { x: parseFloat(($event.target as HTMLInputElement).value) || 0 })"
+            />
+          </label>
+          <label class="coord-edit">
+            Z
+            <input
+              type="number"
+              step="0.1"
+              class="coord-input"
+              :value="fmt(selectedZone.z)"
+              @change="emit('zone-changed', selectedZone!.id, { z: parseFloat(($event.target as HTMLInputElement).value) || 0 })"
+            />
+          </label>
         </div>
       </div>
       <div v-if="selectedZone" class="field-group">
-        <label class="field-label">Radius</label>
-        <p class="field-value">{{ selectedZone.radius }}m</p>
+        <label class="field-label">Radius (m)</label>
+        <input
+          type="number"
+          step="0.5"
+          min="0.1"
+          class="field-input-num"
+          :value="selectedZone.radius"
+          @change="emit('zone-changed', selectedZone!.id, { radius: parseFloat(($event.target as HTMLInputElement).value) || 1 })"
+        />
       </div>
-      <div v-if="selectedZone?.targetSceneId" class="field-group">
-        <label class="field-label">→ Scene</label>
-        <p class="field-value">{{ selectedZone.targetSceneId }}</p>
+      <div v-if="selectedZone?.targetSceneId || selectedZone?.type === 'exit'" class="field-group">
+        <label class="field-label">→ Scene ID</label>
+        <input
+          class="field-input"
+          :value="selectedZone.targetSceneId ?? ''"
+          placeholder="scene-id…"
+          @change="emit('zone-changed', selectedZone!.id, { targetSceneId: ($event.target as HTMLInputElement).value || undefined })"
+        />
       </div>
-      <p class="field-hint">
-        Zone geometry is read-only. Edit in the scene gameplay policy to resize.
-      </p>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
+         PLACED OBJECT panel
+    ═══════════════════════════════════════════════════════════════════════ -->
+    <div v-else-if="selection.kind === 'placed'" class="panel-body">
+      <p class="field-hint">Placed object selected. Use the gizmo (T/R/S) to transform it.</p>
     </div>
 
   </aside>
@@ -175,12 +325,16 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import * as THREE from 'three'
-import type { SceneEditorConfig, EditorSelection } from './sceneEditorTypes'
+import { useAssetStore } from './useAssetStore'
+import type { SceneEditorConfig, EditorSelection, EditorNpcEntry, EditorZoneEntry } from './sceneEditorTypes'
 
 const props = defineProps<{
   selection: EditorSelection
   config: SceneEditorConfig
-  /** Current waypoints per NPC entity. Updated externally by SceneEditorView. */
+  /** Local mutable NPC list — drives writable transform inputs. */
+  npcs: EditorNpcEntry[]
+  /** Local mutable zone list — drives writable transform inputs. */
+  zones: EditorZoneEntry[]
   waypointMap: Map<string, THREE.Vector3[]>
 }>()
 
@@ -189,16 +343,22 @@ const emit = defineEmits<{
   'path-edit-stop': []
   'waypoints-changed': [entityId: string, waypoints: THREE.Vector3[]]
   'move-waypoint': [payload: { entityId: string; from: number; to: number }]
+  'npc-changed': [entityId: string, patch: Partial<EditorNpcEntry>]
+  'zone-changed': [id: string, patch: Partial<EditorZoneEntry>]
+  'remove-npc': [entityId: string]
+  'remove-zone': [id: string]
+  'pick-npc-asset': [entityId: string, kind: 'character' | 'animation-pack']
 }>()
+
+const assetStore = useAssetStore()
 
 // ─── Tab state ────────────────────────────────────────────────────────────────
 
-const npcTabs = ['Transform', 'Path'] as const
+const npcTabs = ['Transform', 'Path', 'Asset'] as const
 type NpcTab = (typeof npcTabs)[number]
 const activeTab = ref<NpcTab>('Transform')
 
 watch(() => props.selection, () => {
-  // Reset to Transform tab whenever selection changes
   activeTab.value = 'Transform'
   if (pathEditMode.value) stopPathEditMode()
 })
@@ -208,16 +368,15 @@ watch(() => props.selection, () => {
 const selectedNpc = computed(() => {
   const sel = props.selection
   if (sel?.kind !== 'npc') return undefined
-  return props.config.npcs?.find(n => n.entityId === sel.entityId)
+  return props.npcs.find(n => n.entityId === sel.entityId)
 })
 
 const selectedZone = computed(() => {
   const sel = props.selection
   if (sel?.kind !== 'zone') return undefined
-  return props.config.zones?.find(z => z.id === sel.id)
+  return props.zones.find(z => z.id === sel.id)
 })
 
-/** Narrowed entityId — safe to use in template event handlers without union widening. */
 const selectedEntityId = computed<string | null>(() =>
   props.selection?.kind === 'npc' ? props.selection.entityId : null
 )
@@ -226,8 +385,30 @@ const contextLabel = computed(() => {
   if (!props.selection || props.selection.kind === 'scene') return 'Scene'
   if (props.selection.kind === 'npc') return selectedNpc.value?.label ?? props.selection.entityId
   if (props.selection.kind === 'zone') return selectedZone.value?.label ?? props.selection.id
+  if (props.selection.kind === 'placed') return 'Placed object'
+  if (props.selection.kind === 'player') return 'Player'
   return ''
 })
+
+// ─── Asset helpers (F-9 / F-10) ──────────────────────────────────────────────
+
+function assetName(id: string): string {
+  return assetStore.getById(id)?.name ?? id
+}
+
+const availableClips = computed<string[]>(() => {
+  if (props.selection?.kind !== 'npc') return []
+  const npc = selectedNpc.value
+  if (!npc?.animationPackAssetId) return []
+  return assetStore.getById(npc.animationPackAssetId)?.clipNames ?? []
+})
+
+// ─── Remove action ────────────────────────────────────────────────────────────
+
+function onRemove(): void {
+  if (props.selection?.kind === 'npc') emit('remove-npc', props.selection.entityId)
+  else if (props.selection?.kind === 'zone') emit('remove-zone', props.selection.id)
+}
 
 // ─── Path tab ─────────────────────────────────────────────────────────────────
 
@@ -239,11 +420,8 @@ const currentWaypoints = computed<THREE.Vector3[]>(() => {
 })
 
 function togglePathEditMode(): void {
-  if (pathEditMode.value) {
-    stopPathEditMode()
-  } else {
-    startPathEditMode()
-  }
+  if (pathEditMode.value) stopPathEditMode()
+  else startPathEditMode()
 }
 
 function startPathEditMode(): void {
@@ -301,10 +479,7 @@ function copyTypeScript(): void {
     lines || '  // no waypoints placed yet',
     `]`,
   ].join('\n')
-
-  navigator.clipboard.writeText(ts).then(() => {
-    // Temporary visual feedback handled by status bar in parent
-  }).catch(() => {})
+  navigator.clipboard.writeText(ts).catch(() => {})
 }
 
 // ─── Keyboard Ctrl+Z undo ─────────────────────────────────────────────────────
@@ -348,8 +523,7 @@ const fmt = (n: number) => n.toFixed(2)
 .inspector-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   padding: 9px 12px 8px;
   border-bottom: 1px solid #182a40;
   flex-shrink: 0;
@@ -362,14 +536,25 @@ const fmt = (n: number) => n.toFixed(2)
   color: #6a8aaa;
 }
 .context-label {
+  flex: 1;
   font-family: monospace;
   font-size: 10px;
   color: #5ab0f5;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 150px;
 }
+.btn-trash {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  opacity: 0.5;
+  transition: opacity 0.1s;
+}
+.btn-trash:hover { opacity: 1; }
 
 /* ── Tab bar ──────────────────────────────────────────────────────────────── */
 .tab-bar {
@@ -437,6 +622,47 @@ const fmt = (n: number) => n.toFixed(2)
   color: #2a4a5a;
   line-height: 1.6;
 }
+.field-input {
+  width: 100%;
+  background: #0e1c2e;
+  border: 1px solid #182a40;
+  border-radius: 3px;
+  color: #9dd4ff;
+  font-size: 11px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+}
+.field-input:focus {
+  outline: none;
+  border-color: #3a6080;
+}
+.field-input-num {
+  width: 80px;
+  background: #0e1c2e;
+  border: 1px solid #182a40;
+  border-radius: 3px;
+  color: #9dd4ff;
+  font-size: 11px;
+  padding: 4px 6px;
+  text-align: right;
+}
+.field-input-num:focus {
+  outline: none;
+  border-color: #3a6080;
+}
+.field-select {
+  width: 100%;
+  background: #0e1c2e;
+  border: 1px solid #182a40;
+  border-radius: 3px;
+  color: #9dd4ff;
+  font-size: 11px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+}
+.field-select:focus { outline: none; border-color: #3a6080; }
+
+/* ── Coords row ──────────────────────────────────────────────────────────── */
 .coords-row {
   display: flex;
   gap: 10px;
@@ -450,6 +676,68 @@ const fmt = (n: number) => n.toFixed(2)
   color: #7ab0d8;
   margin-left: 2px;
 }
+.coords-row.editable {
+  gap: 8px;
+}
+.coord-edit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #4a7090;
+}
+.coord-input {
+  width: 64px;
+  background: #0e1c2e;
+  border: 1px solid #182a40;
+  border-radius: 3px;
+  color: #9dd4ff;
+  font-size: 11px;
+  padding: 3px 5px;
+  text-align: right;
+}
+.coord-input:focus { outline: none; border-color: #3a6080; }
+
+/* ── Asset row (F-9) ─────────────────────────────────────────────────────── */
+.asset-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.asset-id {
+  flex: 1;
+  font-family: monospace;
+  font-size: 10px;
+  color: #7ab0d8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asset-id.unset { color: #2a4a5a; }
+.btn-asset-pick {
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid #1a3050;
+  color: #5ab0f5;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-asset-pick:hover { background: rgba(90,176,245,0.1); }
+.btn-asset-clear {
+  padding: 3px 6px;
+  font-size: 10px;
+  background: transparent;
+  border: 1px solid #1a2a3a;
+  color: #3a5060;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.btn-asset-clear:hover { color: #ff6060; border-color: #4a1e1e; }
 
 /* ── Path panel ──────────────────────────────────────────────────────────── */
 .path-panel {
@@ -458,7 +746,6 @@ const fmt = (n: number) => n.toFixed(2)
   padding: 0;
   overflow: hidden;
 }
-
 .path-toolbar {
   display: flex;
   align-items: center;
@@ -490,7 +777,7 @@ const fmt = (n: number) => n.toFixed(2)
   padding: 4px 7px;
   font-size: 11px;
   background: transparent;
-  border: 1px solid #1a3050;
+  border: 1px solid #1a2a3a;
   color: #4a6880;
   border-radius: 3px;
   cursor: pointer;
@@ -498,7 +785,6 @@ const fmt = (n: number) => n.toFixed(2)
 }
 .btn-undo:hover { color: #8ab0d0; border-color: #2a4a60; }
 .btn-clear:hover { color: #ff6060; border-color: #4a1e1e; }
-
 .edit-hint {
   margin: 0;
   padding: 6px 10px;
@@ -507,7 +793,6 @@ const fmt = (n: number) => n.toFixed(2)
   background: rgba(90,176,245,0.06);
   border-bottom: 1px solid #182a40;
 }
-
 .wp-list {
   flex: 1;
   overflow-y: auto;
@@ -556,14 +841,8 @@ const fmt = (n: number) => n.toFixed(2)
   cursor: pointer;
   line-height: 1.4;
 }
-.wp-row-btns button:hover:not(:disabled) {
-  color: #7ab0d0;
-  border-color: #2a4050;
-}
-.wp-row-btns button.del:hover:not(:disabled) {
-  color: #ff6060;
-  border-color: #4a1e1e;
-}
+.wp-row-btns button:hover:not(:disabled) { color: #7ab0d0; border-color: #2a4050; }
+.wp-row-btns button.del:hover:not(:disabled) { color: #ff6060; border-color: #4a1e1e; }
 .wp-row-btns button:disabled { opacity: 0.25; cursor: default; }
 .wp-empty {
   margin: 0;
@@ -572,7 +851,6 @@ const fmt = (n: number) => n.toFixed(2)
   color: #2a3a4a;
   text-align: center;
 }
-
 .path-footer {
   flex-shrink: 0;
   padding: 8px 10px;

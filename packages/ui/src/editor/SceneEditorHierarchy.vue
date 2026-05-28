@@ -49,10 +49,11 @@
     </div>
 
     <!-- NPCs -->
-    <div v-if="npcs.length > 0" class="section">
+    <div class="section">
       <div class="section-header">
         <span>NPCs</span>
         <span class="section-count">{{ npcs.length }}</span>
+        <button class="btn-add" title="Add NPC" @click.stop="emit('add-npc')">+</button>
       </div>
       <div
         v-for="npc in npcs"
@@ -65,13 +66,15 @@
         <span class="row-label">{{ npc.label ?? npc.entityId }}</span>
         <span v-if="npcHasPath(npc.entityId)" class="badge-path" title="Has waypoint path">path</span>
       </div>
+      <p v-if="npcs.length === 0" class="section-empty">None</p>
     </div>
 
     <!-- Trigger Zones -->
-    <div v-if="zones.length > 0" class="section">
+    <div class="section">
       <div class="section-header">
         <span>Zones</span>
         <span class="section-count">{{ zones.length }}</span>
+        <button class="btn-add" title="Add zone" @click.stop="emit('add-zone')">+</button>
       </div>
       <div
         v-for="zone in zones"
@@ -84,6 +87,7 @@
         <span class="row-label">{{ zone.label ?? zone.id }}</span>
         <span class="badge-type">{{ zone.type }}</span>
       </div>
+      <p v-if="zones.length === 0" class="section-empty">None</p>
     </div>
 
     <!-- Placed Objects -->
@@ -104,10 +108,6 @@
       </div>
     </div>
 
-    <!-- Empty state -->
-    <p v-if="npcs.length === 0 && zones.length === 0 && placedObjects.length === 0" class="empty">
-      No NPCs or zones configured.
-    </p>
   </aside>
 </template>
 
@@ -141,6 +141,8 @@ const emit = defineEmits<{
   'switch-scene': [sceneId: string]
   'asset-picked': [assetId: string]
   'load-scene': [sceneId: string]
+  'add-npc': []
+  'add-zone': []
 }>()
 
 // Live-queried saved scenes — most-recently-saved first.
@@ -243,6 +245,34 @@ function npcHasPath(entityId: string): boolean {
   padding: 0 4px;
   border-radius: 8px;
   font-size: 9px;
+}
+.btn-add {
+  background: transparent;
+  border: 1px solid #1e3050;
+  border-radius: 3px;
+  color: #3a6080;
+  font-size: 12px;
+  font-weight: bold;
+  width: 16px;
+  height: 16px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.1s, border-color 0.1s;
+}
+.btn-add:hover {
+  color: #7ab0d8;
+  border-color: rgba(90, 176, 245, 0.3);
+}
+.section-empty {
+  margin: 0;
+  padding: 3px 12px 4px;
+  font-size: 10px;
+  color: #1e3040;
 }
 
 /* ── Rows ─────────────────────────────────────────────────────────────────── */
