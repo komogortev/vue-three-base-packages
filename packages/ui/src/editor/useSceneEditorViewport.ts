@@ -2,7 +2,27 @@ import { ref, onMounted, onUnmounted, shallowReadonly, type Ref } from 'vue'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import type { SceneEditorConfig, EditorSelection } from './sceneEditorTypes'
+import { TransformControls } from 'three/addons/controls/TransformControls.js'
+import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
+import type { SavedPlacedObject } from './sandboxSceneSchema'
+export type { EditorCamMode } from './sceneEditorTypes'
+
+/** A saved placed object with its blob URL resolved — input to restorePlacedObjects. */
+export type RestorableObject = SavedPlacedObject & { blobUrl: string }
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type TransformMode = 'translate' | 'rotate' | 'scale'
+
+interface PlaceMode {
+  active: boolean
+  objectId: string
+  assetId: string
+  blobUrl: string
+  label: string
+}
+
+const PLACE_MODE_IDLE: PlaceMode = { active: false, objectId: '', assetId: '', blobUrl: '', label: '' }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -10,8 +30,17 @@ export interface SceneEditorViewportReturn {
   isReady: Readonly<Ref<boolean>>
   statusMessage: Readonly<Ref<string>>
   selection: Readonly<Ref<EditorSelection>>
+  transformMode: Readonly<Ref<TransformMode>>
+  /** Current camera / player mode — orbit | follow-3p | free-float. */
+  editorCamMode: Readonly<Ref<EditorCamMode>>
+  /** Live list of placed objects — reactive, readable by hierarchy. */
+  placedObjects: Readonly<Ref<EditorPlacedObject[]>>
+  /** True while waiting for a floor click to place an asset. */
+  isInPlaceMode: Readonly<Ref<boolean>>
   /** Set selection from the hierarchy panel (bypasses click raycasting). */
   setSelection: (s: EditorSelection) => void
+  /** Set the active TransformControls mode (translate / rotate / scale). */
+  setTransformMode: (mode: TransformMode) => void
   /**
    * Toggle path-edit mode for the current NPC selection.
    * When active, floor clicks call onFloorHit instead of selecting scene root.
@@ -26,6 +55,31 @@ export interface SceneEditorViewportReturn {
    * Keeps renderer / camera / controls / lights alive — only reloads GLBs + markers.
    */
   reinitScene: (newConfig: SceneEditorConfig) => Promise<void>
+  /**
+   * Enter place mode — next floor click drops the asset at that position.
+   * Auto-exits after one placement and auto-selects the placed object.
+   * Press Esc to cancel without placing.
+   */
+  enterPlaceMode: (objectId: string, assetId: string, blobUrl: string, label: string) => void
+  /** Cancel place mode without placing anything. */
+  exitPlaceMode: () => void
+  /**
+   * Snapshot the live transforms (position/rotation/scale) from Three.js roots
+   * for all placed objects. Call this immediately before serializing to avoid
+   * reading stale placement-time values.
+   */
+  snapshotPlacedTransforms: () => EditorPlacedObject[]
+  /**
+   * Restore a saved set of placed objects directly into the scene, bypassing
+   * place-mode interaction. Call after reinitScene (which clears placed objects).
+   * Objects whose blob URL could not be resolved are skipped (asset deleted).
+   */
+  restorePlacedObjects: (objects: RestorableObject[]) => Promise<void>
+  /**
+   * Switch camera mode from outside the viewport (e.g. UI buttons).
+   * Handles selection sync alongside Three.js state changes.
+   */
+  setCamMode: (mode: EditorCamMode) => void
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -33,6 +87,8 @@ export interface SceneEditorViewportReturn {
 export function useSceneEditorViewport(opts: {
   canvas: Ref<HTMLCanvasElement | null>
   config: SceneEditorConfig
+  /** Called when Esc cancels path-edit mode from inside the viewport. */
+  onPathEditCancel?: () => void
 }): SceneEditorViewportReturn {
   const { canvas: canvasRef } = opts
 
@@ -42,12 +98,16 @@ export function useSceneEditorViewport(opts: {
   const isReady = ref(false)
   const statusMessage = ref('Initializing…')
   const selection = ref<EditorSelection>(null)
+  const transformMode = ref<TransformMode>('translate')
+  const placedObjects = ref<EditorPlacedObject[]>([])
+  const isInPlaceMode = ref(false)
 
   // Three.js core — created once, kept alive across scene switches
   let renderer: THREE.WebGLRenderer
   let scene: THREE.Scene
   let camera: THREE.PerspectiveCamera
   let controls: OrbitControls
+  let transformControls: TransformControls
   let raycaster: THREE.Raycaster
   let animId: number
 
@@ -60,9 +120,22 @@ export function useSceneEditorViewport(opts: {
   const zoneMarkerGroup = new THREE.Group()
   const pathGroup = new THREE.Group()
 
-  // Selection maps: entityId/zoneId → clickable mesh
+  // Placed objects group — persistent container, children cleared on scene switch
+  const placedGroup = new THREE.Group()
+  // objectId → Three.js root group (for TC attachment)
+  const placedMeshRoots = new Map<string, THREE.Group>()
+  // objectId → invisible hit box mesh (for raycasting)
+  const placedHitBoxes = new Map<string, THREE.Mesh>()
+
+  // Place mode state — plain object (not reactive; status + isInPlaceMode carry the UI signal)
+  let placeMode: PlaceMode = { ...PLACE_MODE_IDLE }
+
+  // Selection maps: entityId/zoneId → clickable mesh (for raycasting + highlight)
   const npcSpheres = new Map<string, THREE.Mesh>()
   const zoneRingPips = new Map<string, THREE.Mesh>()
+
+  // Per-NPC root groups — used for TransformControls attachment so all parts move together
+  const npcMarkerRoots = new Map<string, THREE.Group>()
 
   // Per-NPC path visualization
   const npcPathViz = new Map<string, { line: THREE.Line; dots: THREE.Group }>()
@@ -75,9 +148,33 @@ export function useSceneEditorViewport(opts: {
   let mouseDownX = 0
   let mouseDownY = 0
 
+  // Gizmo interaction flag — prevents onMouseUp from deselecting after gizmo click
+  let gizmoMouseDown = false
+
   // Path-edit mode
   let pathEditActive = false
   let onFloorHitCb: ((pos: THREE.Vector3) => void) | undefined
+
+  // ─── Player & camera mode ─────────────────────────────────────────────────
+  const editorCamMode = ref<EditorCamMode>('orbit')
+
+  // Camera at player eye level — capsule center y=0.9, eye y≈1.65 from ground
+  const FPV_EYE_OFFSET = 0.75
+
+  // Player capsule proxy (no character GLB dependency for D-5)
+  let playerMesh: THREE.Mesh | null = null
+
+  // Delta time
+  const clock = new THREE.Clock()
+
+  // Keys currently held (WASD + modifiers); polled each frame for smooth movement
+  const keyState = new Set<string>()
+
+  // Free-float camera state (mirrors D-1 PlayerCameraCoordinator pattern)
+  let ffYaw = 0
+  let ffPitch = 0
+  const ffPos = new THREE.Vector3()
+  let ffPointerLocked = false
 
   // ─── Init ───────────────────────────────────────────────────────────────────
   // Creates renderer/camera/controls/lights once. Then calls loadScene().
@@ -105,6 +202,32 @@ export function useSceneEditorViewport(opts: {
 
     raycaster = new THREE.Raycaster()
 
+    // ── TransformControls ────────────────────────────────────────────────────
+    // r170+: TransformControls extends Controls, not Object3D — add getHelper() to the scene.
+    transformControls = new TransformControls(camera, canvas)
+    transformControls.setMode('translate')
+    // Disabled until an object is selected — prevents TC stealing pointer from OrbitControls.
+    transformControls.enabled = false
+    scene.add(transformControls.getHelper())
+
+    // Set gizmo flag so onMouseUp skips selection logic when user clicks a gizmo handle.
+    // Reset on TC's own mouseUp so the flag doesn't stick if the drag ends off-canvas.
+    transformControls.addEventListener('mouseDown', () => { gizmoMouseDown = true })
+    transformControls.addEventListener('mouseUp', () => { gizmoMouseDown = false })
+
+    // Disable OrbitControls while gizmo dragged.
+    transformControls.addEventListener('dragging-changed', (e) => {
+      controls.enabled = !(e as unknown as { value: boolean }).value
+    })
+
+    // Enforce uniform scale in scale mode (mirrors legacy editor behavior).
+    transformControls.addEventListener('objectChange', () => {
+      if (transformMode.value === 'scale') {
+        const obj = transformControls.object
+        if (obj) { const s = obj.scale.x; obj.scale.set(s, s, s) }
+      }
+    })
+
     // Lighting — editor-neutral, persistent across scene switches
     scene.add(new THREE.AmbientLight('#c8d8f0', 0.65))
     const sun = new THREE.DirectionalLight('#fff5e0', 1.3)
@@ -118,12 +241,17 @@ export function useSceneEditorViewport(opts: {
     scene.add(npcMarkerGroup)
     scene.add(zoneMarkerGroup)
     scene.add(pathGroup)
+    scene.add(placedGroup)
 
     canvas.addEventListener('mousedown', onMouseDown)
     canvas.addEventListener('mouseup', onMouseUp)
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('pointerlockchange', onPointerLockChange)
     window.addEventListener('resize', onResize)
 
+    initPlayer()
     animate()
 
     await loadScene(config)
@@ -170,6 +298,14 @@ export function useSceneEditorViewport(opts: {
   // ─── Scene clearing (before scene switch) ────────────────────────────────────
 
   function clearScene(): void {
+    // Detach gizmo before clearing objects it may reference
+    transformControls.detach()
+    transformControls.enabled = false
+
+    // Cancel place mode
+    placeMode = { ...PLACE_MODE_IDLE }
+    isInPlaceMode.value = false
+
     // Remove all objects added during loadScene
     for (const obj of sceneObjects) {
       scene.remove(obj)
@@ -183,6 +319,13 @@ export function useSceneEditorViewport(opts: {
 
     npcSpheres.clear()
     zoneRingPips.clear()
+    npcMarkerRoots.clear()
+
+    // Clear placed objects
+    placedGroup.clear()
+    placedMeshRoots.clear()
+    placedHitBoxes.clear()
+    placedObjects.value = []
 
     // Clear all path visualizations
     for (const [, viz] of npcPathViz) {
@@ -224,23 +367,28 @@ export function useSceneEditorViewport(opts: {
   function buildNpcMarkers(cfg: SceneEditorConfig): void {
     npcMarkerGroup.clear()
     npcSpheres.clear()
+    npcMarkerRoots.clear()
 
     for (const npc of cfg.npcs ?? []) {
       const yBase = npc.y ?? 0
 
-      // Sphere body
+      // Each NPC's parts are grouped so TransformControls moves the whole marker.
+      const markerRoot = new THREE.Group()
+      markerRoot.position.set(npc.x, yBase, npc.z)
+
+      // Sphere body (positioned relative to group root)
       const mat = new THREE.MeshBasicMaterial({ color: '#00aaff' })
       const sphere = new THREE.Mesh(npcSphereGeo, mat)
-      sphere.position.set(npc.x, yBase + 0.9, npc.z)
-      npcMarkerGroup.add(sphere)
+      sphere.position.set(0, 0.9, 0)
+      markerRoot.add(sphere)
       npcSpheres.set(npc.entityId, sphere)
 
       // Vertical stem so sphere is clearly above ground
       const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.9, 6)
       const stemMat = new THREE.MeshBasicMaterial({ color: '#0077bb' })
       const stem = new THREE.Mesh(stemGeo, stemMat)
-      stem.position.set(npc.x, yBase + 0.45, npc.z)
-      npcMarkerGroup.add(stem)
+      stem.position.set(0, 0.45, 0)
+      markerRoot.add(stem)
 
       // Proximity ring (flat disc outline)
       if (npc.proximityRadius && npc.proximityRadius > 0) {
@@ -251,9 +399,12 @@ export function useSceneEditorViewport(opts: {
           color: '#00aaff', transparent: true, opacity: 0.22, side: THREE.DoubleSide,
         })
         const ring = new THREE.Mesh(ringGeo, ringMat)
-        ring.position.set(npc.x, yBase + 0.03, npc.z)
-        npcMarkerGroup.add(ring)
+        ring.position.set(0, 0.03, 0)
+        markerRoot.add(ring)
       }
+
+      npcMarkerGroup.add(markerRoot)
+      npcMarkerRoots.set(npc.entityId, markerRoot)
     }
   }
 
@@ -304,6 +455,55 @@ export function useSceneEditorViewport(opts: {
     selection.value = s
     refreshNpcHighlights()
     statusMessage.value = describeSelection(s)
+
+    if (s?.kind === 'player') {
+      // Player selected: enter follow-3p unless already in a player-attached mode (first-person)
+      if (editorCamMode.value !== 'follow-3p' && editorCamMode.value !== 'first-person') {
+        setEditorCamMode('follow-3p')
+      }
+      transformControls.detach()
+      transformControls.enabled = false
+      return
+    }
+
+    // Non-player selection: exit any player-attached camera mode back to orbit
+    if (editorCamMode.value === 'follow-3p' || editorCamMode.value === 'first-person') {
+      setEditorCamMode('orbit')
+    }
+
+    // Attach TransformControls to the selected object's root group / pip.
+    // Disabled when nothing is selected to avoid TC stealing pointer from OrbitControls.
+    if (s?.kind === 'npc') {
+      const root = npcMarkerRoots.get(s.entityId)
+      if (root) {
+        transformControls.attach(root)
+        transformControls.enabled = true
+      } else {
+        transformControls.detach()
+        transformControls.enabled = false
+      }
+    } else if (s?.kind === 'zone') {
+      const pip = zoneRingPips.get(s.id)
+      if (pip) {
+        transformControls.attach(pip)
+        transformControls.enabled = true
+      } else {
+        transformControls.detach()
+        transformControls.enabled = false
+      }
+    } else if (s?.kind === 'placed') {
+      const root = placedMeshRoots.get(s.objectId)
+      if (root) {
+        transformControls.attach(root)
+        transformControls.enabled = true
+      } else {
+        transformControls.detach()
+        transformControls.enabled = false
+      }
+    } else {
+      transformControls.detach()
+      transformControls.enabled = false
+    }
   }
 
   function refreshNpcHighlights(): void {
@@ -318,6 +518,9 @@ export function useSceneEditorViewport(opts: {
     if (!s || s.kind === 'scene') {
       return sceneStatus(config)
     }
+    if (s.kind === 'player') {
+      return 'Player — WASD to move · Tab to cycle camera'
+    }
     if (s.kind === 'npc') {
       const npc = config.npcs?.find(n => n.entityId === s.entityId)
       const label = npc?.label ?? s.entityId
@@ -328,6 +531,10 @@ export function useSceneEditorViewport(opts: {
       const zone = config.zones?.find(z => z.id === s.id)
       return `Zone: ${zone?.label ?? s.id} (${zone?.type ?? 'unknown'}, r=${zone?.radius ?? '?'}m)`
     }
+    if (s.kind === 'placed') {
+      const obj = placedObjects.value.find(p => p.id === s.objectId)
+      return `Object: ${obj?.label ?? s.objectId}`
+    }
     return ''
   }
 
@@ -337,12 +544,155 @@ export function useSceneEditorViewport(opts: {
     return `Scene loaded — ${n} NPC${n !== 1 ? 's' : ''}, ${z} zone${z !== 1 ? 's' : ''}`
   }
 
+  // ─── Transform mode ───────────────────────────────────────────────────────────
+
+  function setTransformMode(mode: TransformMode): void {
+    transformMode.value = mode
+    transformControls.setMode(mode)
+  }
+
   // ─── Path edit mode ──────────────────────────────────────────────────────────
 
   function setPathEditMode(active: boolean, cb?: (pos: THREE.Vector3) => void): void {
     pathEditActive = active
     onFloorHitCb = cb
     statusMessage.value = describeSelection(selection.value)
+  }
+
+  // ─── Place mode ──────────────────────────────────────────────────────────────
+
+  function enterPlaceMode(objectId: string, assetId: string, blobUrl: string, label: string): void {
+    placeMode = { active: true, objectId, assetId, blobUrl, label }
+    isInPlaceMode.value = true
+    // Deselect current object so TC doesn't block the viewport click
+    setSelection({ kind: 'scene' })
+    statusMessage.value = `Click floor to place "${label}" — Esc to cancel`
+  }
+
+  function exitPlaceMode(): void {
+    placeMode = { ...PLACE_MODE_IDLE }
+    isInPlaceMode.value = false
+    statusMessage.value = describeSelection(selection.value)
+  }
+
+  async function placeObject(pos: THREE.Vector3): Promise<void> {
+    // Snapshot and clear place mode immediately — prevents double-placement during async load
+    const { objectId, assetId, blobUrl, label } = placeMode
+    placeMode = { ...PLACE_MODE_IDLE }
+    isInPlaceMode.value = false
+    statusMessage.value = `Placing "${label}"…`
+
+    const root = new THREE.Group()
+    root.position.copy(pos)
+
+    const loader = new GLTFLoader()
+    let localBbox = new THREE.Box3()
+
+    try {
+      const gltf = await loader.loadAsync(blobUrl)
+      // Compute bbox in GLB's own local space before parenting
+      localBbox.setFromObject(gltf.scene)
+      root.add(gltf.scene)
+    } catch (e) {
+      console.warn('[SceneEditor] Could not load placed GLB:', e)
+      // Fallback proxy so placement is still visible
+      const proxy = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshBasicMaterial({ color: '#c099ff', wireframe: true }),
+      )
+      proxy.position.set(0, 0.5, 0)
+      root.add(proxy)
+      localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+    }
+
+    if (localBbox.isEmpty()) {
+      localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+    }
+
+    // Invisible hit box sized to the GLB bbox — used for raycasting / selection
+    const bboxSize = localBbox.getSize(new THREE.Vector3())
+    const bboxCenter = localBbox.getCenter(new THREE.Vector3())
+    const hitBox = new THREE.Mesh(
+      new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
+      new THREE.MeshBasicMaterial({ visible: false }),
+    )
+    hitBox.position.copy(bboxCenter)
+    root.add(hitBox)
+
+    placedGroup.add(root)
+    // Also track in sceneObjects so clearScene removes it from the group
+    // (clearScene calls placedGroup.clear() directly — no need to add to sceneObjects)
+    placedMeshRoots.set(objectId, root)
+    placedHitBoxes.set(objectId, hitBox)
+
+    placedObjects.value = [
+      ...placedObjects.value,
+      {
+        id: objectId, assetId, label,
+        x: pos.x, y: pos.y, z: pos.z,
+        rotationX: 0, rotationY: 0, rotationZ: 0,
+        scaleX: 1, scaleY: 1, scaleZ: 1,
+      },
+    ]
+
+    // Auto-select the freshly placed object
+    setSelection({ kind: 'placed', objectId })
+  }
+
+  // ─── Restore placed objects (load saved scene) ───────────────────────────────
+
+  async function restorePlacedObjects(objects: RestorableObject[]): Promise<void> {
+    const loader = new GLTFLoader()
+    const restored: EditorPlacedObject[] = []
+
+    for (const obj of objects) {
+      const root = new THREE.Group()
+      root.position.set(obj.x, obj.y, obj.z)
+      root.rotation.set(obj.rotationX, obj.rotationY, obj.rotationZ)
+      root.scale.set(obj.scaleX, obj.scaleY, obj.scaleZ)
+
+      let localBbox = new THREE.Box3()
+      try {
+        const gltf = await loader.loadAsync(obj.blobUrl)
+        localBbox.setFromObject(gltf.scene)
+        root.add(gltf.scene)
+      } catch {
+        const proxy = new THREE.Mesh(
+          new THREE.BoxGeometry(1, 1, 1),
+          new THREE.MeshBasicMaterial({ color: '#c099ff', wireframe: true }),
+        )
+        proxy.position.set(0, 0.5, 0)
+        root.add(proxy)
+        localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+      }
+
+      if (localBbox.isEmpty()) {
+        localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
+      }
+
+      const bboxSize = localBbox.getSize(new THREE.Vector3())
+      const bboxCenter = localBbox.getCenter(new THREE.Vector3())
+      const hitBox = new THREE.Mesh(
+        new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
+        new THREE.MeshBasicMaterial({ visible: false }),
+      )
+      hitBox.position.copy(bboxCenter)
+      root.add(hitBox)
+
+      placedGroup.add(root)
+      placedMeshRoots.set(obj.id, root)
+      placedHitBoxes.set(obj.id, hitBox)
+
+      restored.push({
+        id: obj.id, assetId: obj.assetId, label: obj.label,
+        x: obj.x, y: obj.y, z: obj.z,
+        rotationX: obj.rotationX, rotationY: obj.rotationY, rotationZ: obj.rotationZ,
+        scaleX: obj.scaleX, scaleY: obj.scaleY, scaleZ: obj.scaleZ,
+      })
+    }
+
+    placedObjects.value = restored
+    setSelection({ kind: 'scene' })
   }
 
   // ─── Path visualization ──────────────────────────────────────────────────────
@@ -383,10 +733,141 @@ export function useSceneEditorViewport(opts: {
     updateNpcPath(entityId, [])
   }
 
+  // ─── Player proxy ─────────────────────────────────────────────────────────────
+
+  function initPlayer(): void {
+    // CapsuleGeometry(radius, length, capSegs, radialSegs): total height = length + 2*radius
+    // radius=0.35, length=1.1 → height=1.8m; mesh center at local y=0, bottom at y=-0.9
+    const geo = new THREE.CapsuleGeometry(0.35, 1.1, 4, 8)
+    const mat = new THREE.MeshStandardMaterial({ color: 0x00d4aa, roughness: 0.6 })
+    playerMesh = new THREE.Mesh(geo, mat)
+    playerMesh.name = '__player__'
+    playerMesh.position.set(0, 0.9, 0) // bottom of capsule at y=0
+    playerMesh.visible = false
+    scene.add(playerMesh)
+  }
+
+  // ─── Camera mode ─────────────────────────────────────────────────────────────
+
+  const CAM_MODE_ORDER: EditorCamMode[] = ['orbit', 'follow-3p', 'first-person', 'free-float']
+
+  /** Switch camera mode — handles Three.js state only, no selection changes. */
+  function setEditorCamMode(mode: EditorCamMode): void {
+    editorCamMode.value = mode
+    const mesh = playerMesh
+    if (mode === 'orbit') {
+      controls.enabled = true
+      if (mesh) mesh.visible = false
+      if (ffPointerLocked) document.exitPointerLock()
+    } else if (mode === 'follow-3p') {
+      controls.enabled = true
+      if (mesh) mesh.visible = true
+      if (ffPointerLocked) document.exitPointerLock()
+      // Snap OrbitControls target to player so camera doesn't jump
+      if (mesh) controls.target.copy(mesh.position)
+      controls.update()
+    } else if (mode === 'first-person') {
+      controls.enabled = false
+      if (mesh) mesh.visible = false  // hidden — camera is the player's eyes
+      // Seed look direction from current camera orientation
+      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
+      ffYaw = euler.y
+      ffPitch = 0  // look level on entry
+      canvasRef.value?.requestPointerLock()
+    } else {
+      // free-float
+      controls.enabled = false
+      if (mesh) mesh.visible = false
+      // Seed free-float state from current camera orientation
+      ffPos.copy(camera.position)
+      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
+      ffYaw = euler.y
+      ffPitch = euler.x
+      canvasRef.value?.requestPointerLock()
+    }
+  }
+
+  /** Public camera-mode setter — syncs selection alongside Three.js state. */
+  function setCamMode(mode: EditorCamMode): void {
+    setEditorCamMode(mode)
+    if (mode === 'follow-3p' || mode === 'first-person') {
+      setSelection({ kind: 'player' })
+    } else if (selection.value?.kind === 'player') {
+      setSelection({ kind: 'scene' })
+    }
+  }
+
+  /** Tab cycles orbit → follow-3p → first-person → free-float → orbit, syncing selection. */
+  function cycleEditorCamMode(): void {
+    const next = CAM_MODE_ORDER[(CAM_MODE_ORDER.indexOf(editorCamMode.value) + 1) % CAM_MODE_ORDER.length]
+    setCamMode(next)
+  }
+
   // ─── Render loop ─────────────────────────────────────────────────────────────
 
   function animate(): void {
     animId = requestAnimationFrame(animate)
+    const delta = Math.min(clock.getDelta(), 0.05)
+
+    if (editorCamMode.value === 'follow-3p' && playerMesh) {
+      const moveX = (keyState.has('KeyD') ? 1 : 0) - (keyState.has('KeyA') ? 1 : 0)
+      const moveZ = (keyState.has('KeyS') ? 1 : 0) - (keyState.has('KeyW') ? 1 : 0)
+      if (moveX !== 0 || moveZ !== 0) {
+        const spd = 6 * delta
+        // Camera-relative WASD: forward = camera's XZ look direction
+        const camFwd = new THREE.Vector3()
+        camera.getWorldDirection(camFwd)
+        camFwd.y = 0
+        camFwd.normalize()
+        const camRight = new THREE.Vector3().crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize()
+        const move = new THREE.Vector3()
+          .addScaledVector(camFwd, -moveZ)   // W = forward, S = back
+          .addScaledVector(camRight, moveX)  // D = right, A = left
+        move.normalize()
+        playerMesh.position.addScaledVector(move, spd)
+        playerMesh.position.y = 0.9 // stay grounded on flat editor floor
+      }
+      // OrbitControls target lerps to player so camera smoothly follows
+      controls.target.lerp(playerMesh.position, 0.1)
+    } else if (editorCamMode.value === 'first-person' && playerMesh) {
+      if (ffPointerLocked) {
+        const spd = 6 * delta
+        // Move player in look-yaw direction (XZ only — no flying)
+        const sinY = Math.sin(ffYaw)
+        const cosY = Math.cos(ffYaw)
+        const fwd = new THREE.Vector3(-sinY, 0, -cosY)
+        const right = new THREE.Vector3(cosY, 0, -sinY)
+        if (keyState.has('KeyW')) playerMesh.position.addScaledVector(fwd, spd)
+        if (keyState.has('KeyS')) playerMesh.position.addScaledVector(fwd, -spd)
+        if (keyState.has('KeyA')) playerMesh.position.addScaledVector(right, -spd)
+        if (keyState.has('KeyD')) playerMesh.position.addScaledVector(right, spd)
+        playerMesh.position.y = 0.9
+      }
+      // Camera locked to player eye level, driven by mouse look
+      camera.position.set(
+        playerMesh.position.x,
+        playerMesh.position.y + FPV_EYE_OFFSET,
+        playerMesh.position.z,
+      )
+      camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
+    } else if (editorCamMode.value === 'free-float') {
+      const spd = 10 * delta
+      const sinY = Math.sin(ffYaw)
+      const cosY = Math.cos(ffYaw)
+      const cosP = Math.cos(ffPitch)
+      const sinP = Math.sin(ffPitch)
+      const fwd = new THREE.Vector3(-sinY * cosP, sinP, -cosY * cosP)
+      const right = new THREE.Vector3(cosY, 0, -sinY)
+      if (keyState.has('KeyW')) ffPos.addScaledVector(fwd, spd)
+      if (keyState.has('KeyS')) ffPos.addScaledVector(fwd, -spd)
+      if (keyState.has('KeyA')) ffPos.addScaledVector(right, -spd)
+      if (keyState.has('KeyD')) ffPos.addScaledVector(right, spd)
+      if (keyState.has('KeyE') || keyState.has('Space')) ffPos.y += spd
+      if (keyState.has('KeyQ')) ffPos.y -= spd
+      camera.position.copy(ffPos)
+      camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
+    }
+
     controls.update()
     renderer.render(scene, camera)
   }
@@ -400,6 +881,10 @@ export function useSceneEditorViewport(opts: {
 
   function onMouseUp(e: MouseEvent): void {
     if (e.button !== 0) return
+    // Pointer-lock modes: ignore canvas clicks while locked
+    if (editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person') return
+    // If the gizmo was clicked, skip selection logic (let TransformControls handle it).
+    if (gizmoMouseDown) { gizmoMouseDown = false; return }
     if (Math.abs(e.clientX - mouseDownX) > 5 || Math.abs(e.clientY - mouseDownY) > 5) return
 
     const canvas = canvasRef.value!
@@ -409,6 +894,24 @@ export function useSceneEditorViewport(opts: {
       -((e.clientY - rect.top) / rect.height) * 2 + 1,
     )
     raycaster.setFromCamera(mouse, camera)
+
+    // In place mode: only check the floor for the drop point; skip all selection logic.
+    if (placeMode.active) {
+      const floorHits = raycaster.intersectObjects(floorMeshes, true)
+      if (floorHits.length > 0) {
+        void placeObject(floorHits[0].point.clone())
+      }
+      return
+    }
+
+    // 0. Player mesh hit? (only when visible — invisible in orbit/free-float)
+    if (playerMesh && playerMesh.visible) {
+      const playerHits = raycaster.intersectObject(playerMesh, false)
+      if (playerHits.length > 0) {
+        setSelection({ kind: 'player' })
+        return
+      }
+    }
 
     // 1. NPC sphere hit?
     const npcHits = raycaster.intersectObjects([...npcSpheres.values()])
@@ -428,7 +931,16 @@ export function useSceneEditorViewport(opts: {
       }
     }
 
-    // 3. Floor hit (GLB mesh or invisible plane)
+    // 3. Placed object hit?
+    const placedHits = raycaster.intersectObjects([...placedHitBoxes.values()])
+    if (placedHits.length > 0) {
+      const hit = placedHits[0].object as THREE.Mesh
+      for (const [id, m] of placedHitBoxes) {
+        if (m === hit) { setSelection({ kind: 'placed', objectId: id }); return }
+      }
+    }
+
+    // 4. Floor hit (GLB mesh or invisible plane)
     const floorHits = raycaster.intersectObjects(floorMeshes, true)
     if (floorHits.length > 0) {
       if (pathEditActive && onFloorHitCb) {
@@ -444,7 +956,60 @@ export function useSceneEditorViewport(opts: {
   function onKeyDown(e: KeyboardEvent): void {
     const tag = (e.target as HTMLElement)?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA') return
-    if (e.code === 'Escape') setSelection({ kind: 'scene' })
+
+    keyState.add(e.code)
+
+    if (e.code === 'Tab') {
+      e.preventDefault()
+      cycleEditorCamMode()
+      return
+    }
+
+    if (e.code === 'Escape') {
+      // Pointer-lock modes: browser releases lock → pointerlockchange handles mode switch
+      if (editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person') return
+      if (placeMode.active) { exitPlaceMode(); return }
+      if (editorCamMode.value === 'follow-3p') {
+        setEditorCamMode('orbit')
+        setSelection({ kind: 'scene' })
+        return
+      }
+      // Orbit: cancel path editing if active, then deselect everything
+      if (pathEditActive) {
+        setPathEditMode(false)
+        opts.onPathEditCancel?.()
+      }
+      setSelection({ kind: 'scene' })
+      return
+    }
+
+    // T/R/S transform shortcuts — only in orbit mode (WASD drives player/camera otherwise)
+    if (editorCamMode.value === 'orbit') {
+      if (e.code === 'KeyT') setTransformMode('translate')
+      if (e.code === 'KeyR') setTransformMode('rotate')
+      if (e.code === 'KeyS') setTransformMode('scale')
+    }
+  }
+
+  function onKeyUp(e: KeyboardEvent): void {
+    keyState.delete(e.code)
+  }
+
+  function onMouseMove(e: MouseEvent): void {
+    const isLockedMode = editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person'
+    if (!isLockedMode || !ffPointerLocked) return
+    const sensitivity = 0.002
+    ffYaw -= e.movementX * sensitivity
+    ffPitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, ffPitch - e.movementY * sensitivity))
+  }
+
+  function onPointerLockChange(): void {
+    ffPointerLocked = document.pointerLockElement === canvasRef.value
+    // Pointer lock released (Esc or programmatic) — return to orbit from any locked mode
+    if (!ffPointerLocked && (editorCamMode.value === 'free-float' || editorCamMode.value === 'first-person')) {
+      setEditorCamMode('orbit')
+      if (selection.value?.kind === 'player') setSelection({ kind: 'scene' })
+    }
   }
 
   function onResize(): void {
@@ -455,6 +1020,27 @@ export function useSceneEditorViewport(opts: {
     renderer.setSize(canvas.clientWidth, canvas.clientHeight)
   }
 
+  // ─── Snapshot ────────────────────────────────────────────────────────────────
+
+  function snapshotPlacedTransforms(): EditorPlacedObject[] {
+    return placedObjects.value.map(obj => {
+      const root = placedMeshRoots.get(obj.id)
+      if (!root) return { ...obj }
+      return {
+        ...obj,
+        x: root.position.x,
+        y: root.position.y,
+        z: root.position.z,
+        rotationX: root.rotation.x,
+        rotationY: root.rotation.y,
+        rotationZ: root.rotation.z,
+        scaleX: root.scale.x,
+        scaleY: root.scale.y,
+        scaleZ: root.scale.z,
+      }
+    })
+  }
+
   // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
   function dispose(): void {
@@ -463,7 +1049,22 @@ export function useSceneEditorViewport(opts: {
     canvas?.removeEventListener('mousedown', onMouseDown)
     canvas?.removeEventListener('mouseup', onMouseUp)
     window.removeEventListener('keydown', onKeyDown)
+    window.removeEventListener('keyup', onKeyUp)
+    window.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('pointerlockchange', onPointerLockChange)
     window.removeEventListener('resize', onResize)
+    if (ffPointerLocked) document.exitPointerLock()
+    keyState.clear()
+    if (playerMesh) {
+      playerMesh.geometry.dispose()
+      ;(playerMesh.material as THREE.Material).dispose()
+      scene?.remove(playerMesh)
+      playerMesh = null
+    }
+    if (transformControls) {
+      scene?.remove(transformControls.getHelper())
+      transformControls.dispose()
+    }
     controls?.dispose()
     renderer?.dispose()
     npcSphereGeo.dispose()
@@ -473,7 +1074,10 @@ export function useSceneEditorViewport(opts: {
     sceneObjects = []
     npcSpheres.clear()
     zoneRingPips.clear()
+    npcMarkerRoots.clear()
     npcPathViz.clear()
+    placedMeshRoots.clear()
+    placedHitBoxes.clear()
   }
 
   onMounted(init)
@@ -483,10 +1087,20 @@ export function useSceneEditorViewport(opts: {
     isReady: shallowReadonly(isReady),
     statusMessage: shallowReadonly(statusMessage),
     selection: shallowReadonly(selection),
+    transformMode: shallowReadonly(transformMode),
+    editorCamMode: shallowReadonly(editorCamMode),
+    placedObjects: shallowReadonly(placedObjects),
+    isInPlaceMode: shallowReadonly(isInPlaceMode),
     setSelection,
+    setTransformMode,
     setPathEditMode,
     updateNpcPath,
     clearNpcPath,
     reinitScene,
+    enterPlaceMode,
+    exitPlaceMode,
+    snapshotPlacedTransforms,
+    restorePlacedObjects,
+    setCamMode,
   }
 }

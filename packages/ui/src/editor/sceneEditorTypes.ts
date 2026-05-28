@@ -92,10 +92,45 @@ export interface EditorOrbitBookmark {
   target: [number, number, number]
 }
 
+// ─── Placed objects ───────────────────────────────────────────────────────────
+
+/**
+ * A GLB asset placed into the scene by the editor.
+ * Position/rotation/scale are written at placement time with defaults,
+ * then snapshotted from live Three.js roots via snapshotPlacedTransforms() on save.
+ */
+export interface EditorPlacedObject {
+  /** Unique instance id — 'placed-<nanoid6>'. Distinct from assetId. */
+  id: string
+  /** Source asset in the registry. */
+  assetId: string
+  /** Human-readable label (asset filename). */
+  label: string
+  /** World position. */
+  x: number
+  y: number
+  z: number
+  /** World rotation in Euler XYZ (radians). Defaults to 0 at placement. */
+  rotationX: number
+  rotationY: number
+  rotationZ: number
+  /** Uniform scale (TC enforces uniform). Defaults to 1 at placement. */
+  scaleX: number
+  scaleY: number
+  scaleZ: number
+}
+
+// ─── Camera mode ─────────────────────────────────────────────────────────────
+
+/** Editor viewport camera mode — cycles via Tab. */
+export type EditorCamMode = 'orbit' | 'follow-3p' | 'first-person' | 'free-float'
+
 // ─── Selection state ──────────────────────────────────────────────────────────
 
 export type EditorSelection =
   | { kind: 'npc'; entityId: string }
   | { kind: 'zone'; id: string }
+  | { kind: 'placed'; objectId: string }
+  | { kind: 'player' }
   | { kind: 'scene' }
   | null

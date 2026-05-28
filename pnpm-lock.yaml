@@ -150,6 +150,9 @@ importers:
       dexie:
         specifier: ^4.0.10
         version: 4.4.2
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.2
       nanoid:
         specifier: ^5.0.0
         version: 5.1.11

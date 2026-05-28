@@ -8,21 +8,35 @@
   <aside class="hierarchy">
     <header class="hierarchy-header">
       <span class="title">Scene</span>
-      <!-- Multi-scene switcher dropdown -->
+      <!-- Scene switcher: static configs + saved Dexie scenes -->
       <select
-        v-if="scenes && scenes.length > 1"
+        v-if="scenes && scenes.length > 0"
         class="scene-select"
-        :value="activeSceneId"
-        @change="emit('switch-scene', ($event.target as HTMLSelectElement).value)"
+        :value="activeSavedSceneId ?? activeSceneId"
+        @change="onDropdownChange"
       >
         <option v-for="s in scenes" :key="s.id" :value="s.id">{{ s.label }}</option>
+        <optgroup v-if="savedScenes.length > 0" label="Saved">
+          <option v-for="ss in savedScenes" :key="ss.id" :value="ss.id">{{ ss.name }}</option>
+        </optgroup>
       </select>
       <!-- Single-scene label badge (backward compat) -->
       <span v-else-if="sceneLabel" class="scene-badge">{{ sceneLabel }}</span>
     </header>
 
     <!-- Assets section (uploaded GLB/FBX registry) -->
-    <SceneEditorAssetsSection />
+    <SceneEditorAssetsSection @asset-picked="emit('asset-picked', $event)" />
+
+    <!-- Player row — always present; click to enter follow-3p mode -->
+    <div
+      class="row row-group"
+      :class="{ active: modelValue?.kind === 'player' }"
+      @click="emit('update:modelValue', { kind: 'player' })"
+    >
+      <span class="row-icon player-icon">▶</span>
+      <span class="row-label">Player</span>
+      <span v-if="editorCamMode && editorCamMode !== 'orbit'" class="badge-cam">{{ editorCamMode }}</span>
+    </div>
 
     <!-- Scene settings row -->
     <div
@@ -72,8 +86,26 @@
       </div>
     </div>
 
+    <!-- Placed Objects -->
+    <div v-if="placedObjects.length > 0" class="section">
+      <div class="section-header">
+        <span>Placed Objects</span>
+        <span class="section-count">{{ placedObjects.length }}</span>
+      </div>
+      <div
+        v-for="obj in placedObjects"
+        :key="obj.id"
+        class="row"
+        :class="{ active: modelValue?.kind === 'placed' && modelValue.objectId === obj.id }"
+        @click="emit('update:modelValue', { kind: 'placed', objectId: obj.id })"
+      >
+        <span class="row-icon placed-dot">◈</span>
+        <span class="row-label">{{ obj.label }}</span>
+      </div>
+    </div>
+
     <!-- Empty state -->
-    <p v-if="npcs.length === 0 && zones.length === 0" class="empty">
+    <p v-if="npcs.length === 0 && zones.length === 0 && placedObjects.length === 0" class="empty">
       No NPCs or zones configured.
     </p>
   </aside>
@@ -81,25 +113,51 @@
 
 <script setup lang="ts">
 import SceneEditorAssetsSection from './SceneEditorAssetsSection.vue'
-import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, SceneEditorEntry } from './sceneEditorTypes'
+import { useLiveQuery } from './useLiveQuery'
+import { assetDb, type SceneRow } from './assetDb'
+import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry, EditorCamMode } from './sceneEditorTypes'
 
 const props = defineProps<{
   modelValue: EditorSelection
   sceneLabel?: string
   npcs: EditorNpcEntry[]
   zones: EditorZoneEntry[]
+  /** Placed objects authored this session — shown in the hierarchy. */
+  placedObjects: EditorPlacedObject[]
   /** Set of entityIds that currently have waypoint data. */
   npcPathIds?: Set<string>
   /** When provided, renders a scene switcher dropdown instead of the label badge. */
   scenes?: SceneEditorEntry[]
-  /** Currently active scene id — controls the dropdown selection. */
+  /** Currently active static scene id — controls the dropdown selection when no saved scene is active. */
   activeSceneId?: string
+  /** ID of the currently loaded Dexie saved scene, or null/undefined when none is active. */
+  activeSavedSceneId?: string | null
+  /** Current editor camera mode — shown as a badge on the Player row. */
+  editorCamMode?: EditorCamMode
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: EditorSelection]
   'switch-scene': [sceneId: string]
+  'asset-picked': [assetId: string]
+  'load-scene': [sceneId: string]
 }>()
+
+// Live-queried saved scenes — most-recently-saved first.
+const savedScenes = useLiveQuery<SceneRow[]>(
+  () => assetDb.scenes.orderBy('savedAt').reverse().toArray(),
+  [],
+)
+
+function onDropdownChange(ev: Event): void {
+  const value = (ev.target as HTMLSelectElement).value
+  const isSaved = savedScenes.value.some(ss => ss.id === value)
+  if (isSaved) {
+    emit('load-scene', value)
+  } else {
+    emit('switch-scene', value)
+  }
+}
 
 function npcHasPath(entityId: string): boolean {
   return props.npcPathIds?.has(entityId) ?? false
@@ -210,6 +268,19 @@ function npcHasPath(entityId: string): boolean {
 .row-icon.npc-dot { color: #00aaff; }
 .row-icon.exit-dot { color: #ffdd44; }
 .row-icon.prox-dot { color: #44ff88; }
+.row-icon.placed-dot { color: #c099ff; }
+.row-icon.player-icon { color: #00d4aa; }
+
+.badge-cam {
+  font-family: monospace;
+  font-size: 8px;
+  background: rgba(0, 212, 170, 0.12);
+  color: #00d4aa;
+  border: 1px solid rgba(0, 212, 170, 0.25);
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
 
 .row-label {
   flex: 1;

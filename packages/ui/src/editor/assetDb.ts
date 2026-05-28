@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie'
+import type { SavedPlacedObject } from './sandboxSceneSchema'
 
 /**
  * @base/ui asset registry — IndexedDB schema (Dexie).
@@ -39,8 +40,20 @@ export interface AssetRow {
   tags?: string[]
 }
 
+export interface SceneRow {
+  /** 'scene-<nanoid>' — primary key */
+  id: string
+  /** User-provided scene name, e.g. 'Forest Scene'. */
+  name: string
+  /** ISO 8601 timestamp of last save. */
+  savedAt: string
+  /** Snapshot of all placed objects at save time. */
+  placedObjects: SavedPlacedObject[]
+}
+
 export class AssetDb extends Dexie {
   assets!: Table<AssetRow, string>
+  scenes!: Table<SceneRow, string>
 
   constructor() {
     super('@base-assets')
@@ -49,6 +62,12 @@ export class AssetDb extends Dexie {
       // `size`, `contentType`, `blob`, `clipNames`, `thumbnail` are stored but
       // not indexed — read by primary key only.
       assets: 'id, name, kind, *tags, createdAt',
+    })
+
+    // Version 2 — adds named scene persistence table.
+    // `placedObjects` is stored but not indexed — read by primary key only.
+    this.version(2).stores({
+      scenes: 'id, name, savedAt',
     })
 
     // ---------------------------------------------------------------------
