@@ -138,6 +138,8 @@
       :npcs="localNpcs"
       :zones="localZones"
       :waypoint-map="waypointMap"
+      :player-char-asset-id="playerCharAssetId"
+      :player-anim-pack-asset-id="playerAnimPackAssetId"
       @path-edit-start="onPathEditStart"
       @path-edit-stop="onPathEditStop"
       @waypoints-changed="onWaypointsChanged"
@@ -147,11 +149,15 @@
       @remove-npc="onRemoveNpc"
       @remove-zone="onRemoveZone"
       @pick-npc-asset="onPickNpcAsset"
+      @pick-player-asset="onPickPlayerAsset"
+      @clear-player-char="onClearPlayerChar"
+      @clear-player-anim-pack="onClearPlayerAnimPack"
     />
 
-    <!-- Asset picker modal (F-9) -->
+    <!-- Asset picker modal (F-9 / D-5b) -->
     <AssetPicker
       :open="pickerOpen"
+      :kind-filter="pickerKind"
       @close="pickerOpen = false"
       @select="onPickerSelect"
     />
@@ -270,6 +276,7 @@ const {
   removeNpcMarker,
   addZoneMarker,
   removeZoneMarker,
+  setPlayCharacterAsset,
 } = useSceneEditorViewport({
   canvas: canvasRef,
   config: effectiveConfig.value,
@@ -628,25 +635,66 @@ async function onCopyConfigTs(): Promise<void> {
   }
 }
 
-// ─── NPC asset picker (F-9) ──────────────────────────────────────────────────
+// ─── NPC + player asset picker (F-9 / D-5b) ─────────────────────────────────
 
 const pickerOpen = ref(false)
 const pickerEntityId = ref('')
 const pickerKind = ref<'character' | 'animation-pack'>('character')
+const pickerIsForPlayer = ref(false)
 
 function onPickNpcAsset(entityId: string, kind: 'character' | 'animation-pack'): void {
   pickerEntityId.value = entityId
   pickerKind.value = kind
+  pickerIsForPlayer.value = false
   pickerOpen.value = true
+}
+
+// ─── D-5b: play-sim player character ─────────────────────────────────────────
+
+const playerCharAssetId = ref<string | undefined>(undefined)
+const playerAnimPackAssetId = ref<string | undefined>(undefined)
+
+function onPickPlayerAsset(kind: 'character' | 'animation-pack'): void {
+  pickerKind.value = kind
+  pickerIsForPlayer.value = true
+  pickerOpen.value = true
+}
+
+function onClearPlayerChar(): void {
+  playerCharAssetId.value = undefined
+  void applyPlayerCharAsset()
+}
+
+function onClearPlayerAnimPack(): void {
+  playerAnimPackAssetId.value = undefined
+  void applyPlayerCharAsset()
+}
+
+async function applyPlayerCharAsset(): Promise<void> {
+  const charId = playerCharAssetId.value
+  const animId = playerAnimPackAssetId.value
+  const charUrl = charId ? assetStore.resolveBlobUrl(charId) ?? null : null
+  const animUrl = animId ? assetStore.resolveBlobUrl(animId) ?? null : null
+  await setPlayCharacterAsset(charUrl, animUrl)
 }
 
 function onPickerSelect(assetId: string): void {
   pickerOpen.value = false
-  const patch: Partial<EditorNpcEntry> =
-    pickerKind.value === 'character'
-      ? { assetId }
-      : { animationPackAssetId: assetId }
-  onNpcChanged(pickerEntityId.value, patch)
+  if (pickerIsForPlayer.value) {
+    if (pickerKind.value === 'character') {
+      playerCharAssetId.value = assetId
+    } else {
+      playerAnimPackAssetId.value = assetId
+    }
+    pickerIsForPlayer.value = false
+    void applyPlayerCharAsset()
+  } else {
+    const patch: Partial<EditorNpcEntry> =
+      pickerKind.value === 'character'
+        ? { assetId }
+        : { animationPackAssetId: assetId }
+    onNpcChanged(pickerEntityId.value, patch)
+  }
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────

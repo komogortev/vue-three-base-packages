@@ -66,6 +66,11 @@ export interface SceneEditorViewportReturn {
   addZoneMarker: (zone: import('./sceneEditorTypes').EditorZoneEntry) => void
   /** Remove a zone marker at runtime (F-11). */
   removeZoneMarker: (id: string) => void
+  /**
+   * D-5b: Set play-sim character GLB. Pass null blobUrl to revert to capsule proxy.
+   * Call when user picks or clears the player character in the Scene inspector.
+   */
+  setPlayCharacterAsset: (charBlobUrl: string | null, animPackBlobUrl?: string | null) => Promise<void>
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -154,8 +159,16 @@ export function useSceneEditorViewport(opts: {
   // Camera at player eye level — capsule center y=0.9, eye y≈1.65 from ground
   const FPV_EYE_OFFSET = 0.75
 
-  // Player capsule proxy (no character GLB dependency for D-5)
+  // Player capsule proxy — fallback when no character GLB is loaded
   let playerMesh: THREE.Mesh | null = null
+
+  // D-5b: real character GLB for play-sim
+  let charRoot: THREE.Group | null = null
+  let charMixer: THREE.AnimationMixer | null = null
+  let charIdleAction: THREE.AnimationAction | null = null
+  let charWalkAction: THREE.AnimationAction | null = null
+  let pendingCharBlobUrl: string | null = null
+  let pendingAnimBlobUrl: string | null = null
 
   // Delta time
   const clock = new THREE.Clock()
@@ -416,8 +429,115 @@ export function useSceneEditorViewport(opts: {
 
   async function reinitScene(newConfig: SceneEditorConfig): Promise<void> {
     config = newConfig
+    _disposePlayCharacter()
     clearScene()
     await loadScene(newConfig)
+  }
+
+  // ─── D-5b: Play character load / dispose ─────────────────────────────────────
+
+  function _disposePlayCharacter(): void {
+    if (charMixer) {
+      charMixer.stopAllAction()
+      charIdleAction = null
+      charWalkAction = null
+      charMixer = null
+    }
+    if (charRoot) {
+      charRoot.traverse(child => {
+        const mesh = child as THREE.Mesh
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose()
+          const mat = mesh.material
+          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
+          else (mat as THREE.Material)?.dispose()
+        }
+      })
+      scene.remove(charRoot)
+      charRoot = null
+    }
+  }
+
+  async function _loadPlayCharacter(): Promise<void> {
+    _disposePlayCharacter()
+    if (!pendingCharBlobUrl) return
+
+    const loader = new GLTFLoader()
+    try {
+      const gltf = await loader.loadAsync(pendingCharBlobUrl)
+
+      // Ground the character: shift mesh so bottom of bbox is at y=0
+      const bbox = new THREE.Box3().setFromObject(gltf.scene)
+      gltf.scene.position.y -= bbox.min.y
+
+      const root = new THREE.Group()
+      root.add(gltf.scene)
+
+      // Spawn at current player capsule position
+      const px = playerMesh?.position.x ?? 0
+      const pz = playerMesh?.position.z ?? 0
+      root.position.set(px, 0, pz)
+
+      scene.add(root)
+      charRoot = root
+      charMixer = new THREE.AnimationMixer(root)
+
+      // Gather clips: prefer animation pack if provided, fall back to embedded clips
+      let clips = gltf.animations
+      if (pendingAnimBlobUrl) {
+        try {
+          const animGltf = await loader.loadAsync(pendingAnimBlobUrl)
+          if (animGltf.animations.length > 0) clips = animGltf.animations
+        } catch (e) {
+          console.warn('[SceneEditor] Anim pack load failed:', e)
+        }
+      }
+
+      const idleClip = clips.find(a => /idle/i.test(a.name)) ?? clips[0] ?? null
+      const walkClip =
+        clips.find(a => /walk.*fwd|walking|walk_fwd/i.test(a.name)) ??
+        clips.find(a => /^walk/i.test(a.name)) ??
+        (clips[1] !== idleClip ? clips[1] : null) ??
+        null
+
+      if (idleClip) {
+        charIdleAction = charMixer.clipAction(idleClip)
+        charIdleAction.setEffectiveWeight(1)
+        charIdleAction.play()
+      }
+      if (walkClip && walkClip !== idleClip) {
+        charWalkAction = charMixer.clipAction(walkClip)
+        charWalkAction.setEffectiveWeight(0)
+        charWalkAction.play()
+      }
+    } catch {
+      // Load failed — charRoot stays null, capsule used as fallback
+    }
+  }
+
+  /** Called by SceneEditorView when user picks / clears the play-sim character. */
+  async function setPlayCharacterAsset(
+    charBlobUrl: string | null,
+    animPackBlobUrl: string | null = null,
+  ): Promise<void> {
+    pendingCharBlobUrl = charBlobUrl
+    pendingAnimBlobUrl = animPackBlobUrl
+    await _loadPlayCharacter()
+
+    // If already in play mode, update mesh visibility
+    const mode = editorCamMode.value
+    if (mode === 'follow-3p') {
+      if (charRoot) {
+        charRoot.visible = true
+        if (playerMesh) playerMesh.visible = false
+        controls.target.copy(charRoot.position)
+      } else {
+        if (playerMesh) playerMesh.visible = true
+      }
+    } else if (mode === 'first-person') {
+      if (charRoot) charRoot.visible = false // FPV: camera is the eyes
+      if (playerMesh) playerMesh.visible = false
+    }
   }
 
   // ─── GLB loading ────────────────────────────────────────────────────────────
@@ -855,27 +975,35 @@ export function useSceneEditorViewport(opts: {
     if (mode === 'orbit') {
       controls.enabled = true
       if (mesh) mesh.visible = false
+      if (charRoot) charRoot.visible = false
       if (ffPointerLocked) document.exitPointerLock()
     } else if (mode === 'follow-3p') {
       controls.enabled = true
-      if (mesh) mesh.visible = true
       if (ffPointerLocked) document.exitPointerLock()
-      // Snap OrbitControls target to player so camera doesn't jump
-      if (mesh) controls.target.copy(mesh.position)
+      if (charRoot) {
+        // Real character: show it, hide capsule, orbit follows char
+        charRoot.visible = true
+        if (mesh) mesh.visible = false
+        controls.target.copy(charRoot.position)
+      } else {
+        // Capsule fallback
+        if (mesh) mesh.visible = true
+        controls.target.copy(mesh!.position)
+      }
       controls.update()
     } else if (mode === 'first-person') {
       controls.enabled = false
-      if (mesh) mesh.visible = false  // hidden — camera is the player's eyes
-      // Seed look direction from current camera orientation
+      if (mesh) mesh.visible = false
+      if (charRoot) charRoot.visible = false  // camera is the eyes — hide body
       const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
       ffYaw = euler.y
-      ffPitch = 0  // look level on entry
+      ffPitch = 0
       canvasRef.value?.requestPointerLock()
     } else {
       // free-float
       controls.enabled = false
       if (mesh) mesh.visible = false
-      // Seed free-float state from current camera orientation
+      if (charRoot) charRoot.visible = false
       ffPos.copy(camera.position)
       const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
       ffYaw = euler.y
@@ -906,48 +1034,68 @@ export function useSceneEditorViewport(opts: {
     animId = requestAnimationFrame(animate)
     const delta = Math.min(clock.getDelta(), 0.05)
 
-    if (editorCamMode.value === 'follow-3p' && playerMesh) {
-      const moveX = (keyState.has('KeyD') ? 1 : 0) - (keyState.has('KeyA') ? 1 : 0)
-      const moveZ = (keyState.has('KeyS') ? 1 : 0) - (keyState.has('KeyW') ? 1 : 0)
-      if (moveX !== 0 || moveZ !== 0) {
-        const spd = 6 * delta
-        // Camera-relative WASD: forward = camera's XZ look direction
-        const camFwd = new THREE.Vector3()
-        camera.getWorldDirection(camFwd)
-        camFwd.y = 0
-        camFwd.normalize()
-        const camRight = new THREE.Vector3().crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize()
-        const move = new THREE.Vector3()
-          .addScaledVector(camFwd, -moveZ)   // W = forward, S = back
-          .addScaledVector(camRight, moveX)  // D = right, A = left
-        move.normalize()
-        playerMesh.position.addScaledVector(move, spd)
-        playerMesh.position.y = 0.9 // stay grounded on flat editor floor
+    if (editorCamMode.value === 'follow-3p') {
+      // Use real character when loaded, capsule otherwise
+      const moveTarget: THREE.Object3D | null = charRoot ?? playerMesh
+      if (moveTarget) {
+        const moveX = (keyState.has('KeyD') ? 1 : 0) - (keyState.has('KeyA') ? 1 : 0)
+        const moveZ = (keyState.has('KeyS') ? 1 : 0) - (keyState.has('KeyW') ? 1 : 0)
+        const isMoving = moveX !== 0 || moveZ !== 0
+        if (isMoving) {
+          const spd = 5 * delta
+          const camFwd = new THREE.Vector3()
+          camera.getWorldDirection(camFwd)
+          camFwd.y = 0
+          camFwd.normalize()
+          const camRight = new THREE.Vector3().crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize()
+          const move = new THREE.Vector3()
+            .addScaledVector(camFwd, -moveZ)
+            .addScaledVector(camRight, moveX)
+          move.normalize()
+          moveTarget.position.addScaledVector(move, spd)
+          // Face direction of movement (negate move = face forward in travel direction)
+          if (charRoot) {
+            charRoot.rotation.y = Math.atan2(-move.x, -move.z)
+          }
+        }
+        // Keep grounded: capsule center at 0.9, character root at 0
+        moveTarget.position.y = charRoot ? 0 : 0.9
+        // Animate blend
+        if (charMixer) {
+          charMixer.update(delta)
+          const w = isMoving ? 1 : 0
+          charIdleAction?.setEffectiveWeight(1 - w)
+          charWalkAction?.setEffectiveWeight(w)
+        }
+        // Camera follows
+        controls.target.lerp(
+          charRoot ? charRoot.position.clone().setY(charRoot.position.y + 1.0) : moveTarget.position,
+          0.1,
+        )
       }
-      // OrbitControls target lerps to player so camera smoothly follows
-      controls.target.lerp(playerMesh.position, 0.1)
-    } else if (editorCamMode.value === 'first-person' && playerMesh) {
-      {
-        const spd = 6 * delta
-        // Move player in look-yaw direction (XZ only — no flying).
-        // WASD works regardless of pointer-lock state so the mode is never stuck.
+    } else if (editorCamMode.value === 'first-person') {
+      // Position anchor: charRoot preferred (in FPV it's invisible), else capsule
+      const anchor: THREE.Object3D | null = charRoot ?? playerMesh
+      if (anchor) {
+        const spd = 5 * delta
         const sinY = Math.sin(ffYaw)
         const cosY = Math.cos(ffYaw)
         const fwd = new THREE.Vector3(-sinY, 0, -cosY)
         const right = new THREE.Vector3(cosY, 0, -sinY)
-        if (keyState.has('KeyW')) playerMesh.position.addScaledVector(fwd, spd)
-        if (keyState.has('KeyS')) playerMesh.position.addScaledVector(fwd, -spd)
-        if (keyState.has('KeyA')) playerMesh.position.addScaledVector(right, -spd)
-        if (keyState.has('KeyD')) playerMesh.position.addScaledVector(right, spd)
-        playerMesh.position.y = 0.9
+        if (keyState.has('KeyW')) anchor.position.addScaledVector(fwd, spd)
+        if (keyState.has('KeyS')) anchor.position.addScaledVector(fwd, -spd)
+        if (keyState.has('KeyA')) anchor.position.addScaledVector(right, -spd)
+        if (keyState.has('KeyD')) anchor.position.addScaledVector(right, spd)
+        anchor.position.y = charRoot ? 0 : 0.9
+        if (charMixer) charMixer.update(delta)
+        // Camera locked to eye level
+        camera.position.set(
+          anchor.position.x,
+          anchor.position.y + (charRoot ? 1.65 : FPV_EYE_OFFSET),
+          anchor.position.z,
+        )
+        camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
       }
-      // Camera locked to player eye level, driven by mouse look
-      camera.position.set(
-        playerMesh.position.x,
-        playerMesh.position.y + FPV_EYE_OFFSET,
-        playerMesh.position.z,
-      )
-      camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
     } else if (editorCamMode.value === 'free-float') {
       const spd = 10 * delta
       const sinY = Math.sin(ffYaw)
@@ -1153,6 +1301,7 @@ export function useSceneEditorViewport(opts: {
     window.removeEventListener('resize', onResize)
     if (ffPointerLocked) document.exitPointerLock()
     keyState.clear()
+    _disposePlayCharacter()
     if (playerMesh) {
       playerMesh.geometry.dispose()
       ;(playerMesh.material as THREE.Material).dispose()
@@ -1209,5 +1358,6 @@ export function useSceneEditorViewport(opts: {
     removeNpcMarker,
     addZoneMarker,
     removeZoneMarker,
+    setPlayCharacterAsset,
   }
 }
