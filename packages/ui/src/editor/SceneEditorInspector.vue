@@ -53,6 +53,36 @@
         <label class="field-label">Zones</label>
         <p class="field-value">{{ zones.length }}</p>
       </div>
+      <!-- D-5b: Play-sim player character -->
+      <div class="section-divider">Play Simulation</div>
+      <div class="field-group">
+        <label class="field-label">Player character</label>
+        <div class="asset-row">
+          <span class="asset-id" :class="{ unset: !playerCharAssetId }">
+            {{ playerCharAssetId ? assetName(playerCharAssetId) : 'capsule (fallback)' }}
+          </span>
+          <button class="btn-asset-pick" @click="emit('pick-player-asset', 'character')">Set…</button>
+          <button
+            v-if="playerCharAssetId"
+            class="btn-asset-clear"
+            @click="emit('clear-player-char')"
+          >✕</button>
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Anim pack</label>
+        <div class="asset-row">
+          <span class="asset-id" :class="{ unset: !playerAnimPackAssetId }">
+            {{ playerAnimPackAssetId ? assetName(playerAnimPackAssetId) : 'none' }}
+          </span>
+          <button class="btn-asset-pick" @click="emit('pick-player-asset', 'animation-pack')">Set…</button>
+          <button
+            v-if="playerAnimPackAssetId"
+            class="btn-asset-clear"
+            @click="emit('clear-player-anim-pack')"
+          >✕</button>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
@@ -336,6 +366,10 @@ const props = defineProps<{
   /** Local mutable zone list — drives writable transform inputs. */
   zones: EditorZoneEntry[]
   waypointMap: Map<string, THREE.Vector3[]>
+  /** D-5b: asset ID of the player character GLB (undefined = capsule fallback). */
+  playerCharAssetId?: string
+  /** D-5b: asset ID of the player animation pack GLB. */
+  playerAnimPackAssetId?: string
 }>()
 
 const emit = defineEmits<{
@@ -348,6 +382,10 @@ const emit = defineEmits<{
   'remove-npc': [entityId: string]
   'remove-zone': [id: string]
   'pick-npc-asset': [entityId: string, kind: 'character' | 'animation-pack']
+  /** D-5b: open asset picker for the play-sim player character. */
+  'pick-player-asset': [kind: 'character' | 'animation-pack']
+  'clear-player-char': []
+  'clear-player-anim-pack': []
 }>()
 
 const assetStore = useAssetStore()
@@ -697,6 +735,18 @@ const fmt = (n: number) => n.toFixed(2)
   text-align: right;
 }
 .coord-input:focus { outline: none; border-color: #3a6080; }
+
+/* ── Section divider ────────────────────────────────────────────────────── */
+.section-divider {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2a4a5a;
+  border-top: 1px solid #182a40;
+  padding: 8px 0 6px;
+  margin-bottom: 10px;
+}
 
 /* ── Asset row (F-9) ─────────────────────────────────────────────────────── */
 .asset-row {
