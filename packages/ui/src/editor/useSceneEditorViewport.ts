@@ -156,8 +156,8 @@ export function useSceneEditorViewport(opts: {
   // ─── Player & camera mode ─────────────────────────────────────────────────
   const editorCamMode = ref<EditorCamMode>('orbit')
 
-  // Camera at player eye level — capsule center y=0.9, eye y≈1.65 from ground
-  const FPV_EYE_OFFSET = 0.75
+  // Camera at player eye level — capsule center y=0.9, eye y≈1.70 from ground
+  const FPV_EYE_OFFSET = 0.80
 
   // Player capsule proxy — fallback when no character GLB is loaded
   let playerMesh: THREE.Mesh | null = null
@@ -674,9 +674,9 @@ export function useSceneEditorViewport(opts: {
     statusMessage.value = describeSelection(s)
 
     if (s?.kind === 'player') {
-      // Player selected: enter follow-3p unless already in a player-attached mode (first-person)
+      // Player selected: enter first-person unless already in a player-attached mode
       if (editorCamMode.value !== 'follow-3p' && editorCamMode.value !== 'first-person') {
-        setEditorCamMode('follow-3p')
+        setEditorCamMode('first-person')
       }
       transformControls.detach()
       transformControls.enabled = false
@@ -966,7 +966,7 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Camera mode ─────────────────────────────────────────────────────────────
 
-  const CAM_MODE_ORDER: EditorCamMode[] = ['orbit', 'follow-3p', 'first-person', 'free-float']
+  const CAM_MODE_ORDER: EditorCamMode[] = ['orbit', 'first-person', 'follow-3p', 'free-float']
 
   /** Switch camera mode — handles Three.js state only, no selection changes. */
   function setEditorCamMode(mode: EditorCamMode): void {
@@ -979,16 +979,28 @@ export function useSceneEditorViewport(opts: {
       if (ffPointerLocked) document.exitPointerLock()
     } else if (mode === 'follow-3p') {
       controls.enabled = true
+      controls.minDistance = 2
+      controls.maxDistance = 12
+      controls.maxPolarAngle = Math.PI * 0.82   // ~148° — prevents going underground
       if (ffPointerLocked) document.exitPointerLock()
       if (charRoot) {
         // Real character: show it, hide capsule, orbit follows char
         charRoot.visible = true
         if (mesh) mesh.visible = false
-        controls.target.copy(charRoot.position)
+        controls.target.copy(charRoot.position.clone().setY(charRoot.position.y + 1.0))
       } else {
         // Capsule fallback
         if (mesh) mesh.visible = true
         controls.target.copy(mesh!.position)
+      }
+      // Reset camera to a fixed behind-character position so orbit starts clean
+      const anchor3p = charRoot ?? mesh
+      if (anchor3p) {
+        camera.position.set(
+          anchor3p.position.x + Math.sin(ffYaw) * 5,
+          anchor3p.position.y + 2.5,
+          anchor3p.position.z + Math.cos(ffYaw) * 5,
+        )
       }
       controls.update()
     } else if (mode === 'first-person') {
@@ -998,6 +1010,15 @@ export function useSceneEditorViewport(opts: {
       const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
       ffYaw = euler.y
       ffPitch = 0
+      // Snap camera to eye level immediately — no single-frame artifact from old orbit position
+      const fpvAnchor = charRoot ?? playerMesh
+      if (fpvAnchor) {
+        camera.position.set(
+          fpvAnchor.position.x,
+          fpvAnchor.position.y + (charRoot ? 1.65 : FPV_EYE_OFFSET),
+          fpvAnchor.position.z,
+        )
+      }
       canvasRef.value?.requestPointerLock()
     } else {
       // free-float
@@ -1022,7 +1043,7 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  /** Tab cycles orbit → follow-3p → first-person → free-float → orbit, syncing selection. */
+  /** Tab cycles orbit → first-person → follow-3p → free-float → orbit, syncing selection. */
   function cycleEditorCamMode(): void {
     const next = CAM_MODE_ORDER[(CAM_MODE_ORDER.indexOf(editorCamMode.value) + 1) % CAM_MODE_ORDER.length]
     setCamMode(next)
@@ -1053,9 +1074,9 @@ export function useSceneEditorViewport(opts: {
             .addScaledVector(camRight, moveX)
           move.normalize()
           moveTarget.position.addScaledVector(move, spd)
-          // Face direction of movement (negate move = face forward in travel direction)
+          // Always face camera's forward direction — A/D strafes without spinning character
           if (charRoot) {
-            charRoot.rotation.y = Math.atan2(-move.x, -move.z)
+            charRoot.rotation.y = Math.atan2(-camFwd.x, -camFwd.z)
           }
         }
         // Keep grounded: capsule center at 0.9, character root at 0
@@ -1067,10 +1088,10 @@ export function useSceneEditorViewport(opts: {
           charIdleAction?.setEffectiveWeight(1 - w)
           charWalkAction?.setEffectiveWeight(w)
         }
-        // Camera follows
+        // Camera follows — frame-rate-independent lerp (k=6 ≈ same feel as 0.1 at 60 fps)
         controls.target.lerp(
           charRoot ? charRoot.position.clone().setY(charRoot.position.y + 1.0) : moveTarget.position,
-          0.1,
+          1 - Math.exp(-6 * delta),
         )
       }
     } else if (editorCamMode.value === 'first-person') {
@@ -1114,7 +1135,9 @@ export function useSceneEditorViewport(opts: {
       camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
     }
 
-    controls.update()
+    if (editorCamMode.value === 'orbit' || editorCamMode.value === 'follow-3p') {
+      controls.update()
+    }
     renderer.render(scene, camera)
   }
 

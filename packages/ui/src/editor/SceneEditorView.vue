@@ -183,8 +183,8 @@ import type { SceneEditorConfig, SceneEditorEntry, EditorSelection, EditorCamMod
 
 const CAM_OPTIONS: { mode: EditorCamMode; label: string; title: string }[] = [
   { mode: 'orbit',        label: 'Orbit', title: 'Orbit — free camera (Tab)' },
+  { mode: 'first-person', label: 'FPV',   title: 'First-person view (Tab)' },
   { mode: 'follow-3p',   label: '3P',    title: 'Third-person follow (Tab)' },
-  { mode: 'first-person', label: 'FPV',  title: 'First-person view (Tab)' },
   { mode: 'free-float',  label: 'Float', title: 'Free-fly camera (Tab)' },
 ]
 
