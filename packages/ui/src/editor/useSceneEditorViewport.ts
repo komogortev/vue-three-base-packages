@@ -1129,8 +1129,8 @@ export function useSceneEditorViewport(opts: {
       if (keyState.has('KeyS')) ffPos.addScaledVector(fwd, -spd)
       if (keyState.has('KeyA')) ffPos.addScaledVector(right, -spd)
       if (keyState.has('KeyD')) ffPos.addScaledVector(right, spd)
-      if (keyState.has('KeyE') || keyState.has('Space')) ffPos.y += spd
-      if (keyState.has('KeyQ')) ffPos.y -= spd
+      if (keyState.has('ShiftLeft') || keyState.has('ShiftRight')) ffPos.y += spd
+      if (keyState.has('ControlLeft') || keyState.has('ControlRight')) ffPos.y -= spd
       camera.position.copy(ffPos)
       camera.rotation.set(ffPitch, ffYaw, 0, 'YXZ')
     }
