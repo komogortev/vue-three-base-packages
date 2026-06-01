@@ -105,6 +105,12 @@
           @click="onExportZip"
         >{{ isExporting ? 'Exporting…' : 'Export ZIP' }}</button>
         <button
+          class="save-btn room-btn"
+          :disabled="!currentSceneId || isExportingRoom"
+          title="Export a self-contained room package ZIP (current live state) — save the scene first to give it a label"
+          @click="onExportRoomPackage"
+        >{{ isExportingRoom ? 'Exporting…' : 'Export Room' }}</button>
+        <button
           class="save-btn ts-btn"
           title="Copy scene config as TypeScript literal"
           @click="onCopyConfigTs"
@@ -176,7 +182,8 @@ import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { exportSandboxZip } from './exportSandboxZip'
-import { serializeEditorConfigTS } from './SceneEditorExporter'
+import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExporter'
+import { exportRoomPackage } from './exportRoomPackage'
 import type { SandboxSceneSave } from './sandboxSceneSchema'
 import { assetDb, type AssetKind } from './assetDb'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
@@ -594,6 +601,24 @@ async function onExportZip(): Promise<void> {
   }
 }
 
+const isExportingRoom = ref(false)
+
+async function onExportRoomPackage(): Promise<void> {
+  if (isExportingRoom.value) return
+  isExportingRoom.value = true
+  try {
+    const scene = buildRoomPackageScene(snapshotPlacedTransforms(), effectiveConfig.value)
+    await exportRoomPackage(scene, sceneName.value.trim() || 'Untitled Scene')
+    const n = placedObjects.value.length
+    const npcCount = localNpcs.value.length
+    flashStatus(`Room package exported — ${n} object${n !== 1 ? 's' : ''}, ${npcCount} NPC${npcCount !== 1 ? 's' : ''}`)
+  } catch {
+    flashStatus('Room package export failed')
+  } finally {
+    isExportingRoom.value = false
+  }
+}
+
 // ─── NPC / zone mutations (F-11) ─────────────────────────────────────────────
 
 function onAddNpc(): void {
@@ -935,6 +960,10 @@ kbd {
 .save-btn.export-btn:hover:not(:disabled) {
   color: #c099ff;
   border-color: rgba(192, 153, 255, 0.3);
+}
+.save-btn.room-btn:hover:not(:disabled) {
+  color: #ffd166;
+  border-color: rgba(255, 209, 102, 0.3);
 }
 .save-btn.ts-btn:hover:not(:disabled) {
   color: #80ffcc;

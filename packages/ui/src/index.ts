@@ -41,7 +41,9 @@ export type {
 } from './editor/sceneEditorTypes'
 export { EDITOR_ORBIT_BOOKMARKS, EDITOR_ORBIT_LOCOMOTION_IDS } from './editor/editorOrbitPresets'
 export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
-export { serializeEditorConfigTS } from './editor/SceneEditorExporter'
+export { serializeEditorConfigTS, buildRoomPackageScene } from './editor/SceneEditorExporter'
+export { exportRoomPackage } from './editor/exportRoomPackage'
+export type { RoomPackageManifest, RoomPackageScene } from './editor/roomPackageTypes'
 
 // ── Asset Pipeline ───────────────────────────────────────────────────────────
 // Editor asset registry (IndexedDB) — see docs/ASSET-PIPELINE.md.
