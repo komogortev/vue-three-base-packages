@@ -2,16 +2,15 @@
 
 ## Status
 
-_Last updated: 2026-05-20_
+_Last updated: 2026-06-01_
 
-**What's working:** All 11 packages build cleanly (`pnpm -r build` green). CI restored green on `main` 2026-05-20 after PR #25 (`engine-core` + `scene-builder` tsconfig — `skipLibCheck` + `exclude src/**/*.test.ts`). Editor asset pipeline Phase 2 complete in `@base/ui`: `assetDb.ts` (Dexie v1 `@base-assets`), `useAssetStore` (Pinia setup-store, upload + kind inference + blob-URL resolver), `useLiveQuery` (shallowRef for Blob safety), `thumbnailGenerator` (offscreen render), `SceneEditorAssetsSection.vue` (drag-drop + live list + Use… picker trigger), `AssetPicker.vue` (`<dialog>`-based modal, `kindFilter` prop, `select`+`close` emits). Test coverage still ~240 across 5 packages. Swimming v1, five-tier landing severity, third-person orbit camera all still live.
+**What's working:** All 11 packages build cleanly. **Phase 5 Room Package pipeline complete on `main`** (squash-merged via PR #30 + PR #29 2026-06-01): `@base/ui` now ships — Dexie v3 (`SceneRow.config?: SceneEditorConfig`, no-op upgrade), `AssetKind = 'audio'` (mp3/ogg/wav, MIME inference), ambient audio inspector section, `roomPackageTypes.ts` (`RoomPackageManifest` + `RoomPackageScene` V1 contract), `exportRoomPackage.ts` (fflate ZIP — manifest + scene + assets), `buildRoomPackageScene()` in `SceneEditorExporter`, `loadRoomPackage.ts` (fflate unzipSync → manifest + scene + blob URL map + revoke()), `AssetLibraryDialog.vue` (full-screen modal with drag-drop + progress + thumbnails + Use). `@base/gameplay` ships free-float Shift/Ctrl height (`ffRaise`/`ffLower` via locoSprint/locoCrouch capture) + `resetAccumulators` fix. Camera isolation: `controls.update()` guarded to orbit/follow-3p only; 3P A/D strafes without spinning character; OrbitControls constraints (minDistance 2/maxDistance 12/maxPolarAngle 0.82π). PR #29 (D-5b play-sim) + PR #30 (camera polish + Phase 5) both on main. PR #26 (superseded D-1+D-3) closed.
 
-**What's broken / incomplete:** `water__entry__fall.fbx` is a placeholder — no real water-entry animation. `failJump` uses "Straight Landing" as a mild substitute. Some landing tiers may not resolve correctly due to Mixamo internal clip name variance (enable `debugClipResolution` in harness to diagnose). `@base/pwa-core` is a stub (SW registration scaffolded, not fully implemented). `retargetMixamoClipsToCharacter` untested (requires WebGL context — integration-test only). AssetPicker a11y follow-ups deferred to Phase 3 F-9: dialog `aria-label`, row `role="option"`, Firefox backdrop spot-check.
+**What's broken / incomplete:** `water__entry__fall.fbx` is a placeholder. `failJump` uses "Straight Landing" as mild substitute. `@base/pwa-core` stub. `retargetMixamoClipsToCharacter` untested (WebGL context needed).
 
 ## Active Work
 
-- Editor Phase 3 (writability + asset binding) — next track in `@base/ui`: F-2 inspector writable transforms, F-9 NPC entry carries `assetId` (consumes `AssetPicker`), F-10 animation clip listing, F-11 add/remove NPCs/zones, F-13 SceneEditorConfig TS export
-- Awaiting Phase 3d camera strategy work in `threejs-engine-dev` before final player-track Phase 3 sign-off
+- Phase 5 S4 — Pose Editor (`EditorNpcEntry.poseOverride`, FK + CCDIKSolver) or T-F7 GLB normalization (next decision)
 
 ## Blockers & Open Questions
 
