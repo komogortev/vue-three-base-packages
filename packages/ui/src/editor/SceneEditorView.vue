@@ -152,6 +152,9 @@
       @pick-player-asset="onPickPlayerAsset"
       @clear-player-char="onClearPlayerChar"
       @clear-player-anim-pack="onClearPlayerAnimPack"
+      @pick-ambient-audio="onPickAmbientAudio"
+      @set-ambient-audio-volume="onSetAmbientAudioVolume"
+      @clear-ambient-audio="onClearAmbientAudio"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
@@ -175,7 +178,7 @@ import { useAssetStore } from './useAssetStore'
 import { exportSandboxZip } from './exportSandboxZip'
 import { serializeEditorConfigTS } from './SceneEditorExporter'
 import type { SandboxSceneSave } from './sandboxSceneSchema'
-import { assetDb } from './assetDb'
+import { assetDb, type AssetKind } from './assetDb'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import AssetPicker from './AssetPicker.vue'
@@ -237,11 +240,18 @@ function initLocalEntries(): void {
   localZones.value = (activeConfig.value.zones ?? []).map(z => ({ ...z }))
 }
 
+// ─── Ambient audio state (Phase 5 S1) ────────────────────────────────────────
+
+const ambientAudioAssetId = ref<string | undefined>(undefined)
+const ambientAudioVolume = ref<number | undefined>(undefined)
+
 /** Config passed to composable — prop config with local NPC/zone edits overlaid. */
 const effectiveConfig = computed<SceneEditorConfig>(() => ({
   ...activeConfig.value,
   npcs: localNpcs.value,
   zones: localZones.value,
+  ambientAudioAssetId: ambientAudioAssetId.value,
+  ambientAudioVolume: ambientAudioVolume.value,
 }))
 
 // ─── Canvas ref ───────────────────────────────────────────────────────────────
@@ -309,6 +319,8 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   currentSceneId.value = null
   activeSavedSceneId.value = null
   sceneName.value = 'Untitled Scene'
+  ambientAudioAssetId.value = undefined
+  ambientAudioVolume.value = undefined
   // Clear waypoint display — new scene has its own localStorage keys
   waypointMap.value = new Map()
   // Reset path-edit mode
@@ -330,6 +342,14 @@ async function onLoadScene(sceneId: string): Promise<void> {
   try {
     const row = await assetDb.scenes.get(sceneId)
     if (!row) { flashStatus('Scene not found'); return }
+
+    // Reset ambient audio before restoring from saved config
+    ambientAudioAssetId.value = undefined
+    ambientAudioVolume.value = undefined
+    if (row.config) {
+      ambientAudioAssetId.value = row.config.ambientAudioAssetId
+      ambientAudioVolume.value = row.config.ambientAudioVolume
+    }
 
     // Reload scene geometry (clears all placed objects)
     await reinitScene(activeConfig.value)
@@ -547,6 +567,7 @@ async function saveScene(): Promise<void> {
       name: save.name!,
       savedAt: save.savedAt,
       placedObjects: save.placedObjects,
+      config: effectiveConfig.value,
     })
     const n = save.placedObjects.length
     flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}`)
@@ -639,13 +660,15 @@ async function onCopyConfigTs(): Promise<void> {
 
 const pickerOpen = ref(false)
 const pickerEntityId = ref('')
-const pickerKind = ref<'character' | 'animation-pack'>('character')
+const pickerKind = ref<AssetKind>('character')
 const pickerIsForPlayer = ref(false)
+const pickerIsForAmbientAudio = ref(false)
 
 function onPickNpcAsset(entityId: string, kind: 'character' | 'animation-pack'): void {
   pickerEntityId.value = entityId
   pickerKind.value = kind
   pickerIsForPlayer.value = false
+  pickerIsForAmbientAudio.value = false
   pickerOpen.value = true
 }
 
@@ -657,7 +680,26 @@ const playerAnimPackAssetId = ref<string | undefined>(undefined)
 function onPickPlayerAsset(kind: 'character' | 'animation-pack'): void {
   pickerKind.value = kind
   pickerIsForPlayer.value = true
+  pickerIsForAmbientAudio.value = false
   pickerOpen.value = true
+}
+
+// ─── Phase 5 S1: ambient audio handlers ──────────────────────────────────────
+
+function onPickAmbientAudio(): void {
+  pickerKind.value = 'audio'
+  pickerIsForPlayer.value = false
+  pickerIsForAmbientAudio.value = true
+  pickerOpen.value = true
+}
+
+function onSetAmbientAudioVolume(volume: number): void {
+  ambientAudioVolume.value = volume
+}
+
+function onClearAmbientAudio(): void {
+  ambientAudioAssetId.value = undefined
+  ambientAudioVolume.value = undefined
 }
 
 function onClearPlayerChar(): void {
@@ -680,7 +722,10 @@ async function applyPlayerCharAsset(): Promise<void> {
 
 function onPickerSelect(assetId: string): void {
   pickerOpen.value = false
-  if (pickerIsForPlayer.value) {
+  if (pickerIsForAmbientAudio.value) {
+    ambientAudioAssetId.value = assetId
+    pickerIsForAmbientAudio.value = false
+  } else if (pickerIsForPlayer.value) {
     if (pickerKind.value === 'character') {
       playerCharAssetId.value = assetId
     } else {

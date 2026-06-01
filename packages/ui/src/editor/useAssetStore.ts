@@ -32,8 +32,15 @@ export class UploadError extends Error {
   }
 }
 
-const SUPPORTED_EXTS = ['glb', 'gltf', 'fbx'] as const
+const SUPPORTED_EXTS = ['glb', 'gltf', 'fbx', 'mp3', 'ogg', 'wav'] as const
 type SupportedExt = (typeof SUPPORTED_EXTS)[number]
+
+const MIME_FALLBACK: Record<string, string> = {
+  fbx: 'application/octet-stream',
+  mp3: 'audio/mpeg',
+  ogg: 'audio/ogg',
+  wav: 'audio/wav',
+}
 
 function extOf(filename: string): string {
   const m = /\.([a-zA-Z0-9]+)$/.exec(filename)
@@ -63,12 +70,12 @@ export const useAssetStore = defineStore('assets', () => {
     if (!isSupported(ext)) {
       throw new UploadError(
         'invalid-file-type',
-        `Unsupported extension ".${ext}" — expected .glb, .gltf, or .fbx`,
+        `Unsupported extension ".${ext}" — expected .glb, .gltf, .fbx, .mp3, .ogg, or .wav`,
       )
     }
 
     const blob = new Blob([await file.arrayBuffer()], {
-      type: file.type || (ext === 'fbx' ? 'application/octet-stream' : ''),
+      type: file.type || MIME_FALLBACK[ext] || '',
     })
 
     let kind: AssetKind = 'prop'
@@ -112,6 +119,9 @@ export const useAssetStore = defineStore('assets', () => {
       } catch (err) {
         throw new UploadError('parse-failed', (err as Error).message)
       }
+    } else if (ext === 'mp3' || ext === 'ogg' || ext === 'wav') {
+      contentType = MIME_FALLBACK[ext]!
+      kind = 'audio'
     } else {
       // ext === 'fbx' — Mixamo convention; we don't parse FBX in browser.
       contentType = 'application/octet-stream'

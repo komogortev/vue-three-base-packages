@@ -417,6 +417,7 @@ function formatBytes(n: number): string {
 .kind-badge[data-kind='animation-pack'] { color: #ffcc44; }
 .kind-badge[data-kind='environment']    { color: #44ff88; }
 .kind-badge[data-kind='prop']           { color: #c099ff; }
+.kind-badge[data-kind='audio']          { color: #ff9944; }
 .size, .clip-count { color: #4a6080; }
 .error-text { color: #d27575; font-family: inherit; }
 
