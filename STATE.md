@@ -4,13 +4,13 @@
 
 _Last updated: 2026-06-01_
 
-**What's working:** All 11 packages build cleanly. **Phase 5 Room Package pipeline complete on `main`** (squash-merged via PR #30 + PR #29 2026-06-01): `@base/ui` now ships — Dexie v3 (`SceneRow.config?: SceneEditorConfig`, no-op upgrade), `AssetKind = 'audio'` (mp3/ogg/wav, MIME inference), ambient audio inspector section, `roomPackageTypes.ts` (`RoomPackageManifest` + `RoomPackageScene` V1 contract), `exportRoomPackage.ts` (fflate ZIP — manifest + scene + assets), `buildRoomPackageScene()` in `SceneEditorExporter`, `loadRoomPackage.ts` (fflate unzipSync → manifest + scene + blob URL map + revoke()), `AssetLibraryDialog.vue` (full-screen modal with drag-drop + progress + thumbnails + Use). `@base/gameplay` ships free-float Shift/Ctrl height (`ffRaise`/`ffLower` via locoSprint/locoCrouch capture) + `resetAccumulators` fix. Camera isolation: `controls.update()` guarded to orbit/follow-3p only; 3P A/D strafes without spinning character; OrbitControls constraints (minDistance 2/maxDistance 12/maxPolarAngle 0.82π). PR #29 (D-5b play-sim) + PR #30 (camera polish + Phase 5) both on main. PR #26 (superseded D-1+D-3) closed.
+**What's working:** All packages build cleanly. **Phase 5 S4 (Pose Editor) fully complete — S4-a (FK) + S4-b (CCD IK) + S4-c (polish) all shipped on branch `feat/t-f7-glb-normalization`.** S4-c adds: bone search filter in Pose tab (live case-insensitive `<input>`, resets on NPC deselect); IK hint UI (4 chain buttons for rightArm/leftArm/rightLeg/leftLeg, active chain highlighted, wired to `selectIkTarget()`/`activeIkChainName` in SceneEditorView). **Vitest foundation added to `@base/ui`**: vitest 2.x installed, `vitest.config.ts` + tsconfig `exclude` pattern, 19 passing tests (`SceneEditorExporter` × 12 + `usePoseEditor` × 7). Prior: Phase 5 Room Package pipeline complete on `main` (S1 Dexie v3 + audio, S2 export, S3 room player, T-F7 GLB normalization, S4-a FK, S4-b CCD IK). Full pipeline end-to-end: Editor export → ZIP → Load Room → FPV walkthrough.
 
 **What's broken / incomplete:** `water__entry__fall.fbx` is a placeholder. `failJump` uses "Straight Landing" as mild substitute. `@base/pwa-core` stub. `retargetMixamoClipsToCharacter` untested (WebGL context needed).
 
 ## Active Work
 
-- Phase 5 S4 — Pose Editor (`EditorNpcEntry.poseOverride`, FK + CCDIKSolver) or T-F7 GLB normalization (next decision)
+- Phase 5 S5 — Animation Recorder (`capturePose()` as keyframe primitive, `QuaternionKeyframeTrack` + `AnimationClip.optimize()` + `GLTFExporter`)
 
 ## Blockers & Open Questions
 
@@ -25,6 +25,7 @@ _Last updated: 2026-06-01_
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-06-01** — Phase 5 S4-c shipped + vitest foundation: bone search filter + IK hint UI in Pose inspector tab; `@base/ui` gains vitest 2.x with 19 passing tests (`SceneEditorExporter` × 12 + `usePoseEditor` × 7). Phase 5 S4 fully complete (a + b + c). S5 Animation Recorder is next.
 - **2026-05-20** — Editor Phase 2 closed: W3 PR #24 (`AssetPicker` modal + Use… wiring in AssetsSection + index.ts export) merged 2026-05-17; CI hotfix PR #25 (`engine-core` + `scene-builder` tsconfig `skipLibCheck` + `exclude src/**/*.test.ts` to match sibling pattern) merged 2026-05-20 restoring green main since 2026-05-12 breakage. F-A1/F-A2/F-A3/F-A4 all ✅. AssetPicker exported from `@base/ui` ready for Phase 3 F-9 consumption.
 - **2026-05-11 EOD** — Editor Phase 2 W2 (asset registry + upload + thumbnails) shipped, merged as PR #23 on 2026-05-12.
 - **2026-05-11** — Editor Phase 2 W1 design doc (`packages/ui/docs/ASSET-PIPELINE.md`) shipped — three-layer model, frozen Dexie v1 schema, Q1-Q7 resolutions.
