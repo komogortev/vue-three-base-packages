@@ -43,8 +43,8 @@ export interface CoordinatorTickContext {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/** Tab cycle order for toggle_camera action. */
-const CAMERA_MODE_ORDER: GameplayCameraMode[] = ['third-person', 'first-person', 'free-float']
+/** Tab cycle order for toggle_camera action — FPV first, matches editor play-mode ordering. */
+const CAMERA_MODE_ORDER: GameplayCameraMode[] = ['first-person', 'third-person', 'free-float']
 
 /** Free-float translation speed in m/s. */
 const FF_SPEED = 12
@@ -88,6 +88,9 @@ export class PlayerCameraCoordinator {
   private ffYaw = 0
   private ffPitch = 0
   private readonly ffPosition = new THREE.Vector3()
+  // Height intent captured from locomotion axis before tickPlayer clears it
+  private ffRaise = false
+  private ffLower = false
 
   // Last camera seen in tick() — used to seed free-float when toggle passes camera=null
   private lastCamera: THREE.PerspectiveCamera | null = null
@@ -290,6 +293,9 @@ export class PlayerCameraCoordinator {
 
     // ── Free-float: player stands still; WASD drives camera in tickCamera ──
     if (mode === 'free-float') {
+      // Capture raise/lower before clearing so tickCamera can apply height
+      this.ffRaise = this.locoSprintOr
+      this.ffLower = this.locoCrouchOr
       this.locoSprintOr = false
       this.locoCrouchOr = false
       return
@@ -340,6 +346,9 @@ export class PlayerCameraCoordinator {
       this.ffPosition.x += (-sinY * cosP * this.moveY + cosY * this.moveX) * FF_SPEED * delta
       this.ffPosition.y +=  sinP * this.moveY * FF_SPEED * delta
       this.ffPosition.z += (-cosY * cosP * this.moveY - sinY * this.moveX) * FF_SPEED * delta
+      // Vertical height — Shift = up, Ctrl = down (absolute world Y, independent of pitch)
+      if (this.ffRaise) this.ffPosition.y += FF_SPEED * delta
+      if (this.ffLower) this.ffPosition.y -= FF_SPEED * delta
 
       ctx.camera.position.copy(this.ffPosition)
       ctx.camera.rotation.order = 'YXZ'
@@ -370,6 +379,8 @@ export class PlayerCameraCoordinator {
     this.lookYawAcc = 0
     this.lookPitchAcc = 0
     this.fpPitch = 0
+    this.ffRaise = false
+    this.ffLower = false
     this.lastCamera = null
   }
 }

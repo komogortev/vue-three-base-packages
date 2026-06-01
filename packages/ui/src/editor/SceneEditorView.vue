@@ -105,6 +105,12 @@
           @click="onExportZip"
         >{{ isExporting ? 'Exporting…' : 'Export ZIP' }}</button>
         <button
+          class="save-btn room-btn"
+          :disabled="!currentSceneId || isExportingRoom"
+          title="Export a self-contained room package ZIP (current live state) — save the scene first to give it a label"
+          @click="onExportRoomPackage"
+        >{{ isExportingRoom ? 'Exporting…' : 'Export Room' }}</button>
+        <button
           class="save-btn ts-btn"
           title="Copy scene config as TypeScript literal"
           @click="onCopyConfigTs"
@@ -152,6 +158,9 @@
       @pick-player-asset="onPickPlayerAsset"
       @clear-player-char="onClearPlayerChar"
       @clear-player-anim-pack="onClearPlayerAnimPack"
+      @pick-ambient-audio="onPickAmbientAudio"
+      @set-ambient-audio-volume="onSetAmbientAudioVolume"
+      @clear-ambient-audio="onClearAmbientAudio"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
@@ -173,9 +182,10 @@ import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { exportSandboxZip } from './exportSandboxZip'
-import { serializeEditorConfigTS } from './SceneEditorExporter'
+import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExporter'
+import { exportRoomPackage } from './exportRoomPackage'
 import type { SandboxSceneSave } from './sandboxSceneSchema'
-import { assetDb } from './assetDb'
+import { assetDb, type AssetKind } from './assetDb'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import AssetPicker from './AssetPicker.vue'
@@ -183,8 +193,8 @@ import type { SceneEditorConfig, SceneEditorEntry, EditorSelection, EditorCamMod
 
 const CAM_OPTIONS: { mode: EditorCamMode; label: string; title: string }[] = [
   { mode: 'orbit',        label: 'Orbit', title: 'Orbit — free camera (Tab)' },
+  { mode: 'first-person', label: 'FPV',   title: 'First-person view (Tab)' },
   { mode: 'follow-3p',   label: '3P',    title: 'Third-person follow (Tab)' },
-  { mode: 'first-person', label: 'FPV',  title: 'First-person view (Tab)' },
   { mode: 'free-float',  label: 'Float', title: 'Free-fly camera (Tab)' },
 ]
 
@@ -237,11 +247,18 @@ function initLocalEntries(): void {
   localZones.value = (activeConfig.value.zones ?? []).map(z => ({ ...z }))
 }
 
+// ─── Ambient audio state (Phase 5 S1) ────────────────────────────────────────
+
+const ambientAudioAssetId = ref<string | undefined>(undefined)
+const ambientAudioVolume = ref<number | undefined>(undefined)
+
 /** Config passed to composable — prop config with local NPC/zone edits overlaid. */
 const effectiveConfig = computed<SceneEditorConfig>(() => ({
   ...activeConfig.value,
   npcs: localNpcs.value,
   zones: localZones.value,
+  ambientAudioAssetId: ambientAudioAssetId.value,
+  ambientAudioVolume: ambientAudioVolume.value,
 }))
 
 // ─── Canvas ref ───────────────────────────────────────────────────────────────
@@ -309,6 +326,8 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   currentSceneId.value = null
   activeSavedSceneId.value = null
   sceneName.value = 'Untitled Scene'
+  ambientAudioAssetId.value = undefined
+  ambientAudioVolume.value = undefined
   // Clear waypoint display — new scene has its own localStorage keys
   waypointMap.value = new Map()
   // Reset path-edit mode
@@ -330,6 +349,14 @@ async function onLoadScene(sceneId: string): Promise<void> {
   try {
     const row = await assetDb.scenes.get(sceneId)
     if (!row) { flashStatus('Scene not found'); return }
+
+    // Reset ambient audio before restoring from saved config
+    ambientAudioAssetId.value = undefined
+    ambientAudioVolume.value = undefined
+    if (row.config) {
+      ambientAudioAssetId.value = row.config.ambientAudioAssetId
+      ambientAudioVolume.value = row.config.ambientAudioVolume
+    }
 
     // Reload scene geometry (clears all placed objects)
     await reinitScene(activeConfig.value)
@@ -547,6 +574,7 @@ async function saveScene(): Promise<void> {
       name: save.name!,
       savedAt: save.savedAt,
       placedObjects: save.placedObjects,
+      config: effectiveConfig.value,
     })
     const n = save.placedObjects.length
     flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}`)
@@ -570,6 +598,24 @@ async function onExportZip(): Promise<void> {
     flashStatus('ZIP export failed')
   } finally {
     isExporting.value = false
+  }
+}
+
+const isExportingRoom = ref(false)
+
+async function onExportRoomPackage(): Promise<void> {
+  if (isExportingRoom.value) return
+  isExportingRoom.value = true
+  try {
+    const scene = buildRoomPackageScene(snapshotPlacedTransforms(), effectiveConfig.value)
+    await exportRoomPackage(scene, sceneName.value.trim() || 'Untitled Scene')
+    const n = placedObjects.value.length
+    const npcCount = localNpcs.value.length
+    flashStatus(`Room package exported — ${n} object${n !== 1 ? 's' : ''}, ${npcCount} NPC${npcCount !== 1 ? 's' : ''}`)
+  } catch {
+    flashStatus('Room package export failed')
+  } finally {
+    isExportingRoom.value = false
   }
 }
 
@@ -639,13 +685,15 @@ async function onCopyConfigTs(): Promise<void> {
 
 const pickerOpen = ref(false)
 const pickerEntityId = ref('')
-const pickerKind = ref<'character' | 'animation-pack'>('character')
+const pickerKind = ref<AssetKind>('character')
 const pickerIsForPlayer = ref(false)
+const pickerIsForAmbientAudio = ref(false)
 
 function onPickNpcAsset(entityId: string, kind: 'character' | 'animation-pack'): void {
   pickerEntityId.value = entityId
   pickerKind.value = kind
   pickerIsForPlayer.value = false
+  pickerIsForAmbientAudio.value = false
   pickerOpen.value = true
 }
 
@@ -657,7 +705,26 @@ const playerAnimPackAssetId = ref<string | undefined>(undefined)
 function onPickPlayerAsset(kind: 'character' | 'animation-pack'): void {
   pickerKind.value = kind
   pickerIsForPlayer.value = true
+  pickerIsForAmbientAudio.value = false
   pickerOpen.value = true
+}
+
+// ─── Phase 5 S1: ambient audio handlers ──────────────────────────────────────
+
+function onPickAmbientAudio(): void {
+  pickerKind.value = 'audio'
+  pickerIsForPlayer.value = false
+  pickerIsForAmbientAudio.value = true
+  pickerOpen.value = true
+}
+
+function onSetAmbientAudioVolume(volume: number): void {
+  ambientAudioVolume.value = volume
+}
+
+function onClearAmbientAudio(): void {
+  ambientAudioAssetId.value = undefined
+  ambientAudioVolume.value = undefined
 }
 
 function onClearPlayerChar(): void {
@@ -680,7 +747,10 @@ async function applyPlayerCharAsset(): Promise<void> {
 
 function onPickerSelect(assetId: string): void {
   pickerOpen.value = false
-  if (pickerIsForPlayer.value) {
+  if (pickerIsForAmbientAudio.value) {
+    ambientAudioAssetId.value = assetId
+    pickerIsForAmbientAudio.value = false
+  } else if (pickerIsForPlayer.value) {
     if (pickerKind.value === 'character') {
       playerCharAssetId.value = assetId
     } else {
@@ -890,6 +960,10 @@ kbd {
 .save-btn.export-btn:hover:not(:disabled) {
   color: #c099ff;
   border-color: rgba(192, 153, 255, 0.3);
+}
+.save-btn.room-btn:hover:not(:disabled) {
+  color: #ffd166;
+  border-color: rgba(255, 209, 102, 0.3);
 }
 .save-btn.ts-btn:hover:not(:disabled) {
   color: #80ffcc;

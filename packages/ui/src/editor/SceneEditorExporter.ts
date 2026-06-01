@@ -1,4 +1,6 @@
 import type { SceneEditorConfig, EditorNpcEntry, EditorZoneEntry } from './sceneEditorTypes'
+import type { SavedPlacedObject } from './sandboxSceneSchema'
+import type { RoomPackageScene } from './roomPackageTypes'
 
 /**
  * Serialize the current editor state to a TypeScript literal that can be
@@ -95,4 +97,23 @@ export function serializeEditorConfigTS(
 
 function fmt(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, '')
+}
+
+/**
+ * Build a RoomPackageScene from the current editor state snapshot.
+ * Pure / synchronous — no DB access.  Asset blobs are collected separately
+ * by exportRoomPackage().
+ */
+export function buildRoomPackageScene(
+  placedObjects: SavedPlacedObject[],
+  config: SceneEditorConfig,
+): RoomPackageScene {
+  return {
+    placedObjects,
+    npcs: config.npcs ?? [],
+    zones: config.zones ?? [],
+    spawnPoint: config.spawnPoint,
+    ambientAudioAssetId: config.ambientAudioAssetId,
+    ambientAudioVolume: config.ambientAudioVolume,
+  }
 }

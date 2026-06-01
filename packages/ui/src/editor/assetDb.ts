@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
+import type { SceneEditorConfig } from './sceneEditorTypes'
 
 /**
  * @base/ui asset registry — IndexedDB schema (Dexie).
@@ -17,6 +18,7 @@ export type AssetKind =
   | 'prop'           // small static GLB (rock, tree, crystal, pillar)
   | 'environment'   // large static GLB (terrain, room mesh, sky dome)
   | 'animation-pack' // GLB whose value is its animation clips, not its mesh
+  | 'audio'          // ambient/music audio file (.mp3, .ogg, .wav)
 
 export interface AssetRow {
   /** 'asset-<nanoid>' — primary key, descriptor-resident logical ID. */
@@ -49,6 +51,12 @@ export interface SceneRow {
   savedAt: string
   /** Snapshot of all placed objects at save time. */
   placedObjects: SavedPlacedObject[]
+  /**
+   * Full editor config snapshot (NPCs, zones, spawnPoint, ambientAudio, …).
+   * Absent on rows written by v1/v2 — read defensively.
+   * Added in v3.
+   */
+  config?: SceneEditorConfig
 }
 
 export class AssetDb extends Dexie {
@@ -69,6 +77,11 @@ export class AssetDb extends Dexie {
     this.version(2).stores({
       scenes: 'id, name, savedAt',
     })
+
+    // Version 3 — adds config?: SceneEditorConfig to SceneRow.
+    // No index change; config is stored but not indexed.
+    // Upgrade is a no-op — config is optional and absent on v1/v2 rows.
+    this.version(3).stores({})
 
     // ---------------------------------------------------------------------
     // Migration template — DO NOT REMOVE

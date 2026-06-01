@@ -83,6 +83,38 @@
           >✕</button>
         </div>
       </div>
+
+      <!-- Phase 5 S1: Ambient audio -->
+      <div class="section-divider">Ambient Audio</div>
+      <div class="field-group">
+        <label class="field-label">Audio track</label>
+        <div class="asset-row">
+          <span class="asset-id" :class="{ unset: !config.ambientAudioAssetId }">
+            {{ config.ambientAudioAssetId ? assetName(config.ambientAudioAssetId) : 'none' }}
+          </span>
+          <button class="btn-asset-pick" @click="emit('pick-ambient-audio')">Set…</button>
+          <button
+            v-if="config.ambientAudioAssetId"
+            class="btn-asset-clear"
+            @click="emit('clear-ambient-audio')"
+          >✕</button>
+        </div>
+      </div>
+      <div v-if="config.ambientAudioAssetId" class="field-group">
+        <label class="field-label">Volume</label>
+        <div class="volume-row">
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            class="volume-slider"
+            :value="config.ambientAudioVolume ?? 1"
+            @input="emit('set-ambient-audio-volume', parseFloat(($event.target as HTMLInputElement).value))"
+          />
+          <span class="volume-label">{{ Math.round((config.ambientAudioVolume ?? 1) * 100) }}%</span>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
@@ -386,6 +418,10 @@ const emit = defineEmits<{
   'pick-player-asset': [kind: 'character' | 'animation-pack']
   'clear-player-char': []
   'clear-player-anim-pack': []
+  /** Phase 5 S1: ambient audio. */
+  'pick-ambient-audio': []
+  'set-ambient-audio-volume': [volume: number]
+  'clear-ambient-audio': []
 }>()
 
 const assetStore = useAssetStore()
@@ -788,6 +824,26 @@ const fmt = (n: number) => n.toFixed(2)
   flex-shrink: 0;
 }
 .btn-asset-clear:hover { color: #ff6060; border-color: #4a1e1e; }
+
+/* ── Volume slider (Phase 5 S1) ─────────────────────────────────────────── */
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.volume-slider {
+  flex: 1;
+  height: 3px;
+  accent-color: #5ab0f5;
+  cursor: pointer;
+}
+.volume-label {
+  font-size: 10px;
+  font-family: monospace;
+  color: #5ab0f5;
+  min-width: 30px;
+  text-align: right;
+}
 
 /* ── Path panel ──────────────────────────────────────────────────────────── */
 .path-panel {

@@ -75,6 +75,10 @@ export interface SceneEditorConfig {
    * e.g. 'SCENE_01' → selected NPC path exports as 'SCENE_01_NPC_DAD_SCENE_01_PATH'.
    */
   exportNamePrefix?: string
+  /** Asset registry ID of the ambient audio track (kind === 'audio'). */
+  ambientAudioAssetId?: string
+  /** Ambient audio volume in [0, 1]. Defaults to 1.0 at runtime when omitted. */
+  ambientAudioVolume?: number
 }
 
 // ─── Multi-scene switcher ─────────────────────────────────────────────────────
