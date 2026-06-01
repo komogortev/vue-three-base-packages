@@ -161,6 +161,13 @@
       @pick-ambient-audio="onPickAmbientAudio"
       @set-ambient-audio-volume="onSetAmbientAudioVolume"
       @clear-ambient-audio="onClearAmbientAudio"
+      :pose-bone-list="poseBoneList"
+      :selected-pose-bone-name="poseSelectedBone"
+      :has-pose-character="poseBoneList.length > 0"
+      @pose-tab-activate="onPoseTabActivate"
+      @pose-bone-select="onPoseBoneSelect"
+      @pose-capture="onPoseCapture"
+      @pose-clear="onPoseClear"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
@@ -181,6 +188,7 @@ import * as THREE from 'three'
 import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
+import { usePoseEditor } from './usePoseEditor'
 import { exportSandboxZip } from './exportSandboxZip'
 import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExporter'
 import { exportRoomPackage } from './exportRoomPackage'
@@ -294,6 +302,11 @@ const {
   addZoneMarker,
   removeZoneMarker,
   setPlayCharacterAsset,
+  attachPoseNpc,
+  selectPoseBone,
+  capturePoseSnapshot,
+  resetPoseBones,
+  detachPoseNpc,
 } = useSceneEditorViewport({
   canvas: canvasRef,
   config: effectiveConfig.value,
@@ -305,6 +318,10 @@ const {
 // ─── Asset store (for place mode) ────────────────────────────────────────────
 
 const assetStore = useAssetStore()
+
+// ─── Pose editor reactive state (S4) ─────────────────────────────────────────
+
+const { boneList: poseBoneList, selectedBoneName: poseSelectedBone, setBoneList: setPoseBoneList, selectBone: setPoseSelectedBone, reset: resetPoseEditor } = usePoseEditor()
 
 function onAssetPicked(assetId: string): void {
   const asset = assetStore.getById(assetId)
@@ -420,6 +437,20 @@ watch(zoneLivePositions, (positions) => {
     if (zone) { zone.x = pos.x; zone.z = pos.z }
   }
 }, { deep: false })
+
+// ─── Pose editor: auto-detach when NPC changes ───────────────────────────────
+
+watch(selection, (newSel, oldSel) => {
+  if (poseBoneList.value.length === 0) return
+  const wasNpc = oldSel?.kind === 'npc'
+  const isSameNpc = newSel?.kind === 'npc' && wasNpc &&
+    (newSel as Extract<typeof newSel, { kind: 'npc' }>).entityId ===
+    (oldSel as Extract<typeof oldSel, { kind: 'npc' }>).entityId
+  if (!isSameNpc) {
+    detachPoseNpc()
+    resetPoseEditor()
+  }
+})
 
 // ─── Waypoint state ───────────────────────────────────────────────────────────
 
@@ -663,6 +694,43 @@ function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
   if ('x' in patch || 'z' in patch) {
     setZonePosition(id, zone.x, zone.z)
   }
+}
+
+// ─── Pose editor event handlers (S4) ─────────────────────────────────────────
+
+async function onPoseTabActivate(): Promise<void> {
+  const sel = selection.value
+  if (sel?.kind !== 'npc') return
+  const npc = localNpcs.value.find(n => n.entityId === sel.entityId)
+  if (!npc?.assetId) return
+  const blobUrl = assetStore.resolveBlobUrl(npc.assetId)
+  if (!blobUrl) { flashStatus('Character mesh not in asset store'); return }
+  const boneNames = await attachPoseNpc(sel.entityId, blobUrl)
+  if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return }
+  setPoseBoneList(boneNames)
+}
+
+function onPoseBoneSelect(boneName: string): void {
+  selectPoseBone(boneName)
+  setPoseSelectedBone(boneName)
+}
+
+function onPoseCapture(): void {
+  const sel = selection.value
+  if (sel?.kind !== 'npc') return
+  const snapshot = capturePoseSnapshot()
+  if (snapshot.length === 0) return
+  onNpcChanged(sel.entityId, { poseOverride: snapshot })
+  flashStatus('Pose captured')
+}
+
+function onPoseClear(): void {
+  const sel = selection.value
+  if (sel?.kind !== 'npc') return
+  resetPoseBones()
+  setPoseSelectedBone(null)
+  onNpcChanged(sel.entityId, { poseOverride: undefined })
+  flashStatus('Pose reset to bind')
 }
 
 // ─── TS config export (F-13) ─────────────────────────────────────────────────

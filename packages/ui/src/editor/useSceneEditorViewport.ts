@@ -71,6 +71,17 @@ export interface SceneEditorViewportReturn {
    * Call when user picks or clears the player character in the Scene inspector.
    */
   setPlayCharacterAsset: (charBlobUrl: string | null, animPackBlobUrl?: string | null) => Promise<void>
+  // ─── Pose editor ─────────────────────────────────────────────────────────
+  /** Load a character GLB for pose editing; returns the skeleton bone name list. */
+  attachPoseNpc: (entityId: string, blobUrl: string) => Promise<string[]>
+  /** Attach TransformControls in rotate mode to the named bone. */
+  selectPoseBone: (boneName: string) => void
+  /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
+  capturePoseSnapshot: () => Array<{ bone: string; q: [number, number, number, number] }>
+  /** Reset all skeleton bones to bind pose and detach TC from any active bone. */
+  resetPoseBones: () => void
+  /** Remove the pose mesh + SkeletonHelper from the scene and release TC. */
+  detachPoseNpc: () => void
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -169,6 +180,12 @@ export function useSceneEditorViewport(opts: {
   let charWalkAction: THREE.AnimationAction | null = null
   let pendingCharBlobUrl: string | null = null
   let pendingAnimBlobUrl: string | null = null
+
+  // ─── Pose editor Three.js state ──────────────────────────────────────────────
+  let poseMeshRoot: THREE.Object3D | null = null
+  let poseSkinnedMesh: THREE.SkinnedMesh | null = null
+  let poseHelper: THREE.SkeletonHelper | null = null
+  let poseHasBoneAttached = false  // true when TC is attached to a bone via selectPoseBone
 
   // Delta time
   const clock = new THREE.Clock()
@@ -430,6 +447,7 @@ export function useSceneEditorViewport(opts: {
   async function reinitScene(newConfig: SceneEditorConfig): Promise<void> {
     config = newConfig
     _disposePlayCharacter()
+    detachPoseNpc()
     clearScene()
     await loadScene(newConfig)
   }
@@ -537,6 +555,110 @@ export function useSceneEditorViewport(opts: {
     } else if (mode === 'first-person') {
       if (charRoot) charRoot.visible = false // FPV: camera is the eyes
       if (playerMesh) playerMesh.visible = false
+    }
+  }
+
+  // ─── Pose editor ─────────────────────────────────────────────────────────────
+
+  function detachPoseNpc(): void {
+    if (poseHasBoneAttached) {
+      transformControls.detach()
+      poseHasBoneAttached = false
+      transformControls.setMode(transformMode.value)
+      // Re-attach TC to the NPC marker if that NPC is still selected
+      const sel = selection.value
+      if (sel?.kind === 'npc') {
+        const root = npcMarkerRoots.get(sel.entityId)
+        if (root) { transformControls.attach(root); transformControls.enabled = true }
+        else transformControls.enabled = false
+      } else {
+        transformControls.enabled = false
+      }
+    }
+    if (poseHelper) {
+      scene?.remove(poseHelper)
+      poseHelper.geometry.dispose()
+      poseHelper = null
+    }
+    if (poseMeshRoot) {
+      poseMeshRoot.traverse(obj => {
+        const m = obj as THREE.Mesh
+        if (m.isMesh) {
+          m.geometry?.dispose()
+          const mat = m.material
+          if (Array.isArray(mat)) mat.forEach(ma => ma.dispose())
+          else (mat as THREE.Material)?.dispose()
+        }
+      })
+      scene?.remove(poseMeshRoot)
+      poseMeshRoot = null
+      poseSkinnedMesh = null
+    }
+  }
+
+  async function attachPoseNpc(entityId: string, blobUrl: string): Promise<string[]> {
+    detachPoseNpc()
+    const loader = new GLTFLoader()
+    try {
+      const gltf = await loader.loadAsync(blobUrl)
+      const skinnedMeshes: THREE.SkinnedMesh[] = []
+      gltf.scene.traverse(obj => { if (obj instanceof THREE.SkinnedMesh) skinnedMeshes.push(obj) })
+      const sm = skinnedMeshes[0]
+      if (!sm) return []
+
+      // Position near NPC marker and ground the mesh
+      const marker = npcMarkerRoots.get(entityId)
+      const bbox = new THREE.Box3().setFromObject(gltf.scene)
+      gltf.scene.position.set(marker?.position.x ?? 0, -bbox.min.y, marker?.position.z ?? 0)
+
+      scene.add(gltf.scene)
+      poseMeshRoot = gltf.scene
+      poseSkinnedMesh = sm
+
+      poseHelper = new THREE.SkeletonHelper(sm)
+      scene.add(poseHelper)
+
+      return sm.skeleton.bones.map(b => b.name)
+    } catch (e) {
+      console.warn('[PoseEditor] Failed to load character mesh:', e)
+      return []
+    }
+  }
+
+  function selectPoseBone(boneName: string): void {
+    if (!poseSkinnedMesh) return
+    const bone = poseSkinnedMesh.skeleton.bones.find(b => b.name === boneName) ?? null
+    if (!bone) return
+    transformControls.detach()
+    transformControls.setMode('rotate')
+    transformControls.attach(bone)
+    transformControls.enabled = true
+    poseHasBoneAttached = true
+  }
+
+  function capturePoseSnapshot(): Array<{ bone: string; q: [number, number, number, number] }> {
+    if (!poseSkinnedMesh) return []
+    return poseSkinnedMesh.skeleton.bones.map(b => ({
+      bone: b.name,
+      q: [b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w] as [number, number, number, number],
+    }))
+  }
+
+  function resetPoseBones(): void {
+    if (!poseSkinnedMesh) return
+    poseSkinnedMesh.skeleton.pose()
+    if (poseHasBoneAttached) {
+      transformControls.detach()
+      poseHasBoneAttached = false
+      transformControls.setMode(transformMode.value)
+      const sel = selection.value
+      if (sel?.kind === 'npc') {
+        const root = npcMarkerRoots.get(sel.entityId)
+        if (root) { transformControls.attach(root); transformControls.enabled = true }
+        else transformControls.enabled = false
+      } else {
+        transformControls.enabled = false
+      }
     }
   }
 
@@ -1325,6 +1447,7 @@ export function useSceneEditorViewport(opts: {
     if (ffPointerLocked) document.exitPointerLock()
     keyState.clear()
     _disposePlayCharacter()
+    detachPoseNpc()
     if (playerMesh) {
       playerMesh.geometry.dispose()
       ;(playerMesh.material as THREE.Material).dispose()
@@ -1382,5 +1505,10 @@ export function useSceneEditorViewport(opts: {
     addZoneMarker,
     removeZoneMarker,
     setPlayCharacterAsset,
+    attachPoseNpc,
+    selectPoseBone,
+    capturePoseSnapshot,
+    resetPoseBones,
+    detachPoseNpc,
   }
 }
