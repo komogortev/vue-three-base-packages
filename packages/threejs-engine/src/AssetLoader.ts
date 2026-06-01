@@ -8,6 +8,37 @@ import type { EventBus } from '@base/engine-core'
 
 export type { GLTF }
 
+/**
+ * Wraps a loaded GLTF scene in a corrective pivot group so that feet land at Y=0
+ * and the mesh is centered on XZ — the player-three character convention.
+ *
+ * Use this on Rodin / Tripo-sourced GLBs before handing to CharacterAnimationRig.
+ * Pipeline-processed GLBs (via optimize-glb.sh --pivot bottom) won't need it, but
+ * calling it on an already-clean model is safe (pivot offset will be ~0).
+ *
+ * AnimationMixer safety: Three.js resolves bones by Object3D.name traversal, not
+ * depth — the extra pivot wrapper does not break AnimationClip bone path resolution.
+ */
+export function normalizeGLTFOrigin(scene: THREE.Group): THREE.Group {
+  const box = new THREE.Box3().setFromObject(scene)
+  if (box.isEmpty()) {
+    console.warn('[AssetLoader] normalizeGLTFOrigin: bounding box is empty — model has no geometry, returning scene unchanged')
+    return scene
+  }
+  const height = box.max.y - box.min.y
+  if (height > 5 || height < 0.5) {
+    console.warn(`[AssetLoader] normalizeGLTFOrigin: suspicious height ${height.toFixed(2)}m — check model scale`)
+  }
+  const pivot = new THREE.Group()
+  scene.position.set(
+    -(box.min.x + box.max.x) / 2,
+    -box.min.y,
+    -(box.min.z + box.max.z) / 2,
+  )
+  pivot.add(scene)
+  return pivot
+}
+
 /** Result of {@link AssetLoader.loadFBX} — Mixamo and other FBX sources. */
 export interface FBXRoot {
   group: THREE.Group

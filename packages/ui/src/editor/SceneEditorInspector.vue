@@ -31,6 +31,12 @@
         :class="{ active: activeTab === tab }"
         @click="activeTab = tab"
       >{{ tab }}</button>
+      <button
+        v-if="selectedNpc?.assetId"
+        class="tab"
+        :class="{ active: activeTab === 'Pose' }"
+        @click="onPoseTabClick"
+      >Pose</button>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
@@ -301,6 +307,38 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
+         NPC — Pose tab (S4)
+    ═══════════════════════════════════════════════════════════════════════ -->
+    <div v-else-if="selection.kind === 'npc' && activeTab === 'Pose'" class="panel-body pose-panel">
+      <p v-if="!hasPoseCharacter" class="field-hint">Activating pose editor…</p>
+      <template v-else>
+        <div class="field-group">
+          <label class="field-label">Skeleton bones</label>
+          <div class="bone-list">
+            <button
+              v-for="bone in poseBoneList"
+              :key="bone"
+              :class="['bone-row', { active: selectedPoseBoneName === bone }]"
+              @click="emit('pose-bone-select', bone)"
+            >{{ bone }}</button>
+            <p v-if="poseBoneList.length === 0" class="field-hint">No bones found.</p>
+          </div>
+        </div>
+        <div class="pose-actions">
+          <button class="btn-pose-capture" @click="emit('pose-capture')" title="Capture current bone rotations as poseOverride">
+            Capture Pose
+          </button>
+          <button class="btn-pose-reset" @click="emit('pose-clear')" title="Reset all bones to bind pose">
+            Reset Bones
+          </button>
+        </div>
+        <p class="field-hint" style="margin-top:8px">
+          Select a bone, then use <kbd style="font-size:9px;background:#0e1c2e;padding:1px 4px;border-radius:2px;border:1px solid #1a3050">R</kbd> + drag to rotate (FK).
+        </p>
+      </template>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
          ZONE panel
     ═══════════════════════════════════════════════════════════════════════ -->
     <div v-else-if="selection.kind === 'zone'" class="panel-body">
@@ -402,6 +440,13 @@ const props = defineProps<{
   playerCharAssetId?: string
   /** D-5b: asset ID of the player animation pack GLB. */
   playerAnimPackAssetId?: string
+  // ─── S4: Pose Editor ────────────────────────────────────────────────────
+  /** Bone names from the loaded pose mesh skeleton. Empty until mesh is loaded. */
+  poseBoneList: string[]
+  /** Name of the bone currently attached to TransformControls, or null. */
+  selectedPoseBoneName: string | null
+  /** True when the pose character mesh is loaded and bones are available. */
+  hasPoseCharacter: boolean
 }>()
 
 const emit = defineEmits<{
@@ -422,6 +467,11 @@ const emit = defineEmits<{
   'pick-ambient-audio': []
   'set-ambient-audio-volume': [volume: number]
   'clear-ambient-audio': []
+  // ─── S4: Pose Editor ──────────────────────────────────────────────────────
+  'pose-tab-activate': []
+  'pose-bone-select': [boneName: string]
+  'pose-capture': []
+  'pose-clear': []
 }>()
 
 const assetStore = useAssetStore()
@@ -429,8 +479,13 @@ const assetStore = useAssetStore()
 // ─── Tab state ────────────────────────────────────────────────────────────────
 
 const npcTabs = ['Transform', 'Path', 'Asset'] as const
-type NpcTab = (typeof npcTabs)[number]
+type NpcTab = (typeof npcTabs)[number] | 'Pose'
 const activeTab = ref<NpcTab>('Transform')
+
+function onPoseTabClick(): void {
+  activeTab.value = 'Pose'
+  emit('pose-tab-activate')
+}
 
 watch(() => props.selection, () => {
   activeTab.value = 'Transform'
@@ -983,4 +1038,67 @@ const fmt = (n: number) => n.toFixed(2)
   transition: background 0.12s;
 }
 .btn-copy:hover { background: #2280cc; }
+
+/* ── Pose panel (S4) ─────────────────────────────────────────────────────── */
+.pose-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.bone-list {
+  max-height: 260px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #182a40 transparent;
+  border: 1px solid #182a40;
+  border-radius: 3px;
+}
+.bone-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #0e1622;
+  color: #5a8090;
+  font-family: monospace;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.bone-row:last-child { border-bottom: none; }
+.bone-row:hover { background: rgba(90,176,245,0.07); color: #7ab0d8; }
+.bone-row.active { background: rgba(90,176,245,0.14); color: #9dd4ff; }
+.pose-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+.btn-pose-capture {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #1a5a2a;
+  color: #44ff88;
+  border: 1px solid #2a7040;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.btn-pose-capture:hover { background: #226030; }
+.btn-pose-reset {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: transparent;
+  color: #4a6880;
+  border: 1px solid #1a2a3a;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.btn-pose-reset:hover { color: #ff8060; border-color: #4a2010; }
 </style>

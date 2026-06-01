@@ -30,6 +30,8 @@ export interface EditorNpcEntry {
   rotationY?: number
   /** Uniform scale (1 = original size). */
   scale?: number
+  /** Bone quaternion overrides authored in the Pose Editor. Applied before AnimationMixer at runtime. */
+  poseOverride?: Array<{ bone: string; q: [number, number, number, number] }>
 }
 
 export interface EditorZoneEntry {
