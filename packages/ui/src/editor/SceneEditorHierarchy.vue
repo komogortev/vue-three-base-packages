@@ -105,6 +105,7 @@
       >
         <span class="row-icon placed-dot">◈</span>
         <span class="row-label">{{ obj.label }}</span>
+        <button class="btn-remove" title="Remove" @click.stop="emit('remove-placed', obj.id)">×</button>
       </div>
     </div>
 
@@ -143,6 +144,7 @@ const emit = defineEmits<{
   'load-scene': [sceneId: string]
   'add-npc': []
   'add-zone': []
+  'remove-placed': [objectId: string]
 }>()
 
 // Live-queried saved scenes — most-recently-saved first.
@@ -299,6 +301,21 @@ function npcHasPath(entityId: string): boolean {
 .row-icon.exit-dot { color: #ffdd44; }
 .row-icon.prox-dot { color: #44ff88; }
 .row-icon.placed-dot { color: #c099ff; }
+
+.btn-remove {
+  background: transparent;
+  border: none;
+  color: #3a5060;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+}
+.row:hover .btn-remove { opacity: 1; }
+.btn-remove:hover { color: #ff6060; }
 .row-icon.player-icon { color: #00d4aa; }
 
 .badge-cam {
