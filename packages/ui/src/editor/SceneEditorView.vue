@@ -343,7 +343,7 @@ function onAssetPicked(assetId: string): void {
 // ─── Scene switching ──────────────────────────────────────────────────────────
 
 async function onSwitchScene(sceneId: string): Promise<void> {
-  if (sceneId === activeSceneId.value) return
+  if (sceneId === activeSceneId.value && !activeSavedSceneId.value) return
   activeSceneId.value = sceneId
   // Reset local NPC/zone state to new scene's prop config
   initLocalEntries()
