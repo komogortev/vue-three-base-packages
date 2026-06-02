@@ -451,8 +451,16 @@ export function useSceneEditorViewport(opts: {
     sceneObjects = []
     floorMeshes = []
 
-    // Clear marker groups
+    // Clear marker groups — dispose per-marker materials/geometries first
+    npcMarkerGroup.traverse(obj => {
+      const m = obj as THREE.Mesh
+      if (m.isMesh) { m.geometry?.dispose(); (m.material as THREE.Material)?.dispose() }
+    })
     npcMarkerGroup.clear()
+    zoneMarkerGroup.traverse(obj => {
+      const m = obj as THREE.Mesh
+      if (m.isMesh) { m.geometry?.dispose(); (m.material as THREE.Material)?.dispose() }
+    })
     zoneMarkerGroup.clear()
 
     npcSpheres.clear()
@@ -462,17 +470,32 @@ export function useSceneEditorViewport(opts: {
     npcLivePositions.value = new Map()
     zoneLivePositions.value = new Map()
 
-    // Clear placed objects
+    // Clear placed objects — dispose geometries/materials before removing from scene
+    for (const root of placedMeshRoots.values()) {
+      root.traverse(child => {
+        const mesh = child as THREE.Mesh
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose()
+          const mat = mesh.material
+          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
+          else (mat as THREE.Material)?.dispose()
+        }
+      })
+    }
     placedGroup.clear()
     placedMeshRoots.clear()
     placedHitBoxes.clear()
     placedObjects.value = []
 
-    // Clear all path visualizations
+    // Clear all path visualizations — dispose line + dot materials
     for (const [, viz] of npcPathViz) {
       pathGroup.remove(viz.line)
       pathGroup.remove(viz.dots)
       viz.line.geometry.dispose()
+      viz.dots.traverse(obj => {
+        const m = obj as THREE.Mesh
+        if (m.isMesh) (m.material as THREE.Material)?.dispose()
+      })
     }
     npcPathViz.clear()
   }
@@ -652,8 +675,8 @@ export function useSceneEditorViewport(opts: {
         charWalkAction.setEffectiveWeight(0)
         charWalkAction.play()
       }
-    } catch {
-      // Load failed — charRoot stays null, capsule used as fallback
+    } catch (e) {
+      console.warn('[SceneEditor] Play character load failed:', e)
     }
   }
 
@@ -1218,6 +1241,10 @@ export function useSceneEditorViewport(opts: {
       pathGroup.remove(existing.line)
       pathGroup.remove(existing.dots)
       existing.line.geometry.dispose()
+      existing.dots.traverse(obj => {
+        const m = obj as THREE.Mesh
+        if (m.isMesh) (m.material as THREE.Material)?.dispose()
+      })
     }
     npcPathViz.delete(entityId)
 
