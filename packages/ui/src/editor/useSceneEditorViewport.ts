@@ -24,6 +24,79 @@ interface PlaceMode {
 
 const PLACE_MODE_IDLE: PlaceMode = { active: false, objectId: '', assetId: '', blobUrl: '', label: '' }
 
+// ─── IK chains (Mixamo rig) ───────────────────────────────────────────────────
+
+const MIXAMO_IK_CHAINS: Record<string, { effector: string; links: string[] }> = {
+  rightArm: { effector: 'mixamorigRightHand',  links: ['mixamorigRightForeArm', 'mixamorigRightArm'] },
+  leftArm:  { effector: 'mixamorigLeftHand',   links: ['mixamorigLeftForeArm',  'mixamorigLeftArm'] },
+  rightLeg: { effector: 'mixamorigRightFoot',  links: ['mixamorigRightLeg',     'mixamorigRightUpLeg'] },
+  leftLeg:  { effector: 'mixamorigLeftFoot',   links: ['mixamorigLeftLeg',      'mixamorigLeftUpLeg'] },
+}
+
+/** Simple iterative CCD IK — works on named bones, no skeleton modification needed. */
+function runCcdIk(
+  sm: THREE.SkinnedMesh,
+  effectorName: string,
+  linkNames: string[],
+  targetWorldPos: THREE.Vector3,
+  iterations = 10,
+): void {
+  const effector = sm.skeleton.getBoneByName(effectorName)
+  if (!effector) return
+  const links = linkNames
+    .map(n => sm.skeleton.getBoneByName(n))
+    .filter((b): b is THREE.Bone => b != null)
+  if (links.length === 0) return
+
+  const _effectorPos = new THREE.Vector3()
+  const _linkPos = new THREE.Vector3()
+  const _toEffector = new THREE.Vector3()
+  const _toTarget = new THREE.Vector3()
+  const _axis = new THREE.Vector3()
+  const _rotQ = new THREE.Quaternion()
+  const _worldQ = new THREE.Quaternion()
+  const _parentWorldQ = new THREE.Quaternion()
+
+  for (let i = 0; i < iterations; i++) {
+    for (const link of links) {
+      link.updateWorldMatrix(true, false)
+      effector.updateWorldMatrix(true, false)
+
+      _effectorPos.setFromMatrixPosition(effector.matrixWorld)
+      _linkPos.setFromMatrixPosition(link.matrixWorld)
+
+      _toEffector.subVectors(_effectorPos, _linkPos)
+      _toTarget.subVectors(targetWorldPos, _linkPos)
+
+      const lenE = _toEffector.length()
+      const lenT = _toTarget.length()
+      if (lenE < 1e-6 || lenT < 1e-6) continue
+      _toEffector.divideScalar(lenE)
+      _toTarget.divideScalar(lenT)
+
+      const dot = Math.max(-1, Math.min(1, _toEffector.dot(_toTarget)))
+      if (dot >= 1 - 1e-6) continue
+
+      _axis.crossVectors(_toEffector, _toTarget)
+      if (_axis.lengthSq() < 1e-12) continue
+      _axis.normalize()
+
+      _rotQ.setFromAxisAngle(_axis, Math.acos(dot))
+      link.getWorldQuaternion(_worldQ)
+      _rotQ.multiply(_worldQ)  // _rotQ = rotQ ⊗ worldQ = new worldQ
+
+      if (link.parent) {
+        link.parent.getWorldQuaternion(_parentWorldQ).invert()
+        _parentWorldQ.multiply(_rotQ)  // localQ = invParent ⊗ newWorldQ
+        link.quaternion.copy(_parentWorldQ)
+      } else {
+        link.quaternion.copy(_rotQ)
+      }
+      link.updateWorldMatrix(false, true)
+    }
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export interface SceneEditorViewportReturn {
@@ -78,10 +151,14 @@ export interface SceneEditorViewportReturn {
   selectPoseBone: (boneName: string) => void
   /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
   capturePoseSnapshot: () => Array<{ bone: string; q: [number, number, number, number] }>
-  /** Reset all skeleton bones to bind pose and detach TC from any active bone. */
+  /** Reset all skeleton bones to bind pose and detach TC from any active bone/IK target. */
   resetPoseBones: () => void
   /** Remove the pose mesh + SkeletonHelper from the scene and release TC. */
   detachPoseNpc: () => void
+  /** IK chain names available for the loaded pose mesh (e.g. 'rightArm', 'leftLeg'). */
+  ikChainNames: Readonly<Ref<string[]>>
+  /** Attach TransformControls in translate mode to the named IK target sphere. */
+  selectIkTarget: (chainName: string) => void
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -187,6 +264,12 @@ export function useSceneEditorViewport(opts: {
   let poseHelper: THREE.SkeletonHelper | null = null
   let poseHasBoneAttached = false  // true when TC is attached to a bone via selectPoseBone
 
+  // IK state — persistent group added to scene in init(); children managed by attachPoseNpc/detachPoseNpc
+  const ikTargetGroup = new THREE.Group()
+  const ikTargetMeshes = new Map<string, THREE.Mesh>()
+  let ikActiveChainName: string | null = null
+  const ikChainNames = ref<string[]>([])
+
   // Delta time
   const clock = new THREE.Clock()
 
@@ -249,6 +332,19 @@ export function useSceneEditorViewport(opts: {
         const obj = transformControls.object
         if (obj) { const s = obj.scale.x; obj.scale.set(s, s, s) }
       }
+
+      // IK: TC is on an IK target sphere — run solver to update bone chain
+      if (ikActiveChainName !== null && poseSkinnedMesh) {
+        const chain = MIXAMO_IK_CHAINS[ikActiveChainName]
+        const sphere = ikTargetMeshes.get(ikActiveChainName)
+        if (chain && sphere) {
+          const worldPos = new THREE.Vector3()
+          sphere.getWorldPosition(worldPos)
+          runCcdIk(poseSkinnedMesh, chain.effector, chain.links, worldPos)
+        }
+        return  // skip NPC/zone live-position updates while dragging IK target
+      }
+
       const sel = selection.value
       if (sel?.kind === 'npc') {
         const root = npcMarkerRoots.get(sel.entityId)
@@ -281,6 +377,7 @@ export function useSceneEditorViewport(opts: {
     scene.add(zoneMarkerGroup)
     scene.add(pathGroup)
     scene.add(placedGroup)
+    scene.add(ikTargetGroup)
 
     canvas.addEventListener('mousedown', onMouseDown)
     canvas.addEventListener('mouseup', onMouseUp)
@@ -561,9 +658,10 @@ export function useSceneEditorViewport(opts: {
   // ─── Pose editor ─────────────────────────────────────────────────────────────
 
   function detachPoseNpc(): void {
-    if (poseHasBoneAttached) {
+    if (poseHasBoneAttached || ikActiveChainName !== null) {
       transformControls.detach()
       poseHasBoneAttached = false
+      ikActiveChainName = null
       transformControls.setMode(transformMode.value)
       // Re-attach TC to the NPC marker if that NPC is still selected
       const sel = selection.value
@@ -575,6 +673,14 @@ export function useSceneEditorViewport(opts: {
         transformControls.enabled = false
       }
     }
+    // Clean up IK target spheres
+    for (const [, sphere] of ikTargetMeshes) {
+      sphere.geometry.dispose()
+      ;(sphere.material as THREE.Material).dispose()
+    }
+    ikTargetGroup.clear()
+    ikTargetMeshes.clear()
+    ikChainNames.value = []
     if (poseHelper) {
       scene?.remove(poseHelper)
       poseHelper.geometry.dispose()
@@ -618,6 +724,26 @@ export function useSceneEditorViewport(opts: {
       poseHelper = new THREE.SkeletonHelper(sm)
       scene.add(poseHelper)
 
+      // Build IK target spheres at effector world positions for recognized chains
+      const newChainNames: string[] = []
+      for (const [chainName, chain] of Object.entries(MIXAMO_IK_CHAINS)) {
+        const effector = sm.skeleton.getBoneByName(chain.effector)
+        if (!effector) continue
+        effector.updateWorldMatrix(true, false)
+        const worldPos = new THREE.Vector3().setFromMatrixPosition(effector.matrixWorld)
+        const color = chainName.startsWith('right') ? '#ff6644' : '#44ff99'
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(0.06, 8, 6),
+          new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.9 }),
+        )
+        sphere.position.copy(worldPos)
+        sphere.renderOrder = 999
+        ikTargetGroup.add(sphere)
+        ikTargetMeshes.set(chainName, sphere)
+        newChainNames.push(chainName)
+      }
+      ikChainNames.value = newChainNames
+
       return sm.skeleton.bones.map(b => b.name)
     } catch (e) {
       console.warn('[PoseEditor] Failed to load character mesh:', e)
@@ -634,6 +760,18 @@ export function useSceneEditorViewport(opts: {
     transformControls.attach(bone)
     transformControls.enabled = true
     poseHasBoneAttached = true
+    ikActiveChainName = null
+  }
+
+  function selectIkTarget(chainName: string): void {
+    const sphere = ikTargetMeshes.get(chainName)
+    if (!sphere || !poseSkinnedMesh) return
+    transformControls.detach()
+    transformControls.setMode('translate')
+    transformControls.attach(sphere)
+    transformControls.enabled = true
+    poseHasBoneAttached = false
+    ikActiveChainName = chainName
   }
 
   function capturePoseSnapshot(): Array<{ bone: string; q: [number, number, number, number] }> {
@@ -647,9 +785,19 @@ export function useSceneEditorViewport(opts: {
   function resetPoseBones(): void {
     if (!poseSkinnedMesh) return
     poseSkinnedMesh.skeleton.pose()
-    if (poseHasBoneAttached) {
+    // Reposition IK spheres back to bind-pose effector world positions
+    for (const [chainName, sphere] of ikTargetMeshes) {
+      const chain = MIXAMO_IK_CHAINS[chainName]
+      if (!chain) continue
+      const effector = poseSkinnedMesh.skeleton.getBoneByName(chain.effector)
+      if (!effector) continue
+      effector.updateWorldMatrix(true, false)
+      sphere.position.setFromMatrixPosition(effector.matrixWorld)
+    }
+    if (poseHasBoneAttached || ikActiveChainName !== null) {
       transformControls.detach()
       poseHasBoneAttached = false
+      ikActiveChainName = null
       transformControls.setMode(transformMode.value)
       const sel = selection.value
       if (sel?.kind === 'npc') {
@@ -1304,6 +1452,16 @@ export function useSceneEditorViewport(opts: {
       }
     }
 
+    // 0.5. IK target sphere hit? (pose editor mode — takes priority over NPC marker)
+    if (ikTargetMeshes.size > 0) {
+      const ikHits = raycaster.intersectObjects([...ikTargetMeshes.values()])
+      if (ikHits.length > 0) {
+        for (const [name, mesh] of ikTargetMeshes) {
+          if (mesh === ikHits[0].object) { selectIkTarget(name); return }
+        }
+      }
+    }
+
     // 1. NPC sphere hit?
     const npcHits = raycaster.intersectObjects([...npcSpheres.values()])
     if (npcHits.length > 0) {
@@ -1510,5 +1668,7 @@ export function useSceneEditorViewport(opts: {
     capturePoseSnapshot,
     resetPoseBones,
     detachPoseNpc,
+    ikChainNames: shallowReadonly(ikChainNames),
+    selectIkTarget,
   }
 }

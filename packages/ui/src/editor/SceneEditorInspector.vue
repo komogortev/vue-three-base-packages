@@ -307,21 +307,42 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
-         NPC — Pose tab (S4)
+         NPC — Pose tab (S4-c)
     ═══════════════════════════════════════════════════════════════════════ -->
     <div v-else-if="selection.kind === 'npc' && activeTab === 'Pose'" class="panel-body pose-panel">
       <p v-if="!hasPoseCharacter" class="field-hint">Activating pose editor…</p>
       <template v-else>
+        <!-- IK chains -->
+        <div v-if="ikChainNames.length > 0" class="field-group">
+          <label class="field-label">IK Chains</label>
+          <div class="ik-chain-row">
+            <button
+              v-for="chain in ikChainNames"
+              :key="chain"
+              :class="['ik-chain-btn', { active: activeIkChainName === chain }]"
+              :title="`Drag IK target for ${chain}`"
+              @click="emit('ik-chain-select', chain)"
+            >{{ chain }}</button>
+          </div>
+          <p class="field-hint" style="margin-top:4px">Drag sphere in viewport to solve IK.</p>
+        </div>
+        <!-- Bone list with filter -->
         <div class="field-group">
           <label class="field-label">Skeleton bones</label>
+          <input
+            v-model="boneFilter"
+            class="bone-filter"
+            placeholder="Filter bones…"
+            spellcheck="false"
+          />
           <div class="bone-list">
             <button
-              v-for="bone in poseBoneList"
+              v-for="bone in filteredBones"
               :key="bone"
               :class="['bone-row', { active: selectedPoseBoneName === bone }]"
               @click="emit('pose-bone-select', bone)"
             >{{ bone }}</button>
-            <p v-if="poseBoneList.length === 0" class="field-hint">No bones found.</p>
+            <p v-if="filteredBones.length === 0" class="field-hint">No matching bones.</p>
           </div>
         </div>
         <div class="pose-actions">
@@ -333,7 +354,7 @@
           </button>
         </div>
         <p class="field-hint" style="margin-top:8px">
-          Select a bone, then use <kbd style="font-size:9px;background:#0e1c2e;padding:1px 4px;border-radius:2px;border:1px solid #1a3050">R</kbd> + drag to rotate (FK).
+          Select a bone → <kbd style="font-size:9px;background:#0e1c2e;padding:1px 4px;border-radius:2px;border:1px solid #1a3050">R</kbd> drag (FK). Click a chain button above to drag its IK sphere.
         </p>
       </template>
     </div>
@@ -447,6 +468,10 @@ const props = defineProps<{
   selectedPoseBoneName: string | null
   /** True when the pose character mesh is loaded and bones are available. */
   hasPoseCharacter: boolean
+  /** Available IK chain names from the viewport (e.g. rightArm, leftLeg). */
+  ikChainNames: string[]
+  /** Name of the IK chain currently active in the viewport, or null. */
+  activeIkChainName: string | null
 }>()
 
 const emit = defineEmits<{
@@ -472,6 +497,7 @@ const emit = defineEmits<{
   'pose-bone-select': [boneName: string]
   'pose-capture': []
   'pose-clear': []
+  'ik-chain-select': [chainName: string]
 }>()
 
 const assetStore = useAssetStore()
@@ -482,13 +508,22 @@ const npcTabs = ['Transform', 'Path', 'Asset'] as const
 type NpcTab = (typeof npcTabs)[number] | 'Pose'
 const activeTab = ref<NpcTab>('Transform')
 
+const boneFilter = ref('')
+const filteredBones = computed(() =>
+  boneFilter.value
+    ? props.poseBoneList.filter(b => b.toLowerCase().includes(boneFilter.value.toLowerCase()))
+    : props.poseBoneList
+)
+
 function onPoseTabClick(): void {
   activeTab.value = 'Pose'
+  boneFilter.value = ''
   emit('pose-tab-activate')
 }
 
 watch(() => props.selection, () => {
   activeTab.value = 'Transform'
+  boneFilter.value = ''
   if (pathEditMode.value) stopPathEditMode()
 })
 
@@ -1101,4 +1136,39 @@ const fmt = (n: number) => n.toFixed(2)
   transition: all 0.1s;
 }
 .btn-pose-reset:hover { color: #ff8060; border-color: #4a2010; }
+
+.bone-filter {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0a1420;
+  border: 1px solid #1a3050;
+  border-radius: 3px;
+  color: #8bafc8;
+  font-size: 11px;
+  padding: 4px 6px;
+  margin-bottom: 4px;
+  outline: none;
+}
+.bone-filter:focus { border-color: #3a6a90; }
+.bone-filter::placeholder { color: #2a4060; }
+
+.ik-chain-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.ik-chain-btn {
+  background: #0e1c2e;
+  border: 1px solid #1a3050;
+  border-radius: 3px;
+  color: #8bafc8;
+  font-family: monospace;
+  font-size: 10px;
+  padding: 3px 7px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.ik-chain-btn:hover { background: rgba(90,176,245,0.07); color: #7ab0d8; }
+.ik-chain-btn.active { background: rgba(90,176,245,0.18); color: #9dd4ff; border-color: #3a6a90; }
 </style>

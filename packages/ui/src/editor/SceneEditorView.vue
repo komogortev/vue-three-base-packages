@@ -164,10 +164,13 @@
       :pose-bone-list="poseBoneList"
       :selected-pose-bone-name="poseSelectedBone"
       :has-pose-character="poseBoneList.length > 0"
+      :ik-chain-names="ikChainNames"
+      :active-ik-chain-name="activeIkChainName"
       @pose-tab-activate="onPoseTabActivate"
       @pose-bone-select="onPoseBoneSelect"
       @pose-capture="onPoseCapture"
       @pose-clear="onPoseClear"
+      @ik-chain-select="onIkChainSelect"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
@@ -307,6 +310,8 @@ const {
   capturePoseSnapshot,
   resetPoseBones,
   detachPoseNpc,
+  ikChainNames,
+  selectIkTarget,
 } = useSceneEditorViewport({
   canvas: canvasRef,
   config: effectiveConfig.value,
@@ -322,6 +327,7 @@ const assetStore = useAssetStore()
 // ─── Pose editor reactive state (S4) ─────────────────────────────────────────
 
 const { boneList: poseBoneList, selectedBoneName: poseSelectedBone, setBoneList: setPoseBoneList, selectBone: setPoseSelectedBone, reset: resetPoseEditor } = usePoseEditor()
+const activeIkChainName = ref<string | null>(null)
 
 function onAssetPicked(assetId: string): void {
   const asset = assetStore.getById(assetId)
@@ -347,9 +353,10 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   ambientAudioVolume.value = undefined
   // Clear waypoint display — new scene has its own localStorage keys
   waypointMap.value = new Map()
-  // Reset path-edit mode
+  // Reset path-edit mode and pose IK state
   isPathEditing.value = false
   setPathEditMode(false)
+  activeIkChainName.value = null
   // Reload viewport with effective config (local NPC/zone edits merged in)
   await reinitScene(effectiveConfig.value)
   // Restore waypoints for new scene
@@ -449,6 +456,7 @@ watch(selection, (newSel, oldSel) => {
   if (!isSameNpc) {
     detachPoseNpc()
     resetPoseEditor()
+    activeIkChainName.value = null
   }
 })
 
@@ -729,8 +737,14 @@ function onPoseClear(): void {
   if (sel?.kind !== 'npc') return
   resetPoseBones()
   setPoseSelectedBone(null)
+  activeIkChainName.value = null
   onNpcChanged(sel.entityId, { poseOverride: undefined })
   flashStatus('Pose reset to bind')
+}
+
+function onIkChainSelect(chainName: string): void {
+  activeIkChainName.value = chainName
+  selectIkTarget(chainName)
 }
 
 // ─── TS config export (F-13) ─────────────────────────────────────────────────
