@@ -37,6 +37,7 @@
       @load-scene="onLoadScene"
       @add-npc="onAddNpc"
       @add-zone="onAddZone"
+      @remove-placed="onRemovePlaced"
     />
 
     <!-- Centre: Viewport -->
@@ -304,6 +305,7 @@ const {
   removeNpcMarker,
   addZoneMarker,
   removeZoneMarker,
+  removePlacedObject,
   setPlayCharacterAsset,
   attachPoseNpc,
   selectPoseBone,
@@ -684,6 +686,10 @@ function onAddZone(): void {
 function onRemoveZone(id: string): void {
   localZones.value = localZones.value.filter(z => z.id !== id)
   removeZoneMarker(id)
+}
+
+function onRemovePlaced(objectId: string): void {
+  removePlacedObject(objectId)
 }
 
 function onNpcChanged(entityId: string, patch: Partial<EditorNpcEntry>): void {

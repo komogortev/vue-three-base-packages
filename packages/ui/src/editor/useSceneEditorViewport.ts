@@ -139,6 +139,8 @@ export interface SceneEditorViewportReturn {
   addZoneMarker: (zone: import('./sceneEditorTypes').EditorZoneEntry) => void
   /** Remove a zone marker at runtime (F-11). */
   removeZoneMarker: (id: string) => void
+  /** Remove a placed object from the scene and placedObjects list. */
+  removePlacedObject: (objectId: string) => void
   /**
    * D-5b: Set play-sim character GLB. Pass null blobUrl to revert to capsule proxy.
    * Call when user picks or clears the player character in the Scene inspector.
@@ -536,6 +538,31 @@ export function useSceneEditorViewport(opts: {
     zoneLivePositions.value = next
     if (selection.value?.kind === 'zone' && selection.value.id === id) {
       setSelection({ kind: 'scene' })
+    }
+  }
+
+  function removePlacedObject(objectId: string): void {
+    const root = placedMeshRoots.get(objectId)
+    if (root) {
+      root.traverse(child => {
+        const mesh = child as THREE.Mesh
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose()
+          const mat = mesh.material
+          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
+          else (mat as THREE.Material)?.dispose()
+        }
+      })
+      placedGroup.remove(root)
+    }
+    placedMeshRoots.delete(objectId)
+    placedHitBoxes.delete(objectId)
+    placedObjects.value = placedObjects.value.filter(p => p.id !== objectId)
+    if (selection.value?.kind === 'placed' && selection.value.objectId === objectId) {
+      setSelection({ kind: 'scene' })
+    } else if (root && transformControls.object === root) {
+      transformControls.detach()
+      transformControls.enabled = false
     }
   }
 
@@ -1537,6 +1564,12 @@ export function useSceneEditorViewport(opts: {
       if (e.code === 'KeyT') setTransformMode('translate')
       if (e.code === 'KeyR') setTransformMode('rotate')
       if (e.code === 'KeyS') setTransformMode('scale')
+      if (e.code === 'Delete' || e.code === 'Backspace') {
+        if (selection.value?.kind === 'placed') {
+          removePlacedObject(selection.value.objectId)
+          return
+        }
+      }
     }
   }
 
@@ -1662,6 +1695,7 @@ export function useSceneEditorViewport(opts: {
     removeNpcMarker,
     addZoneMarker,
     removeZoneMarker,
+    removePlacedObject,
     setPlayCharacterAsset,
     attachPoseNpc,
     selectPoseBone,
