@@ -4,13 +4,13 @@
 
 _Last updated: 2026-06-01_
 
-**What's working:** All packages build cleanly. **Phase 5 S4 (Pose Editor) fully complete — S4-a (FK) + S4-b (CCD IK) + S4-c (polish) all shipped on branch `feat/t-f7-glb-normalization`.** S4-c adds: bone search filter in Pose tab (live case-insensitive `<input>`, resets on NPC deselect); IK hint UI (4 chain buttons for rightArm/leftArm/rightLeg/leftLeg, active chain highlighted, wired to `selectIkTarget()`/`activeIkChainName` in SceneEditorView). **Vitest foundation added to `@base/ui`**: vitest 2.x installed, `vitest.config.ts` + tsconfig `exclude` pattern, 19 passing tests (`SceneEditorExporter` × 12 + `usePoseEditor` × 7). Prior: Phase 5 Room Package pipeline complete on `main` (S1 Dexie v3 + audio, S2 export, S3 room player, T-F7 GLB normalization, S4-a FK, S4-b CCD IK). Full pipeline end-to-end: Editor export → ZIP → Load Room → FPV walkthrough.
+**What's working:** All 11 packages build cleanly. **Phase 5 S4 (Pose Editor) fully complete on `main`**: T-F7 (`normalizeGLTFOrigin()` pivot-wrap) + S4-a (FK foundation — `usePoseEditor.ts`, `EditorNpcEntry.poseOverride`, viewport pose mesh + SkeletonHelper + bone TC) squash-merged as PR #31; S4-b (CCD IK solver `runCcdIk`, 4 IK target spheres, `selectIkTarget()` API, `RoomPlayerModule` poseOverride apply-before-render) + S4-c (bone search filter in Pose tab, IK hint UI — 4 chain buttons, vitest 2.x foundation, 19 passing tests) merged as PR #32. Prior: Phase 5 S1/S2/S3 (Dexie v3, audio kind, room package export/load, `AssetLibraryDialog`) via PRs #29+#30. Full pipeline end-to-end: Editor export → ZIP → Load Room → FPV walkthrough.
 
 **What's broken / incomplete:** `water__entry__fall.fbx` is a placeholder. `failJump` uses "Straight Landing" as mild substitute. `@base/pwa-core` stub. `retargetMixamoClipsToCharacter` untested (WebGL context needed).
 
 ## Active Work
 
-- Phase 5 S5 — Animation Recorder (`capturePose()` as keyframe primitive, `QuaternionKeyframeTrack` + `AnimationClip.optimize()` + `GLTFExporter`)
+- **S5 Animation Recorder** — `capturePose()` keyframe primitive, `QuaternionKeyframeTrack` + `AnimationClip.optimize()` + `GLTFExporter`, Dexie animation-pack.
 
 ## Blockers & Open Questions
 
@@ -19,12 +19,13 @@ _Last updated: 2026-06-01_
 
 ## Next Session
 
-> **First action of next Claude Code session:** smoke-test custom subagents — invoke `CodeReview` with a single-file Read request; success = `tool_uses ≥ 1`. If still `tool_uses: 0`, rename `*.agent.md` → `*.md` per `feedback_codereview_agent_broken_session.md`. Then start Phase 3 F-9 (NPC mesh binding via AssetPicker).
+Begin S5 Animation Recorder.
 
 ## Decision Log
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-06-01** — PR #32 (S4-b + S4-c) rebased onto updated main before merge. Root cause: PR #31 was a squash-merge that included both T-F7 and S4-a; branch still carried those as separate commits → CONFLICTING. Rebase dropped duplicates, leaving only S4-b + S4-c on top of current main. Force-pushed; PR merged clean.
 - **2026-06-01** — Phase 5 S4-c shipped + vitest foundation: bone search filter + IK hint UI in Pose inspector tab; `@base/ui` gains vitest 2.x with 19 passing tests (`SceneEditorExporter` × 12 + `usePoseEditor` × 7). Phase 5 S4 fully complete (a + b + c). S5 Animation Recorder is next.
 - **2026-05-20** — Editor Phase 2 closed: W3 PR #24 (`AssetPicker` modal + Use… wiring in AssetsSection + index.ts export) merged 2026-05-17; CI hotfix PR #25 (`engine-core` + `scene-builder` tsconfig `skipLibCheck` + `exclude src/**/*.test.ts` to match sibling pattern) merged 2026-05-20 restoring green main since 2026-05-12 breakage. F-A1/F-A2/F-A3/F-A4 all ✅. AssetPicker exported from `@base/ui` ready for Phase 3 F-9 consumption.
 - **2026-05-11 EOD** — Editor Phase 2 W2 (asset registry + upload + thumbnails) shipped, merged as PR #23 on 2026-05-12.
