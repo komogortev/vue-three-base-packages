@@ -25,6 +25,7 @@ Begin S5 Animation Recorder.
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-06-01** — Editor: delete placed objects — `removePlacedObject()` added to `@base/ui` viewport composable. × button (hover-reveal, red on hover) on each Placed Objects hierarchy row + Delete/Backspace key in orbit mode. Geometry + material disposal on removal prevents GPU memory leak. TC detach guard added for edge case where deleted root is current TC target. PR #33 open on `feat/editor-delete-placed-objects`.
 - **2026-06-01** — PR #32 (S4-b + S4-c) rebased onto updated main before merge. Root cause: PR #31 was a squash-merge that included both T-F7 and S4-a; branch still carried those as separate commits → CONFLICTING. Rebase dropped duplicates, leaving only S4-b + S4-c on top of current main. Force-pushed; PR merged clean.
 - **2026-06-01** — Phase 5 S4-c shipped + vitest foundation: bone search filter + IK hint UI in Pose inspector tab; `@base/ui` gains vitest 2.x with 19 passing tests (`SceneEditorExporter` × 12 + `usePoseEditor` × 7). Phase 5 S4 fully complete (a + b + c). S5 Animation Recorder is next.
 - **2026-05-20** — Editor Phase 2 closed: W3 PR #24 (`AssetPicker` modal + Use… wiring in AssetsSection + index.ts export) merged 2026-05-17; CI hotfix PR #25 (`engine-core` + `scene-builder` tsconfig `skipLibCheck` + `exclude src/**/*.test.ts` to match sibling pattern) merged 2026-05-20 restoring green main since 2026-05-12 breakage. F-A1/F-A2/F-A3/F-A4 all ✅. AssetPicker exported from `@base/ui` ready for Phase 3 F-9 consumption.
