@@ -186,7 +186,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, toRaw } from 'vue'
 import { onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
 import { nanoid } from 'nanoid'
@@ -615,11 +615,12 @@ async function saveScene(): Promise<void> {
       name: save.name!,
       savedAt: save.savedAt,
       placedObjects: save.placedObjects,
-      config: effectiveConfig.value,
+      config: { ...toRaw(effectiveConfig.value), npcs: effectiveConfig.value.npcs?.map(toRaw), zones: effectiveConfig.value.zones?.map(toRaw) },
     })
     const n = save.placedObjects.length
     flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}`)
-  } catch {
+  } catch (err) {
+    console.error('[saveScene] failed:', err)
     flashStatus('Save failed')
   } finally {
     isSaving.value = false
@@ -635,7 +636,8 @@ async function onExportZip(): Promise<void> {
     await exportSandboxZip(buildSave())
     const n = placedObjects.value.length
     flashStatus(`ZIP exported — ${n} object${n !== 1 ? 's' : ''}`)
-  } catch {
+  } catch (err) {
+    console.error('[onExportZip] failed:', err)
     flashStatus('ZIP export failed')
   } finally {
     isExporting.value = false
@@ -653,7 +655,8 @@ async function onExportRoomPackage(): Promise<void> {
     const n = placedObjects.value.length
     const npcCount = localNpcs.value.length
     flashStatus(`Room package exported — ${n} object${n !== 1 ? 's' : ''}, ${npcCount} NPC${npcCount !== 1 ? 's' : ''}`)
-  } catch {
+  } catch (err) {
+    console.error('[onExportRoomPackage] failed:', err)
     flashStatus('Room package export failed')
   } finally {
     isExportingRoom.value = false
