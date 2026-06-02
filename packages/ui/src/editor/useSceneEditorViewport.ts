@@ -1170,7 +1170,8 @@ export function useSceneEditorViewport(opts: {
         const gltf = await loader.loadAsync(obj.blobUrl)
         localBbox.setFromObject(gltf.scene)
         root.add(gltf.scene)
-      } catch {
+      } catch (e) {
+        console.warn('[restorePlacedObjects] GLB load failed for', obj.id, e)
         const proxy = new THREE.Mesh(
           new THREE.BoxGeometry(1, 1, 1),
           new THREE.MeshBasicMaterial({ color: '#c099ff', wireframe: true }),

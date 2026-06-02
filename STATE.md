@@ -2,7 +2,7 @@
 
 ## Status
 
-_Last updated: 2026-06-01_
+_Last updated: 2026-06-02_
 
 **What's working:** All 11 packages build cleanly. **Phase 5 S4 (Pose Editor) fully complete on `main`**: T-F7 (`normalizeGLTFOrigin()` pivot-wrap) + S4-a (FK foundation — `usePoseEditor.ts`, `EditorNpcEntry.poseOverride`, viewport pose mesh + SkeletonHelper + bone TC) squash-merged as PR #31; S4-b (CCD IK solver `runCcdIk`, 4 IK target spheres, `selectIkTarget()` API, `RoomPlayerModule` poseOverride apply-before-render) + S4-c (bone search filter in Pose tab, IK hint UI — 4 chain buttons, vitest 2.x foundation, 19 passing tests) merged as PR #32. Prior: Phase 5 S1/S2/S3 (Dexie v3, audio kind, room package export/load, `AssetLibraryDialog`) via PRs #29+#30. Full pipeline end-to-end: Editor export → ZIP → Load Room → FPV walkthrough.
 
@@ -25,6 +25,8 @@ Begin S5 Animation Recorder.
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-06-02** — fix(ui): `saveScene()` was silently failing — `effectiveConfig` spreads `localNpcs`/`localZones` (deep-reactive `ref` arrays) whose `.value` returns Vue Proxy objects; IndexedDB structured clone throws `DataCloneError`, swallowed by bare `catch {}`. Fix: `toRaw()` on spread + `.map(toRaw)` on NPC/zone arrays before `assetDb.scenes.put()`. `console.error` added to all 3 editor catch blocks. PR #34.
+- **2026-06-01** — Editor: delete placed objects — `removePlacedObject()` added to `@base/ui` viewport composable. × button (hover-reveal, red on hover) on each Placed Objects hierarchy row + Delete/Backspace key in orbit mode. Geometry + material disposal on removal prevents GPU memory leak. TC detach guard added for edge case where deleted root is current TC target. PR #33 open on `feat/editor-delete-placed-objects`.
 - **2026-06-01** — PR #32 (S4-b + S4-c) rebased onto updated main before merge. Root cause: PR #31 was a squash-merge that included both T-F7 and S4-a; branch still carried those as separate commits → CONFLICTING. Rebase dropped duplicates, leaving only S4-b + S4-c on top of current main. Force-pushed; PR merged clean.
 - **2026-06-01** — Phase 5 S4-c shipped + vitest foundation: bone search filter + IK hint UI in Pose inspector tab; `@base/ui` gains vitest 2.x with 19 passing tests (`SceneEditorExporter` × 12 + `usePoseEditor` × 7). Phase 5 S4 fully complete (a + b + c). S5 Animation Recorder is next.
 - **2026-05-20** — Editor Phase 2 closed: W3 PR #24 (`AssetPicker` modal + Use… wiring in AssetsSection + index.ts export) merged 2026-05-17; CI hotfix PR #25 (`engine-core` + `scene-builder` tsconfig `skipLibCheck` + `exclude src/**/*.test.ts` to match sibling pattern) merged 2026-05-20 restoring green main since 2026-05-12 breakage. F-A1/F-A2/F-A3/F-A4 all ✅. AssetPicker exported from `@base/ui` ready for Phase 3 F-9 consumption.
