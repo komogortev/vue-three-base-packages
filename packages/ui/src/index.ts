@@ -43,7 +43,7 @@ export { EDITOR_ORBIT_BOOKMARKS, EDITOR_ORBIT_LOCOMOTION_IDS } from './editor/ed
 export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
 export { serializeEditorConfigTS, buildRoomPackageScene } from './editor/SceneEditorExporter'
 export { exportRoomPackage } from './editor/exportRoomPackage'
-export { loadRoomPackage } from './editor/loadRoomPackage'
+export { loadRoomPackage, loadRoomFromDb } from './editor/loadRoomPackage'
 export type { LoadedRoomPackage } from './editor/loadRoomPackage'
 export type { RoomPackageManifest, RoomPackageScene } from './editor/roomPackageTypes'
 
