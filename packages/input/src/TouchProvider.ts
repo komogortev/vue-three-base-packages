@@ -19,17 +19,30 @@ interface JoystickState {
  */
 export class TouchProvider {
   private overlay!: HTMLDivElement
+  private container!: HTMLElement
+  /** Saved so unmount() can restore the container's position style exactly as found. */
+  private savedPosition = ''
   private joystick: JoystickState | null = null
   private readonly maxRadius = 64
 
   constructor(private readonly emit: InputEmitter) {}
 
   mount(container: HTMLElement): void {
+    this.container = container
+    this.savedPosition = container.style.position   // typically '' or 'absolute'
+
     this.overlay = document.createElement('div')
     this.overlay.style.cssText =
       'position:absolute;inset:0;touch-action:none;user-select:none;-webkit-user-select:none;'
 
-    container.style.position = 'relative'
+    // Ensure the overlay (position:absolute) has a positioning context.
+    // Only set an INLINE position when none is already set inline — hosts that
+    // position the container via a CSS class (e.g. Tailwind `absolute`) still get
+    // the `relative` inline override here, which unmount() restores. The guard only
+    // avoids clobbering a host's explicit *inline* position.
+    if (!container.style.position) {
+      container.style.position = 'relative'
+    }
     container.appendChild(this.overlay)
 
     this.overlay.addEventListener('touchstart',  this.onTouchStart,  { passive: false })
@@ -44,6 +57,9 @@ export class TouchProvider {
     this.overlay.removeEventListener('touchend',    this.onTouchEnd)
     this.overlay.removeEventListener('touchcancel', this.onTouchCancel)
     this.overlay.remove()
+    // Restore the container's position style so inline overrides don't persist
+    // across unmount→remount cycles and corrupt the next mount's clientHeight.
+    this.container.style.position = this.savedPosition
     this.joystick = null
   }
 
