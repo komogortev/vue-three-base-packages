@@ -405,6 +405,7 @@ async function onLoadScene(sceneId: string): Promise<void> {
     currentSceneId.value = row.id
     activeSavedSceneId.value = row.id
     sceneName.value = row.name
+    restoreWaypoints()
 
     const skipped = row.placedObjects.length - resolvable.length
     const skipNote = skipped > 0 ? ` (${skipped} missing asset${skipped !== 1 ? 's' : ''} skipped)` : ''
@@ -482,7 +483,7 @@ function storageKey(entityId: string): string {
 }
 
 function restoreWaypoints(): void {
-  for (const npc of activeConfig.value.npcs ?? []) {
+  for (const npc of localNpcs.value) {
     try {
       const raw = localStorage.getItem(storageKey(npc.entityId))
       if (!raw) continue
@@ -624,6 +625,7 @@ async function saveScene(): Promise<void> {
       placedObjects: save.placedObjects,
       config: { ...toRaw(effectiveConfig.value), npcs: effectiveConfig.value.npcs?.map(toRaw), zones: effectiveConfig.value.zones?.map(toRaw) },
     })
+    activeSavedSceneId.value = currentSceneId.value
     const n = save.placedObjects.length
     flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}`)
   } catch (err) {
