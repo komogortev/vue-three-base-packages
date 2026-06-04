@@ -1,5 +1,6 @@
 import { unzipSync, strFromU8 } from 'fflate'
 import type { RoomPackageManifest, RoomPackageScene } from './roomPackageTypes'
+import { assetDb } from './assetDb'
 
 export interface LoadedRoomPackage {
   manifest: RoomPackageManifest
@@ -58,6 +59,72 @@ export function loadRoomPackage(zipBytes: Uint8Array): LoadedRoomPackage {
     // 2. Correctness: unzipSync returns sub-views with non-zero byteOffset for stored
     //    entries; new Uint8Array(data) copies only the asset bytes into a fresh buffer.
     assetBlobUrls.set(assetId, URL.createObjectURL(new Blob([new Uint8Array(data)], { type: mime })))
+  }
+
+  return {
+    manifest,
+    scene,
+    assetBlobUrls,
+    revoke() {
+      for (const url of assetBlobUrls.values()) URL.revokeObjectURL(url)
+    },
+  }
+}
+
+/**
+ * Build a LoadedRoomPackage directly from a saved scene in the Dexie database.
+ * Used by the FPV environment menu to switch scenes without a ZIP file.
+ *
+ * Resolves all referenced asset blobs from assetDb and creates object URLs.
+ * Call revoke() when the scene is torn down.
+ *
+ * @throws Error if the scene row is not found.
+ */
+export async function loadRoomFromDb(sceneId: string): Promise<LoadedRoomPackage> {
+  const row = await assetDb.scenes.get(sceneId)
+  if (!row) throw new Error(`[loadRoomFromDb] Scene "${sceneId}" not found in DB`)
+
+  const scene: RoomPackageScene = {
+    placedObjects: row.placedObjects ?? [],
+    npcs: row.config?.npcs ?? [],
+    zones: row.config?.zones ?? [],
+    spawnPoint: row.config?.spawnPoint,
+    ambientAudioAssetId: row.config?.ambientAudioAssetId,
+    ambientAudioVolume: row.config?.ambientAudioVolume,
+  }
+
+  const assetIdSet = new Set<string>()
+  for (const obj of scene.placedObjects) assetIdSet.add(obj.assetId)
+  for (const npc of scene.npcs) {
+    if (npc.assetId) assetIdSet.add(npc.assetId)
+    // animationPackAssetId pre-fetched here for V2 (runtime animation); V1 RoomPlayerModule only
+    // plays static poses — the blob URL is held until revoke() but not consumed by loadRoom yet.
+    if (npc.animationPackAssetId) assetIdSet.add(npc.animationPackAssetId)
+  }
+  if (scene.ambientAudioAssetId) assetIdSet.add(scene.ambientAudioAssetId)
+
+  const assetBlobUrls = new Map<string, string>()
+  for (const assetId of assetIdSet) {
+    const assetRow = await assetDb.assets.get(assetId)
+    if (!assetRow) {
+      console.warn(`[loadRoomFromDb] Asset ${assetId} not found — skipping`)
+      continue
+    }
+    const ext = assetRow.name.split('.').pop()?.trim() ?? 'bin'
+    const mime =
+      ext === 'glb'  ? 'model/gltf-binary'
+      : ext === 'mp3' ? 'audio/mpeg'
+      : ext === 'ogg' ? 'audio/ogg'
+      : ext === 'wav' ? 'audio/wav'
+      : 'application/octet-stream'
+    assetBlobUrls.set(assetId, URL.createObjectURL(new Blob([await assetRow.blob.arrayBuffer()], { type: mime })))
+  }
+
+  const manifest: RoomPackageManifest = {
+    version: 1,
+    exportedAt: row.savedAt,
+    packageId: row.id,
+    sceneLabel: row.name,
   }
 
   return {
