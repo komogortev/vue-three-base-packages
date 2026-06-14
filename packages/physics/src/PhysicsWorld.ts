@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
-import type { ColliderHandle, PenetrationResult } from './types'
+import type { ColliderHandle, PenetrationResult, ShapeCastResult } from './types'
 import { extractTrimesh } from './extractTrimesh'
 
 // Promise-cache guard — safe against concurrent PhysicsWorld.create() calls.
@@ -44,15 +44,23 @@ export class PhysicsWorld {
    * All Mesh children (excluding SkinnedMesh) are merged into one trimesh
    * with world transforms applied. Safe to call multiple times for multiple assets.
    *
-   * @throws {Error} if root contains no renderable mesh geometry.
+   * @param filter - optional predicate passed to {@link extractTrimesh}; return false
+   *   to exclude a mesh (e.g. `mesh => !/^smd_bone_vis/i.test(mesh.name)` to strip
+   *   OWLib rig-visualization helpers before registering with Rapier).
+   * @throws {Error} if root contains no renderable mesh geometry after filtering.
    */
-  addStaticMesh(root: THREE.Object3D): ColliderHandle {
-    const { vertices, indices } = extractTrimesh(root)
+  addStaticMesh(root: THREE.Object3D, filter?: (mesh: THREE.Mesh) => boolean): ColliderHandle {
+    const { vertices, indices } = extractTrimesh(root, filter)
     const body = this._world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
     const collider = this._world.createCollider(
       RAPIER.ColliderDesc.trimesh(vertices, indices),
       body,
     )
+    // Refresh the query pipeline so swept casts (`shapeCastSphere`) see the new
+    // collider. This world is never stepped, so without an explicit update the
+    // query pipeline stays empty for shape casts. (`spherePenetration` /
+    // `castRayDown` happen to work pre-update, but `castShape` requires it.)
+    this._world.updateSceneQueries()
     return { __brand: 'ColliderHandle', _handle: collider.handle } as ColliderHandle
   }
 
@@ -89,6 +97,59 @@ export class PhysicsWorld {
       normal: offset.divideScalar(dist),
       depth: radius - dist,
     }
+  }
+
+  /**
+   * Cast a ray downward from (x, fromY, z) and return the Y of the first hit, or null.
+   * Useful for spawn grounding and Rapier-backed terrain sampling on OW map geometry.
+   *
+   * @param solid false — only detects surface crossings (correct for above-ground queries).
+   */
+  castRayDown(x: number, z: number, fromY: number): number | null {
+    const ray = new RAPIER.Ray({ x, y: fromY, z }, { x: 0, y: -1, z: 0 })
+    const hit = this._world.castRay(ray, fromY + 500, false)
+    if (!hit) return null
+    return fromY - hit.timeOfImpact
+  }
+
+  /**
+   * Swept sphere cast from `from` to `to` (radius `radius`). Returns the first
+   * contact with registered static geometry as a fraction along the segment plus
+   * the world-space surface normal, or null if the path is clear.
+   *
+   * Anti-tunnelling companion to {@link spherePenetration}: a sphere moving faster
+   * than ~2×radius/tick can pass fully through a thin wall in one step, which the
+   * overlap test misses. Sweep the motion instead and stop at the contact.
+   *
+   * The static body is created at the origin with identity rotation and world-space
+   * vertices ({@link addStaticMesh}), so the collider's local frame equals world
+   * space — `normal` is returned directly as a world-space push-out direction.
+   */
+  shapeCastSphere(from: THREE.Vector3, to: THREE.Vector3, radius: number): ShapeCastResult | null {
+    const vx = to.x - from.x
+    const vy = to.y - from.y
+    const vz = to.z - from.z
+    // No motion → nothing to sweep (a zero velocity is undefined for castShape).
+    if (vx === 0 && vy === 0 && vz === 0) return null
+
+    const hit = this._world.castShape(
+      { x: from.x, y: from.y, z: from.z }, // shapePos — sweep start
+      { x: 0, y: 0, z: 0, w: 1 },          // shapeRot — identity (sphere is rotation-invariant)
+      { x: vx, y: vy, z: vz },             // shapeVel — full displacement
+      new RAPIER.Ball(radius),
+      0,     // targetDistance — register a hit at surface contact
+      1,     // maxToi — velocity is the whole displacement, so toi ∈ [0, 1]
+      false, // stopAtPenetration — skip an initial graze; report the crossing
+    )
+    if (!hit) return null
+
+    // `normal2` is the contact normal on the static collider (world-space, body at
+    // origin). Rapier's sign for a shape cast is not guaranteed to face the caster,
+    // so flip it to oppose the sweep direction — then it is always a valid push-out
+    // / slide normal, matching `spherePenetration`'s outward convention.
+    const normal = new THREE.Vector3(hit.normal2.x, hit.normal2.y, hit.normal2.z)
+    if (normal.x * vx + normal.y * vy + normal.z * vz > 0) normal.negate()
+    return { toi: hit.time_of_impact, normal }
   }
 
   dispose(): void {
