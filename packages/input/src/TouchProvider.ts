@@ -29,18 +29,24 @@ export class TouchProvider {
 
   mount(container: HTMLElement): void {
     this.container = container
-    this.savedPosition = container.style.position   // typically '' or 'absolute'
+    this.savedPosition = container.style.position   // inline value; '' unless the host set one inline
 
     this.overlay = document.createElement('div')
     this.overlay.style.cssText =
       'position:absolute;inset:0;touch-action:none;user-select:none;-webkit-user-select:none;'
 
-    // Ensure the overlay (position:absolute) has a positioning context.
-    // Only set an INLINE position when none is already set inline — hosts that
-    // position the container via a CSS class (e.g. Tailwind `absolute`) still get
-    // the `relative` inline override here, which unmount() restores. The guard only
-    // avoids clobbering a host's explicit *inline* position.
-    if (!container.style.position) {
+    // The overlay is `position:absolute; inset:0`, so it needs the container to be a
+    // positioning context (its nearest positioned ancestor). Only force one when the
+    // container has NONE — i.e. its *computed* position is `static`.
+    //
+    // The computed value matters, not the inline `style.position`: a host that
+    // positions the container via a CSS class (e.g. Tailwind `absolute inset-0`) has
+    // an empty inline `style.position` but a non-`static` computed position. Stamping
+    // an inline `position:relative` there overrides the class's `absolute`, so
+    // `inset-0` stops sizing the element → it collapses to height:0 → the engine reads
+    // `clientHeight === 0` and builds a 0×0 canvas (black screen). Leave any already
+    // positioned (absolute/relative/fixed/sticky) container untouched.
+    if (getComputedStyle(container).position === 'static') {
       container.style.position = 'relative'
     }
     container.appendChild(this.overlay)
