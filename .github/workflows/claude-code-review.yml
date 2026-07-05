@@ -1,0 +1,35 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: true
+          prompt: |
+            Review this pull request for the @base/* package workspace.
+            Focus on:
+            - Correctness bugs and API contract breaks (treat @base/engine-core
+              interface changes as breaking changes)
+            - Package boundary violations (packages must not reach into consumer
+              projects; peerDeps for pinia; no test files in published builds)
+            - Missing or misleading types on exported APIs
+            Report only findings you are confident in, with file:line references.
+            If the diff is clean, say so briefly.
