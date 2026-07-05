@@ -1,0 +1,45 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_sticky_comment: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request for the @base/* package workspace.
+            Focus on:
+            - Correctness bugs and API contract breaks (treat @base/engine-core
+              interface changes as breaking changes)
+            - Package boundary violations (packages must not reach into consumer
+              projects; peerDeps for pinia; no test files in published builds)
+            - Missing or misleading types on exported APIs
+            Report only findings you are confident in, with file:line references.
+
+            You MUST post the review to the PR — do not leave it in your final
+            message only. Post one top-level summary comment via
+            `gh pr comment` and use inline comments
+            (mcp__github_inline_comment__create_inline_comment) only for
+            code-anchored findings. If the diff is clean, post a one-line
+            all-clear comment.
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
