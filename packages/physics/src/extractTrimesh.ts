@@ -7,8 +7,15 @@ import * as THREE from 'three'
  *
  * Call root.updateWorldMatrix(true, true) before passing if the object was
  * just loaded and hasn't been added to a scene yet.
+ *
+ * @param filter - optional predicate; return false to exclude a mesh from the trimesh.
+ *   Use this to strip rig-visualization helpers (e.g. smd_bone_vis) from OWLib exports
+ *   before registering with Rapier.
  */
-export function extractTrimesh(root: THREE.Object3D): {
+export function extractTrimesh(
+  root: THREE.Object3D,
+  filter?: (mesh: THREE.Mesh) => boolean,
+): {
   vertices: Float32Array
   indices: Uint32Array
 } {
@@ -19,6 +26,7 @@ export function extractTrimesh(root: THREE.Object3D): {
 
   root.traverse(child => {
     if (!(child instanceof THREE.Mesh) || child instanceof THREE.SkinnedMesh) return
+    if (filter && !filter(child)) return
 
     const geo = child.geometry as THREE.BufferGeometry
     const posAttr = geo.attributes.position
