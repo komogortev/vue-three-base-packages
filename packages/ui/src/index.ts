@@ -41,6 +41,13 @@ export type {
 } from './editor/sceneEditorTypes'
 export { EDITOR_ORBIT_BOOKMARKS, EDITOR_ORBIT_LOCOMOTION_IDS } from './editor/editorOrbitPresets'
 export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
+export { AnimationRecorder, KEYFRAME_TIME_EPSILON } from './editor/animationRecorder'
+export type {
+  PoseBoneSample,
+  RecordedKeyframe,
+  ReadonlyPoseBoneSample,
+  ReadonlyRecordedKeyframe,
+} from './editor/animationRecorder'
 export { serializeEditorConfigTS, buildRoomPackageScene } from './editor/SceneEditorExporter'
 export { exportRoomPackage } from './editor/exportRoomPackage'
 export { loadRoomPackage, loadRoomFromDb } from './editor/loadRoomPackage'
