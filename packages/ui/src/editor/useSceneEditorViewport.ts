@@ -331,6 +331,15 @@ export function useSceneEditorViewport(opts: {
 
     raycaster = new THREE.Raycaster()
 
+    // Opt-in introspection handle (?editordebug) — headless previews can't
+    // screenshot, so scene-graph state + renderer.info are the debugging
+    // surface. Query-param gate survives the library production build
+    // (import.meta.env.DEV compiles to false in dist) — same pattern as
+    // dbox's ?perf handle.
+    if (new URLSearchParams(window.location.search).has('editordebug')) {
+      ;(window as unknown as Record<string, unknown>).__editorViewport = { scene, camera, renderer, placedMeshRoots }
+    }
+
     // ── TransformControls ────────────────────────────────────────────────────
     // r170+: TransformControls extends Controls, not Object3D — add getHelper() to the scene.
     transformControls = new TransformControls(camera, canvas)
