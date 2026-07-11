@@ -7,6 +7,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
+import { exportAnimationGlb } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
 export type { EditorCamMode } from './sceneEditorTypes'
 
@@ -173,6 +174,8 @@ export interface SceneEditorViewportReturn {
   stopAnimPreview: () => void
   /** True while a preview clip is playing (flips false when LoopOnce finishes). */
   animPreviewPlaying: Readonly<Ref<boolean>>
+  /** S5-b: export a recorded clip as a self-contained GLB over the pose mesh. Null when no mesh attached. */
+  exportAnimClip: (clip: THREE.AnimationClip) => Promise<Blob | null>
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -911,6 +914,14 @@ export function useSceneEditorViewport(opts: {
   function stopAnimPreview(): void {
     animPreviewMixer.stop()
     animPreviewPlaying.value = false
+  }
+
+  // Safe against mid-export detach: the root is captured synchronously, the
+  // exporter reads CPU-side buffer attributes (detach disposes GPU resources
+  // only), and the resulting Dexie row is self-contained.
+  async function exportAnimClip(clip: THREE.AnimationClip): Promise<Blob | null> {
+    if (!poseMeshRoot) return null
+    return exportAnimationGlb(poseMeshRoot, clip)
   }
 
   // ─── GLB loading ────────────────────────────────────────────────────────────
@@ -1792,5 +1803,6 @@ export function useSceneEditorViewport(opts: {
     scrubAnimSample,
     stopAnimPreview,
     animPreviewPlaying: shallowReadonly(animPreviewPlaying),
+    exportAnimClip,
   }
 }

@@ -42,6 +42,7 @@ export type {
 export { EDITOR_ORBIT_BOOKMARKS, EDITOR_ORBIT_LOCOMOTION_IDS } from './editor/editorOrbitPresets'
 export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
 export { AnimationRecorder, KEYFRAME_TIME_EPSILON } from './editor/anim/animationRecorder'
+export { exportAnimationGlb, buildAnimPackRow } from './editor/anim/exportAnimPack'
 export type {
   PoseBoneSample,
   RecordedKeyframe,

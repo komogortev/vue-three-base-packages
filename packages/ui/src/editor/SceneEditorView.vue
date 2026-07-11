@@ -176,12 +176,14 @@
       :anim-scrub-time="animScrubTime"
       :anim-timeline-duration="animTimelineDuration"
       :anim-preview-playing="animPreviewPlaying"
+      :anim-export-busy="animExportBusy"
       @anim-tab-activate="onAnimTabActivate"
       @anim-scrub="onAnimScrub"
       @anim-key-capture="onAnimKeyCapture"
       @anim-key-remove="onAnimKeyRemove"
       @anim-preview-toggle="onAnimPreviewToggle"
       @anim-duration-set="onAnimDurationSet"
+      @anim-export="onAnimExport"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
@@ -204,6 +206,8 @@ import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { usePoseEditor } from './usePoseEditor'
 import { useAnimRecorder } from './anim/useAnimRecorder'
+import { buildAnimPackRow } from './anim/exportAnimPack'
+import { generateThumbnail } from './thumbnailGenerator'
 import { exportSandboxZip } from './exportSandboxZip'
 import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExporter'
 import { exportRoomPackage } from './exportRoomPackage'
@@ -329,6 +333,7 @@ const {
   scrubAnimSample,
   stopAnimPreview,
   animPreviewPlaying,
+  exportAnimClip,
 } = useSceneEditorViewport({
   canvas: canvasRef,
   config: effectiveConfig.value,
@@ -866,6 +871,33 @@ function onAnimPreviewToggle(): void {
 
 function onAnimDurationSet(seconds: number): void {
   animSetTimelineDuration(seconds)
+}
+
+const animExportBusy = ref(false)
+
+async function onAnimExport(clipName: string): Promise<void> {
+  if (animExportBusy.value) return
+  if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
+  animExportBusy.value = true
+  try {
+    if (animPreviewPlaying.value) stopAnimPreview()
+    const blob = await exportAnimClip(animRecorder.build(clipName))
+    if (!blob) { flashStatus('Export failed — no pose mesh attached'); return }
+    // Thumbnail is best-effort, same posture as useAssetStore.upload()
+    let thumbnail: Blob | undefined
+    try {
+      thumbnail = await generateThumbnail(blob)
+    } catch (err) {
+      console.warn('[onAnimExport] thumbnail generation failed:', err)
+    }
+    await assetDb.assets.add(buildAnimPackRow(clipName, blob, thumbnail))
+    flashStatus(`Animation pack "${clipName}" saved (${(blob.size / (1024 * 1024)).toFixed(1)} MB)`)
+  } catch (err) {
+    console.error('[onAnimExport] failed:', err)
+    flashStatus('Export failed')
+  } finally {
+    animExportBusy.value = false
+  }
 }
 
 // ─── TS config export (F-13) ─────────────────────────────────────────────────

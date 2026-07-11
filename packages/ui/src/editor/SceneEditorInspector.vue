@@ -375,11 +375,13 @@
         :timeline-duration="animTimelineDuration"
         :preview-playing="animPreviewPlaying"
         :has-character="hasPoseCharacter"
+        :export-busy="animExportBusy"
         @scrub="emit('anim-scrub', $event)"
         @key-capture="emit('anim-key-capture', $event)"
         @key-remove="emit('anim-key-remove', $event)"
         @preview-toggle="emit('anim-preview-toggle')"
         @duration-set="emit('anim-duration-set', $event)"
+        @export-clip="emit('anim-export', $event)"
       />
     </div>
 
@@ -506,6 +508,8 @@ const props = defineProps<{
   animTimelineDuration: number
   /** True while a preview clip is playing on the pose mesh. */
   animPreviewPlaying: boolean
+  /** True while an animation-pack export is in flight. */
+  animExportBusy: boolean
 }>()
 
 const emit = defineEmits<{
@@ -539,6 +543,7 @@ const emit = defineEmits<{
   'anim-key-remove': [time: number]
   'anim-preview-toggle': []
   'anim-duration-set': [seconds: number]
+  'anim-export': [clipName: string]
 }>()
 
 const assetStore = useAssetStore()

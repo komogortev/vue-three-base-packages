@@ -68,6 +68,27 @@
         />
       </div>
 
+      <!-- S5-b: export as animation-pack asset -->
+      <div class="anim-field-group">
+        <label class="anim-label" for="anim-clip-name">Save as animation pack</label>
+        <div class="anim-export-row">
+          <input
+            id="anim-clip-name"
+            v-model="clipName"
+            class="clip-name-input"
+            placeholder="clip name…"
+            spellcheck="false"
+            @keydown.enter="onExportClick"
+          />
+          <button
+            class="anim-btn anim-btn-capture"
+            :disabled="!canExport"
+            :title="canExport ? 'Export the recorded clip as an animation-pack asset' : 'Needs at least one keyframe and a clip name'"
+            @click="onExportClick"
+          >{{ exportBusy ? 'Exporting…' : 'Export Pack' }}</button>
+        </div>
+      </div>
+
       <p class="anim-hint">
         Pose the character (Pose tab or bone gizmo), scrub to a time, then Capture.
         Clip duration = last keyframe. Preview plays once and holds the final pose.
@@ -77,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps<{
   /** Sorted keyframe times (seconds) from the recorder. */
@@ -90,6 +111,8 @@ const props = defineProps<{
   previewPlaying: boolean
   /** True when the pose character mesh is loaded. */
   hasCharacter: boolean
+  /** True while an export is in flight — disables the Export button. */
+  exportBusy: boolean
 }>()
 
 const emit = defineEmits<{
@@ -98,9 +121,20 @@ const emit = defineEmits<{
   'key-remove': [time: number]
   'preview-toggle': []
   'duration-set': [seconds: number]
+  'export-clip': [clipName: string]
 }>()
 
 const selectedKeyTime = ref<number | null>(null)
+const clipName = ref('')
+
+const canExport = computed(
+  () => !props.exportBusy && clipName.value.trim().length > 0 && props.keyframeTimes.length > 0,
+)
+
+function onExportClick(): void {
+  if (!canExport.value) return
+  emit('export-clip', clipName.value.trim())
+}
 
 function onMarkerClick(t: number): void {
   selectedKeyTime.value = t
@@ -251,6 +285,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   padding: 0 3px;
   border-radius: 2px;
   border: 1px solid #1a3050;
+}
+
+/* Export */
+.anim-export-row {
+  display: flex;
+  gap: 6px;
+}
+.clip-name-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  background: #0e1c2e;
+  color: #b8d4f0;
+  border: 1px solid #1a3050;
+  border-radius: 3px;
+  padding: 3px 6px;
 }
 
 /* Duration */
