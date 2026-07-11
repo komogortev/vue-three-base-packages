@@ -1,10 +1,13 @@
 import { ref, onMounted, onUnmounted, shallowReadonly, type Ref } from 'vue'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
+import { PosePreviewMixer } from './anim/posePreviewMixer'
+import type { PoseBoneSample } from './anim/animationRecorder'
 export type { EditorCamMode } from './sceneEditorTypes'
 
 /** A saved placed object with its blob URL resolved — input to restorePlacedObjects. */
@@ -152,7 +155,7 @@ export interface SceneEditorViewportReturn {
   /** Attach TransformControls in rotate mode to the named bone. */
   selectPoseBone: (boneName: string) => void
   /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
-  capturePoseSnapshot: () => Array<{ bone: string; q: [number, number, number, number] }>
+  capturePoseSnapshot: () => PoseBoneSample[]
   /** Reset all skeleton bones to bind pose and detach TC from any active bone/IK target. */
   resetPoseBones: () => void
   /** Remove the pose mesh + SkeletonHelper from the scene and release TC. */
@@ -161,6 +164,15 @@ export interface SceneEditorViewportReturn {
   ikChainNames: Readonly<Ref<string[]>>
   /** Attach TransformControls in translate mode to the named IK target sphere. */
   selectIkTarget: (chainName: string) => void
+  // ─── Anim preview (S5-a) — thin delegators to PosePreviewMixer ───────────
+  /** Play a recorded clip once on the pose mesh (LoopOnce, clamps at end). */
+  startAnimPreview: (clip: THREE.AnimationClip) => void
+  /** Stamp a recorder sample onto the pose skeleton (timeline scrub). */
+  scrubAnimSample: (bones: PoseBoneSample[]) => void
+  /** Stop preview playback, leaving bones at their current pose. */
+  stopAnimPreview: () => void
+  /** True while a preview clip is playing (flips false when LoopOnce finishes). */
+  animPreviewPlaying: Readonly<Ref<boolean>>
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -271,6 +283,12 @@ export function useSceneEditorViewport(opts: {
   const ikTargetMeshes = new Map<string, THREE.Mesh>()
   let ikActiveChainName: string | null = null
   const ikChainNames = ref<string[]>([])
+
+  // Anim preview (S5-a) — mixer mechanics live in PosePreviewMixer; this
+  // composable only delegates and mirrors the playing flag.
+  const animPreviewMixer = new PosePreviewMixer()
+  const animPreviewPlaying = ref(false)
+  animPreviewMixer.onFinished = () => { animPreviewPlaying.value = false }
 
   // Delta time
   const clock = new THREE.Clock()
@@ -708,6 +726,9 @@ export function useSceneEditorViewport(opts: {
   // ─── Pose editor ─────────────────────────────────────────────────────────────
 
   function detachPoseNpc(): void {
+    // Tear down any preview mixer before the mesh it drives is disposed
+    animPreviewMixer.dispose()
+    animPreviewPlaying.value = false
     if (poseHasBoneAttached || ikActiveChainName !== null) {
       transformControls.detach()
       poseHasBoneAttached = false
@@ -755,6 +776,9 @@ export function useSceneEditorViewport(opts: {
   async function attachPoseNpc(entityId: string, blobUrl: string): Promise<string[]> {
     detachPoseNpc()
     const loader = new GLTFLoader()
+    // Library characters may be meshopt-compressed (S5-a spike caveat) — plain
+    // GLTFLoader refuses them with "setMeshoptDecoder must be called"
+    loader.setMeshoptDecoder(MeshoptDecoder)
     try {
       const gltf = await loader.loadAsync(blobUrl)
       const skinnedMeshes: THREE.SkinnedMesh[] = []
@@ -824,7 +848,7 @@ export function useSceneEditorViewport(opts: {
     ikActiveChainName = chainName
   }
 
-  function capturePoseSnapshot(): Array<{ bone: string; q: [number, number, number, number] }> {
+  function capturePoseSnapshot(): PoseBoneSample[] {
     if (!poseSkinnedMesh) return []
     return poseSkinnedMesh.skeleton.bones.map(b => ({
       bone: b.name,
@@ -858,6 +882,35 @@ export function useSceneEditorViewport(opts: {
         transformControls.enabled = false
       }
     }
+  }
+
+  // ─── Anim preview (S5-a) — thin delegators, mechanics in PosePreviewMixer ───
+
+  function startAnimPreview(clip: THREE.AnimationClip): void {
+    if (!poseMeshRoot) return
+    // TC fighting the mixer over bone quats would corrupt the preview — release it
+    if (poseHasBoneAttached || ikActiveChainName !== null) {
+      transformControls.detach()
+      poseHasBoneAttached = false
+      ikActiveChainName = null
+      transformControls.enabled = false
+    }
+    animPreviewMixer.attach(poseMeshRoot)
+    animPreviewMixer.play(clip)
+    animPreviewPlaying.value = true
+  }
+
+  function scrubAnimSample(bones: PoseBoneSample[]): void {
+    if (!poseSkinnedMesh || bones.length === 0) return
+    if (animPreviewMixer.playing) stopAnimPreview()
+    for (const s of bones) {
+      poseSkinnedMesh.skeleton.getBoneByName(s.bone)?.quaternion.fromArray(s.q)
+    }
+  }
+
+  function stopAnimPreview(): void {
+    animPreviewMixer.stop()
+    animPreviewPlaying.value = false
   }
 
   // ─── GLB loading ────────────────────────────────────────────────────────────
@@ -1380,6 +1433,9 @@ export function useSceneEditorViewport(opts: {
     animId = requestAnimationFrame(animate)
     const delta = Math.min(clock.getDelta(), 0.05)
 
+    // Anim preview runs in any cam mode (no-op unless playing)
+    animPreviewMixer.update(delta)
+
     if (editorCamMode.value === 'follow-3p') {
       // Use real character when loaded, capsule otherwise
       const moveTarget: THREE.Object3D | null = charRoot ?? playerMesh
@@ -1732,5 +1788,9 @@ export function useSceneEditorViewport(opts: {
     detachPoseNpc,
     ikChainNames: shallowReadonly(ikChainNames),
     selectIkTarget,
+    startAnimPreview,
+    scrubAnimSample,
+    stopAnimPreview,
+    animPreviewPlaying: shallowReadonly(animPreviewPlaying),
   }
 }

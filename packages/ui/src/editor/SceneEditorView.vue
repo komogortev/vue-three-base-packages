@@ -172,6 +172,16 @@
       @pose-capture="onPoseCapture"
       @pose-clear="onPoseClear"
       @ik-chain-select="onIkChainSelect"
+      :anim-keyframe-times="animKeyframeTimes"
+      :anim-scrub-time="animScrubTime"
+      :anim-timeline-duration="animTimelineDuration"
+      :anim-preview-playing="animPreviewPlaying"
+      @anim-tab-activate="onAnimTabActivate"
+      @anim-scrub="onAnimScrub"
+      @anim-key-capture="onAnimKeyCapture"
+      @anim-key-remove="onAnimKeyRemove"
+      @anim-preview-toggle="onAnimPreviewToggle"
+      @anim-duration-set="onAnimDurationSet"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
@@ -193,6 +203,7 @@ import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { usePoseEditor } from './usePoseEditor'
+import { useAnimRecorder } from './anim/useAnimRecorder'
 import { exportSandboxZip } from './exportSandboxZip'
 import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExporter'
 import { exportRoomPackage } from './exportRoomPackage'
@@ -314,6 +325,10 @@ const {
   detachPoseNpc,
   ikChainNames,
   selectIkTarget,
+  startAnimPreview,
+  scrubAnimSample,
+  stopAnimPreview,
+  animPreviewPlaying,
 } = useSceneEditorViewport({
   canvas: canvasRef,
   config: effectiveConfig.value,
@@ -330,6 +345,21 @@ const assetStore = useAssetStore()
 
 const { boneList: poseBoneList, selectedBoneName: poseSelectedBone, setBoneList: setPoseBoneList, selectBone: setPoseSelectedBone, reset: resetPoseEditor } = usePoseEditor()
 const activeIkChainName = ref<string | null>(null)
+/** Entity whose mesh is currently attached for pose/anim editing — idempotence guard. */
+let poseMeshEntityId: string | null = null
+
+// ─── Anim recorder reactive state (S5-a) ─────────────────────────────────────
+
+const {
+  recorder: animRecorder,
+  keyframeTimes: animKeyframeTimes,
+  scrubTime: animScrubTime,
+  timelineDuration: animTimelineDuration,
+  addKeyframe: animAddKeyframe,
+  removeKeyframe: animRemoveKeyframe,
+  setTimelineDuration: animSetTimelineDuration,
+  clear: animClear,
+} = useAnimRecorder()
 
 function onAssetPicked(assetId: string): void {
   const asset = assetStore.getById(assetId)
@@ -355,10 +385,13 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   ambientAudioVolume.value = undefined
   // Clear waypoint display — new scene has its own localStorage keys
   waypointMap.value = new Map()
-  // Reset path-edit mode and pose IK state
+  // Reset path-edit mode and pose/anim state (pose mesh dies with reinitScene)
   isPathEditing.value = false
   setPathEditMode(false)
+  resetPoseEditor()
   activeIkChainName.value = null
+  poseMeshEntityId = null
+  animClear()
   // Reload viewport with effective config (local NPC/zone edits merged in)
   await reinitScene(effectiveConfig.value)
   // Restore waypoints for new scene
@@ -390,7 +423,12 @@ async function onLoadScene(sceneId: string): Promise<void> {
     }
 
     // Reload scene geometry using effectiveConfig (now has saved NPCs/zones merged in)
+    // — this destroys any attached pose mesh, so pose/anim state must reset with it
     await reinitScene(effectiveConfig.value)
+    resetPoseEditor()
+    activeIkChainName.value = null
+    poseMeshEntityId = null
+    animClear()
 
     // Resolve blob URLs — skip objects whose asset was deleted
     const resolvable = row.placedObjects.flatMap(obj => {
@@ -467,6 +505,9 @@ watch(selection, (newSel, oldSel) => {
     detachPoseNpc()
     resetPoseEditor()
     activeIkChainName.value = null
+    poseMeshEntityId = null
+    // Keyframes belong to one skeleton — never carry them across NPCs
+    animClear()
   }
 })
 
@@ -711,6 +752,16 @@ function onNpcChanged(entityId: string, patch: Partial<EditorNpcEntry>): void {
   if ('x' in patch || 'z' in patch) {
     setNpcPosition(entityId, npc.x, npc.z)
   }
+  // Swapping the character asset invalidates the attached pose mesh AND any
+  // keyframes recorded against its skeleton — reset so the idempotence guard
+  // in ensurePoseMeshAttached can't hand back the old mesh.
+  if ('assetId' in patch && poseMeshEntityId === entityId) {
+    detachPoseNpc()
+    resetPoseEditor()
+    activeIkChainName.value = null
+    poseMeshEntityId = null
+    animClear()
+  }
 }
 
 function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
@@ -724,16 +775,28 @@ function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
 
 // ─── Pose editor event handlers (S4) ─────────────────────────────────────────
 
-async function onPoseTabActivate(): Promise<void> {
+/**
+ * Load the selected NPC's character mesh for pose/anim editing. Idempotent:
+ * a Pose↔Anim tab switch reuses the already-attached mesh so the working
+ * pose survives. Returns true when a mesh with a skeleton is attached.
+ */
+async function ensurePoseMeshAttached(): Promise<boolean> {
   const sel = selection.value
-  if (sel?.kind !== 'npc') return
+  if (sel?.kind !== 'npc') return false
+  if (poseMeshEntityId === sel.entityId && poseBoneList.value.length > 0) return true
   const npc = localNpcs.value.find(n => n.entityId === sel.entityId)
-  if (!npc?.assetId) return
+  if (!npc?.assetId) return false
   const blobUrl = assetStore.resolveBlobUrl(npc.assetId)
-  if (!blobUrl) { flashStatus('Character mesh not in asset store'); return }
+  if (!blobUrl) { flashStatus('Character mesh not in asset store'); return false }
   const boneNames = await attachPoseNpc(sel.entityId, blobUrl)
-  if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return }
+  if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return false }
   setPoseBoneList(boneNames)
+  poseMeshEntityId = sel.entityId
+  return true
+}
+
+async function onPoseTabActivate(): Promise<void> {
+  await ensurePoseMeshAttached()
 }
 
 function onPoseBoneSelect(boneName: string): void {
@@ -763,6 +826,46 @@ function onPoseClear(): void {
 function onIkChainSelect(chainName: string): void {
   activeIkChainName.value = chainName
   selectIkTarget(chainName)
+}
+
+// ─── Anim recorder event handlers (S5-a) ─────────────────────────────────────
+
+async function onAnimTabActivate(): Promise<void> {
+  await ensurePoseMeshAttached()
+}
+
+function onAnimScrub(time: number): void {
+  animScrubTime.value = time
+  scrubAnimSample(animRecorder.sampleAt(time))
+}
+
+function onAnimKeyCapture(time: number): void {
+  if (animPreviewPlaying.value) stopAnimPreview()
+  const snapshot = capturePoseSnapshot()
+  if (snapshot.length === 0) return
+  animAddKeyframe(time, snapshot)
+  flashStatus(`Keyframe @ ${time.toFixed(2)}s`)
+}
+
+function onAnimKeyRemove(time: number): void {
+  if (animPreviewPlaying.value) stopAnimPreview()
+  animRemoveKeyframe(time)
+  flashStatus('Keyframe removed')
+}
+
+function onAnimPreviewToggle(): void {
+  if (animPreviewPlaying.value) {
+    stopAnimPreview()
+    return
+  }
+  if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
+  setPoseSelectedBone(null)
+  activeIkChainName.value = null
+  startAnimPreview(animRecorder.build('preview'))
+}
+
+function onAnimDurationSet(seconds: number): void {
+  animSetTimelineDuration(seconds)
 }
 
 // ─── TS config export (F-13) ─────────────────────────────────────────────────

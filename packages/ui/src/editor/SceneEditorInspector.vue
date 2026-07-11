@@ -37,6 +37,12 @@
         :class="{ active: activeTab === 'Pose' }"
         @click="onPoseTabClick"
       >Pose</button>
+      <button
+        v-if="selectedNpc?.assetId"
+        class="tab"
+        :class="{ active: activeTab === 'Anim' }"
+        @click="onAnimTabClick"
+      >Anim</button>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
@@ -360,6 +366,24 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════════
+         NPC — Anim tab (S5-a)
+    ═══════════════════════════════════════════════════════════════════════ -->
+    <div v-else-if="selection.kind === 'npc' && activeTab === 'Anim'" class="panel-body">
+      <AnimTimelinePanel
+        :keyframe-times="animKeyframeTimes"
+        :scrub-time="animScrubTime"
+        :timeline-duration="animTimelineDuration"
+        :preview-playing="animPreviewPlaying"
+        :has-character="hasPoseCharacter"
+        @scrub="emit('anim-scrub', $event)"
+        @key-capture="emit('anim-key-capture', $event)"
+        @key-remove="emit('anim-key-remove', $event)"
+        @preview-toggle="emit('anim-preview-toggle')"
+        @duration-set="emit('anim-duration-set', $event)"
+      />
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════════
          ZONE panel
     ═══════════════════════════════════════════════════════════════════════ -->
     <div v-else-if="selection.kind === 'zone'" class="panel-body">
@@ -447,6 +471,7 @@
 import { ref, computed, watch } from 'vue'
 import * as THREE from 'three'
 import { useAssetStore } from './useAssetStore'
+import AnimTimelinePanel from './anim/AnimTimelinePanel.vue'
 import type { SceneEditorConfig, EditorSelection, EditorNpcEntry, EditorZoneEntry } from './sceneEditorTypes'
 
 const props = defineProps<{
@@ -472,6 +497,15 @@ const props = defineProps<{
   ikChainNames: string[]
   /** Name of the IK chain currently active in the viewport, or null. */
   activeIkChainName: string | null
+  // ─── S5-a: Anim timeline ────────────────────────────────────────────────
+  /** Sorted keyframe times from the anim recorder. */
+  animKeyframeTimes: number[]
+  /** Current timeline scrub position (seconds). */
+  animScrubTime: number
+  /** Visible timeline range (seconds). */
+  animTimelineDuration: number
+  /** True while a preview clip is playing on the pose mesh. */
+  animPreviewPlaying: boolean
 }>()
 
 const emit = defineEmits<{
@@ -498,6 +532,13 @@ const emit = defineEmits<{
   'pose-capture': []
   'pose-clear': []
   'ik-chain-select': [chainName: string]
+  // ─── S5-a: Anim timeline ──────────────────────────────────────────────────
+  'anim-tab-activate': []
+  'anim-scrub': [time: number]
+  'anim-key-capture': [time: number]
+  'anim-key-remove': [time: number]
+  'anim-preview-toggle': []
+  'anim-duration-set': [seconds: number]
 }>()
 
 const assetStore = useAssetStore()
@@ -505,7 +546,7 @@ const assetStore = useAssetStore()
 // ─── Tab state ────────────────────────────────────────────────────────────────
 
 const npcTabs = ['Transform', 'Path', 'Asset'] as const
-type NpcTab = (typeof npcTabs)[number] | 'Pose'
+type NpcTab = (typeof npcTabs)[number] | 'Pose' | 'Anim'
 const activeTab = ref<NpcTab>('Transform')
 
 const boneFilter = ref('')
@@ -519,6 +560,11 @@ function onPoseTabClick(): void {
   activeTab.value = 'Pose'
   boneFilter.value = ''
   emit('pose-tab-activate')
+}
+
+function onAnimTabClick(): void {
+  activeTab.value = 'Anim'
+  emit('anim-tab-activate')
 }
 
 watch(() => props.selection, () => {

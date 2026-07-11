@@ -4,7 +4,7 @@ import {
   AnimationRecorder,
   KEYFRAME_TIME_EPSILON,
   type PoseBoneSample,
-} from '../animationRecorder'
+} from '../anim/animationRecorder'
 
 const IDENTITY: PoseBoneSample['q'] = [0, 0, 0, 1]
 /** 90° about Z */
