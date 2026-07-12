@@ -1,7 +1,7 @@
 import { ref, onMounted, onUnmounted, shallowReadonly, type Ref } from 'vue'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { createEditorGltfLoader } from './gltfLoaderFactory'
 
 // ─── Public API ────────────────────────────────────────────────────────────────
 
@@ -126,7 +126,7 @@ export function useWaypointEditor(config: WaypointEditorConfig): WaypointEditorR
   }
 
   async function loadGLB(url: string, isFloor: boolean): Promise<void> {
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(url)
       scene.add(gltf.scene)

@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia'
 import { nanoid } from 'nanoid'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 import { assetDb, type AssetRow, type AssetKind } from './assetDb'
+import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { useLiveQuery } from './useLiveQuery'
 import { generateThumbnail } from './thumbnailGenerator'
 
@@ -86,7 +86,7 @@ export const useAssetStore = defineStore('assets', () => {
       contentType = ext === 'glb' ? 'model/gltf-binary' : 'model/gltf+json'
       try {
         const buf = await blob.arrayBuffer()
-        const loader = new GLTFLoader()
+        const loader = createEditorGltfLoader()
         const gltf = await loader.parseAsync(buf, '')
         if (!gltf.scene) {
           throw new Error('GLB has no scene')
@@ -103,8 +103,14 @@ export const useAssetStore = defineStore('assets', () => {
         const size = box.isEmpty() ? new THREE.Vector3() : box.getSize(new THREE.Vector3())
         const diag = Math.sqrt(size.x * size.x + size.y * size.y + size.z * size.z)
 
-        if (animCount > 0 && skinnedCount > 0) kind = 'character'
-        else if (animCount > 0 && skinnedCount === 0) kind = 'animation-pack'
+        // A skinned mesh is a character body even without embedded clips —
+        // rigged-but-unanimated exports (e.g. three-dreams npc-*.glb) must not
+        // fall through to 'prop' or the NPC character picker never lists them.
+        // Tradeoff: skinning outranks size, so a large scene GLB containing any
+        // SkinnedMesh classifies 'character' — platform environment exports
+        // don't embed skinning, and the picker's kind filter is user-correctable.
+        if (skinnedCount > 0) kind = 'character'
+        else if (animCount > 0) kind = 'animation-pack'
         else if (diag > 20) kind = 'environment'
         else kind = 'prop'
 

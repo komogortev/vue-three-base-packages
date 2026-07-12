@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { createEditorGltfLoader } from './gltfLoaderFactory'
 
 /**
  * Generate a 256×256 PNG thumbnail for a GLB blob.
@@ -37,7 +37,7 @@ export async function generateThumbnail(blob: Blob): Promise<Blob> {
 
   let gltfScene: THREE.Group | null = null
   try {
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     const gltf = await loader.parseAsync(arrayBuffer, '')
     gltfScene = gltf.scene
     if (!gltfScene) throw new Error('GLB has no scene')

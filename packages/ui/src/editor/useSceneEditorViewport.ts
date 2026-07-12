@@ -1,11 +1,10 @@
 import { ref, onMounted, onUnmounted, shallowReadonly, type Ref } from 'vue'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
-import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
+import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
@@ -657,7 +656,7 @@ export function useSceneEditorViewport(opts: {
     _disposePlayCharacter()
     if (!pendingCharBlobUrl) return
 
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(pendingCharBlobUrl)
 
@@ -787,10 +786,7 @@ export function useSceneEditorViewport(opts: {
 
   async function attachPoseNpc(entityId: string, blobUrl: string): Promise<string[]> {
     detachPoseNpc()
-    const loader = new GLTFLoader()
-    // Library characters may be meshopt-compressed (S5-a spike caveat) — plain
-    // GLTFLoader refuses them with "setMeshoptDecoder must be called"
-    loader.setMeshoptDecoder(MeshoptDecoder)
+    const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(blobUrl)
       const skinnedMeshes: THREE.SkinnedMesh[] = []
@@ -936,7 +932,7 @@ export function useSceneEditorViewport(opts: {
   // ─── GLB loading ────────────────────────────────────────────────────────────
 
   async function loadGLB(url: string, isFloor: boolean): Promise<void> {
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(url)
       scene.add(gltf.scene)
@@ -1195,7 +1191,7 @@ export function useSceneEditorViewport(opts: {
     const root = new THREE.Group()
     root.position.copy(pos)
 
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     let localBbox = new THREE.Box3()
 
     try {
@@ -1252,7 +1248,7 @@ export function useSceneEditorViewport(opts: {
   // ─── Restore placed objects (load saved scene) ───────────────────────────────
 
   async function restorePlacedObjects(objects: RestorableObject[]): Promise<void> {
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     const restored: EditorPlacedObject[] = []
 
     for (const obj of objects) {
