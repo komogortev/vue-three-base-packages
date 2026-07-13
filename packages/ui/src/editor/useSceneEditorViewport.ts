@@ -292,6 +292,15 @@ export function useSceneEditorViewport(opts: {
   const animPreviewPlaying = ref(false)
   animPreviewMixer.onFinished = () => { animPreviewPlaying.value = false }
 
+  // Single-slot gesture revert (Ctrl+Z) — one step back to the state captured
+  // at the start of the last gizmo drag. Overwritten by each new drag,
+  // consumed on use. Deliberately NOT a history stack (owner-scoped 2026-07-12).
+  let lastGestureRestore: (() => void) | null = null
+  /** Object the captured gesture targets — lets removals invalidate precisely. */
+  let lastGestureTarget: THREE.Object3D | null = null
+  /** True while a gizmo drag is in progress — Ctrl+Z must not fire mid-drag. */
+  let gizmoDragActive = false
+
   // Delta time
   const clock = new THREE.Clock()
 
@@ -330,15 +339,6 @@ export function useSceneEditorViewport(opts: {
 
     raycaster = new THREE.Raycaster()
 
-    // Opt-in introspection handle (?editordebug) — headless previews can't
-    // screenshot, so scene-graph state + renderer.info are the debugging
-    // surface. Query-param gate survives the library production build
-    // (import.meta.env.DEV compiles to false in dist) — same pattern as
-    // dbox's ?perf handle.
-    if (new URLSearchParams(window.location.search).has('editordebug')) {
-      ;(window as unknown as Record<string, unknown>).__editorViewport = { scene, camera, renderer, placedMeshRoots }
-    }
-
     // ── TransformControls ────────────────────────────────────────────────────
     // r170+: TransformControls extends Controls, not Object3D — add getHelper() to the scene.
     transformControls = new TransformControls(camera, canvas)
@@ -354,7 +354,10 @@ export function useSceneEditorViewport(opts: {
 
     // Disable OrbitControls while gizmo dragged.
     transformControls.addEventListener('dragging-changed', (e) => {
-      controls.enabled = !(e as unknown as { value: boolean }).value
+      const dragging = (e as unknown as { value: boolean }).value
+      controls.enabled = !dragging
+      gizmoDragActive = dragging
+      if (dragging) snapshotGesture()
     })
 
     // Enforce uniform scale in scale mode + sync live positions for inspector reactivity.
@@ -376,23 +379,17 @@ export function useSceneEditorViewport(opts: {
         return  // skip NPC/zone live-position updates while dragging IK target
       }
 
-      const sel = selection.value
-      if (sel?.kind === 'npc') {
-        const root = npcMarkerRoots.get(sel.entityId)
-        if (root) {
-          const next = new Map(npcLivePositions.value)
-          next.set(sel.entityId, { x: root.position.x, y: root.position.y, z: root.position.z })
-          npcLivePositions.value = next
-        }
-      } else if (sel?.kind === 'zone') {
-        const root = zoneMarkerRoots.get(sel.id)
-        if (root) {
-          const next = new Map(zoneLivePositions.value)
-          next.set(sel.id, { x: root.position.x, z: root.position.z })
-          zoneLivePositions.value = next
-        }
-      }
+      syncSelectedLivePosition()
     })
+
+    // Opt-in introspection handle (?editordebug) — headless previews can't
+    // screenshot, so scene-graph state + renderer.info are the debugging
+    // surface. Query-param gate survives the library production build
+    // (import.meta.env.DEV compiles to false in dist) — same pattern as
+    // dbox's ?perf handle. Must sit AFTER TransformControls creation.
+    if (new URLSearchParams(window.location.search).has('editordebug')) {
+      ;(window as unknown as Record<string, unknown>).__editorViewport = { scene, camera, renderer, placedMeshRoots, transformControls }
+    }
 
     // Lighting — editor-neutral, persistent across scene switches
     scene.add(new THREE.AmbientLight('#c8d8f0', 0.65))
@@ -468,6 +465,9 @@ export function useSceneEditorViewport(opts: {
     // Detach gizmo before clearing objects it may reference
     transformControls.detach()
     transformControls.enabled = false
+    // Any captured gesture points at objects being destroyed
+    lastGestureRestore = null
+    lastGestureTarget = null
 
     // Cancel place mode
     placeMode = { ...PLACE_MODE_IDLE }
@@ -596,6 +596,12 @@ export function useSceneEditorViewport(opts: {
   function removePlacedObject(objectId: string): void {
     const root = placedMeshRoots.get(objectId)
     if (root) {
+      // Invalidate a captured gesture that targets the object being destroyed
+      // (leave gestures on other objects intact)
+      if (lastGestureTarget === root) {
+        lastGestureRestore = null
+        lastGestureTarget = null
+      }
       root.traverse(child => {
         const mesh = child as THREE.Mesh
         if (mesh.isMesh) {
@@ -734,12 +740,107 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
+  // ─── Gesture revert (Ctrl+Z, single slot) ────────────────────────────────────
+
+  /** Mirror the TC-selected marker's transform into the live-position maps. */
+  function syncSelectedLivePosition(): void {
+    const sel = selection.value
+    if (sel?.kind === 'npc') {
+      const root = npcMarkerRoots.get(sel.entityId)
+      if (root) {
+        const next = new Map(npcLivePositions.value)
+        next.set(sel.entityId, { x: root.position.x, y: root.position.y, z: root.position.z })
+        npcLivePositions.value = next
+      }
+    } else if (sel?.kind === 'zone') {
+      const root = zoneMarkerRoots.get(sel.id)
+      if (root) {
+        const next = new Map(zoneLivePositions.value)
+        next.set(sel.id, { x: root.position.x, z: root.position.z })
+        zoneLivePositions.value = next
+      }
+    }
+  }
+
+  /**
+   * Mirror a specific marker root into the live-position maps by reverse
+   * lookup. The gesture-restore path needs this: selection may have moved to
+   * a different entity between drag-end and Ctrl+Z, and syncing the *current*
+   * selection would leave the reverted entity's persisted draft stale.
+   */
+  function syncLivePositionForRoot(root: THREE.Object3D): void {
+    for (const [id, r] of npcMarkerRoots) {
+      if (r === root) {
+        const next = new Map(npcLivePositions.value)
+        next.set(id, { x: root.position.x, y: root.position.y, z: root.position.z })
+        npcLivePositions.value = next
+        return
+      }
+    }
+    for (const [id, r] of zoneMarkerRoots) {
+      if (r === root) {
+        const next = new Map(zoneLivePositions.value)
+        next.set(id, { x: root.position.x, z: root.position.z })
+        zoneLivePositions.value = next
+        return
+      }
+    }
+  }
+
+  /** Capture the pre-drag state of whatever TC is about to mutate. */
+  function snapshotGesture(): void {
+    const obj = transformControls.object
+    if (!obj) { lastGestureRestore = null; lastGestureTarget = null; return }
+    lastGestureTarget = obj
+
+    // IK drag: the solver rewrites every chain link during the drag — snapshot
+    // the whole chain plus the target sphere, not just the dragged object.
+    if (ikActiveChainName !== null && poseSkinnedMesh) {
+      const chain = MIXAMO_IK_CHAINS[ikActiveChainName]
+      if (!chain) { lastGestureRestore = null; lastGestureTarget = null; return }
+      const bones = [chain.effector, ...chain.links]
+        .map(n => poseSkinnedMesh!.skeleton.getBoneByName(n))
+        .filter((b): b is THREE.Bone => b != null)
+      const quats = bones.map(b => b.quaternion.clone())
+      const spherePos = obj.position.clone()
+      lastGestureRestore = () => {
+        bones.forEach((b, i) => b.quaternion.copy(quats[i]))
+        obj.position.copy(spherePos)
+      }
+      return
+    }
+
+    // FK bone / marker / placed root: full local transform of the one object
+    const pos = obj.position.clone()
+    const quat = obj.quaternion.clone()
+    const scale = obj.scale.clone()
+    lastGestureRestore = () => {
+      obj.position.copy(pos)
+      obj.quaternion.copy(quat)
+      obj.scale.copy(scale)
+      syncLivePositionForRoot(obj)
+    }
+  }
+
+  /** Revert the last gizmo drag (one step, consumed on use). Returns false when nothing to revert. */
+  function revertLastGesture(): boolean {
+    if (gizmoDragActive) return false // mid-drag: TC would rewrite the restore next frame
+    if (!lastGestureRestore) return false
+    lastGestureRestore()
+    lastGestureRestore = null
+    lastGestureTarget = null
+    return true
+  }
+
   // ─── Pose editor ─────────────────────────────────────────────────────────────
 
   function detachPoseNpc(): void {
     // Tear down any preview mixer before the mesh it drives is disposed
     animPreviewMixer.dispose()
     animPreviewPlaying.value = false
+    // A captured gesture may point at bones that are about to be disposed
+    lastGestureRestore = null
+    lastGestureTarget = null
     if (poseHasBoneAttached || ikActiveChainName !== null) {
       transformControls.detach()
       poseHasBoneAttached = false
@@ -1634,6 +1735,14 @@ export function useSceneEditorViewport(opts: {
     if (tag === 'INPUT' || tag === 'TEXTAREA') return
 
     keyState.add(e.code)
+
+    // Ctrl+Z: revert the last gizmo drag. Orbit-only (same gate as T/R/S —
+    // Ctrl is the descend key in free-float); path-edit mode owns its own
+    // Ctrl+Z (waypoint pop in the inspector) — stay out of its way.
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !pathEditActive && editorCamMode.value === 'orbit') {
+      if (revertLastGesture()) e.preventDefault()
+      return
+    }
 
     if (e.code === 'Tab') {
       e.preventDefault()

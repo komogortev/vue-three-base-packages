@@ -58,7 +58,7 @@
         <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Click</kbd> select</span>
         <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Drag</kbd> orbit</span>
         <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Scroll</kbd> zoom</span>
-        <span v-if="hasObjectSelected && !isPathEditing && !isInPlaceMode"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale</span>
+        <span v-if="hasObjectSelected && !isPathEditing && !isInPlaceMode"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale · <kbd>Ctrl+Z</kbd> revert drag</span>
         <span v-if="hasObjectSelected && !isInPlaceMode"><kbd>Esc</kbd> deselect</span>
         <span v-if="isPathEditing"><kbd>Click floor</kbd> add waypoint &nbsp;<kbd>Ctrl+Z</kbd> undo</span>
         <span v-if="isPathEditing"><kbd>Esc</kbd> stop editing</span>
