@@ -110,6 +110,9 @@ export const useAssetStore = defineStore('assets', () => {
         // SkinnedMesh classifies 'character' — platform environment exports
         // don't embed skinning, and the picker's kind filter is user-correctable.
         if (skinnedCount > 0) kind = 'character'
+        // Large unskinned GLBs with clips are scenes carrying baked animation
+        // (rotating door, tour path) — not clip packs for characters.
+        else if (animCount > 0 && diag > 20) kind = 'environment'
         else if (animCount > 0) kind = 'animation-pack'
         else if (diag > 20) kind = 'environment'
         else kind = 'prop'
