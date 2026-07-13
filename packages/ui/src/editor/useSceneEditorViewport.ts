@@ -2,7 +2,7 @@ import { ref, onMounted, onUnmounted, shallowReadonly, type Ref } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
-import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
+import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode, PoseBoneNode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
@@ -150,8 +150,8 @@ export interface SceneEditorViewportReturn {
    */
   setPlayCharacterAsset: (charBlobUrl: string | null, animPackBlobUrl?: string | null) => Promise<void>
   // ─── Pose editor ─────────────────────────────────────────────────────────
-  /** Load a character GLB for pose editing; returns the skeleton bone name list. */
-  attachPoseNpc: (entityId: string, blobUrl: string) => Promise<string[]>
+  /** Load a character GLB for pose editing; returns the skeleton as a DFS-ordered bone tree. */
+  attachPoseNpc: (entityId: string, blobUrl: string) => Promise<PoseBoneNode[]>
   /** Attach TransformControls in rotate mode to the named bone. */
   selectPoseBone: (boneName: string) => void
   /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
@@ -885,7 +885,25 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  async function attachPoseNpc(entityId: string, blobUrl: string): Promise<string[]> {
+  /**
+   * Flatten the skeleton into DFS order with depth/parent info so the UI can
+   * render an indented, collapsible tree. Roots = bones whose parent is not a
+   * Bone (skeleton.bones order is file order, not guaranteed hierarchical).
+   */
+  function buildBoneTree(skeleton: THREE.Skeleton): PoseBoneNode[] {
+    const inSkeleton = new Set(skeleton.bones)
+    const roots = skeleton.bones.filter(b => !(b.parent && (b.parent as THREE.Bone).isBone && inSkeleton.has(b.parent as THREE.Bone)))
+    const out: PoseBoneNode[] = []
+    const visit = (bone: THREE.Bone, depth: number, parent: string | null): void => {
+      const childBones = bone.children.filter((c): c is THREE.Bone => (c as THREE.Bone).isBone && inSkeleton.has(c as THREE.Bone))
+      out.push({ name: bone.name, depth, parent, hasChildren: childBones.length > 0 })
+      for (const c of childBones) visit(c, depth + 1, bone.name)
+    }
+    for (const r of roots) visit(r, 0, null)
+    return out
+  }
+
+  async function attachPoseNpc(entityId: string, blobUrl: string): Promise<PoseBoneNode[]> {
     detachPoseNpc()
     const loader = createEditorGltfLoader()
     try {
@@ -927,7 +945,7 @@ export function useSceneEditorViewport(opts: {
       }
       ikChainNames.value = newChainNames
 
-      return sm.skeleton.bones.map(b => b.name)
+      return buildBoneTree(sm.skeleton)
     } catch (e) {
       console.warn('[PoseEditor] Failed to load character mesh:', e)
       return []
@@ -965,10 +983,9 @@ export function useSceneEditorViewport(opts: {
     }))
   }
 
-  function resetPoseBones(): void {
+  /** Reposition IK target spheres onto their effectors' current world positions. */
+  function syncIkSpheres(): void {
     if (!poseSkinnedMesh) return
-    poseSkinnedMesh.skeleton.pose()
-    // Reposition IK spheres back to bind-pose effector world positions
     for (const [chainName, sphere] of ikTargetMeshes) {
       const chain = MIXAMO_IK_CHAINS[chainName]
       if (!chain) continue
@@ -977,6 +994,12 @@ export function useSceneEditorViewport(opts: {
       effector.updateWorldMatrix(true, false)
       sphere.position.setFromMatrixPosition(effector.matrixWorld)
     }
+  }
+
+  function resetPoseBones(): void {
+    if (!poseSkinnedMesh) return
+    poseSkinnedMesh.skeleton.pose()
+    syncIkSpheres()
     if (poseHasBoneAttached || ikActiveChainName !== null) {
       transformControls.detach()
       poseHasBoneAttached = false
@@ -1015,6 +1038,9 @@ export function useSceneEditorViewport(opts: {
     for (const s of bones) {
       poseSkinnedMesh.skeleton.getBoneByName(s.bone)?.quaternion.fromArray(s.q)
     }
+    // Stamped pose moved the effectors — stale spheres would snap the limb
+    // on the next IK drag
+    syncIkSpheres()
   }
 
   function stopAnimPreview(): void {

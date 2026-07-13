@@ -37,6 +37,8 @@
       @load-scene="onLoadScene"
       @add-npc="onAddNpc"
       @add-zone="onAddZone"
+      @remove-npc="onRemoveNpc"
+      @remove-zone="onRemoveZone"
       @remove-placed="onRemovePlaced"
     />
 
@@ -167,11 +169,15 @@
       :has-pose-character="poseBoneList.length > 0"
       :ik-chain-names="ikChainNames"
       :active-ik-chain-name="activeIkChainName"
+      :pose-memo-names="poseMemoNames"
       @pose-tab-activate="onPoseTabActivate"
       @pose-bone-select="onPoseBoneSelect"
       @pose-capture="onPoseCapture"
       @pose-clear="onPoseClear"
       @ik-chain-select="onIkChainSelect"
+      @pose-memo-save="onPoseMemoSave"
+      @pose-memo-apply="onPoseMemoApply"
+      @pose-memo-remove="onPoseMemoRemove"
       :anim-keyframe-times="animKeyframeTimes"
       :anim-scrub-time="animScrubTime"
       :anim-timeline-duration="animTimelineDuration"
@@ -206,6 +212,7 @@ import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { usePoseEditor } from './usePoseEditor'
 import { useAnimRecorder } from './anim/useAnimRecorder'
+import type { PoseBoneSample } from './anim/animationRecorder'
 import { buildAnimPackRow } from './anim/exportAnimPack'
 import { generateThumbnail } from './thumbnailGenerator'
 import { exportSandboxZip } from './exportSandboxZip'
@@ -729,6 +736,16 @@ function onAddNpc(): void {
 }
 
 function onRemoveNpc(entityId: string): void {
+  // Explicitly release pose/anim state when the pose-attached NPC is removed —
+  // the selection-sync watch chain also gets there, but don't depend on it
+  // (same local-handling precedent as the asset-swap branch in onNpcChanged)
+  if (poseMeshEntityId === entityId) {
+    detachPoseNpc()
+    resetPoseEditor()
+    activeIkChainName.value = null
+    poseMeshEntityId = null
+    animClear()
+  }
   localNpcs.value = localNpcs.value.filter(n => n.entityId !== entityId)
   removeNpcMarker(entityId)
 }
@@ -831,6 +848,62 @@ function onPoseClear(): void {
 function onIkChainSelect(chainName: string): void {
   activeIkChainName.value = chainName
   selectIkTarget(chainName)
+}
+
+// ─── Pose memos — named pose snapshots for reuse (localStorage) ──────────────
+// Bones are matched by name on apply, so a memo carries across any character
+// sharing the skeleton family; unmatched bones are skipped silently.
+
+const POSE_MEMO_STORAGE_KEY = '@base-editor:pose-memos'
+
+interface PoseMemo { name: string; bones: PoseBoneSample[] }
+
+function loadPoseMemos(): PoseMemo[] {
+  try {
+    const raw = localStorage.getItem(POSE_MEMO_STORAGE_KEY)
+    if (!raw) return []
+    // Shape-guard: valid JSON of the wrong shape must not crash setup
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return (parsed as PoseMemo[]).filter(m => typeof m?.name === 'string' && Array.isArray(m?.bones))
+  } catch {
+    return []
+  }
+}
+
+const poseMemos = ref<PoseMemo[]>(loadPoseMemos())
+const poseMemoNames = computed(() => poseMemos.value.map(m => m.name))
+
+function persistPoseMemos(): void {
+  try {
+    localStorage.setItem(POSE_MEMO_STORAGE_KEY, JSON.stringify(poseMemos.value))
+  } catch (err) {
+    console.warn('[poseMemos] persist failed:', err)
+  }
+}
+
+function onPoseMemoSave(rawName: string): void {
+  const name = rawName.trim()
+  if (!name) { flashStatus('Memo name required'); return }
+  const bones = capturePoseSnapshot()
+  if (bones.length === 0) { flashStatus('No pose mesh attached'); return }
+  const existing = poseMemos.value.findIndex(m => m.name === name)
+  if (existing !== -1) poseMemos.value.splice(existing, 1, { name, bones })
+  else poseMemos.value.push({ name, bones })
+  persistPoseMemos()
+  flashStatus(`Pose memo "${name}" saved${existing !== -1 ? ' (replaced)' : ''}`)
+}
+
+function onPoseMemoApply(name: string): void {
+  const memo = poseMemos.value.find(m => m.name === name)
+  if (!memo) return
+  scrubAnimSample(memo.bones)
+  flashStatus(`Pose memo "${name}" applied`)
+}
+
+function onPoseMemoRemove(name: string): void {
+  poseMemos.value = poseMemos.value.filter(m => m.name !== name)
+  persistPoseMemos()
 }
 
 // ─── Anim recorder event handlers (S5-a) ─────────────────────────────────────

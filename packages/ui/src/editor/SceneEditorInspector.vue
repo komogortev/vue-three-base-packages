@@ -342,12 +342,24 @@
             spellcheck="false"
           />
           <div class="bone-list">
-            <button
+            <div
               v-for="bone in filteredBones"
-              :key="bone"
-              :class="['bone-row', { active: selectedPoseBoneName === bone }]"
-              @click="emit('pose-bone-select', bone)"
-            >{{ bone }}</button>
+              :key="bone.name"
+              class="bone-tree-row"
+              :style="{ paddingLeft: (boneFilter ? 0 : bone.depth * 12) + 'px' }"
+            >
+              <button
+                v-if="bone.hasChildren && !boneFilter"
+                class="bone-toggle"
+                :title="collapsedBones.has(bone.name) ? 'Expand children' : 'Collapse children'"
+                @click.stop="toggleBoneCollapse(bone.name)"
+              >{{ collapsedBones.has(bone.name) ? '▸' : '▾' }}</button>
+              <span v-else class="bone-toggle-spacer" />
+              <button
+                :class="['bone-row', { active: selectedPoseBoneName === bone.name }]"
+                @click="emit('pose-bone-select', bone.name)"
+              >{{ bone.name }}</button>
+            </div>
             <p v-if="filteredBones.length === 0" class="field-hint">No matching bones.</p>
           </div>
         </div>
@@ -358,6 +370,32 @@
           <button class="btn-pose-reset" @click="emit('pose-clear')" title="Reset all bones to bind pose">
             Reset Bones
           </button>
+        </div>
+        <!-- Pose memos — save the current pose under a name, re-apply anytime -->
+        <div class="field-group">
+          <label class="field-label">Pose memos</label>
+          <div class="memo-save-row">
+            <input
+              v-model="memoName"
+              class="bone-filter memo-name-input"
+              placeholder="memo name…"
+              spellcheck="false"
+              @keydown.enter="onMemoSaveClick"
+            />
+            <button
+              class="btn-pose-capture"
+              :disabled="!memoName.trim()"
+              title="Save the current pose as a named memo"
+              @click="onMemoSaveClick"
+            >Save</button>
+          </div>
+          <div class="memo-list">
+            <div v-for="name in poseMemoNames" :key="name" class="memo-row">
+              <button class="memo-apply" :title="`Apply pose memo '${name}'`" @click="emit('pose-memo-apply', name)">{{ name }}</button>
+              <button class="memo-remove" title="Delete memo" @click.stop="emit('pose-memo-remove', name)">×</button>
+            </div>
+            <p v-if="poseMemoNames.length === 0" class="field-hint">No memos saved. Pose the character, name it, Save.</p>
+          </div>
         </div>
         <p class="field-hint" style="margin-top:8px">
           Select a bone → <kbd style="font-size:9px;background:#0e1c2e;padding:1px 4px;border-radius:2px;border:1px solid #1a3050">R</kbd> drag (FK). Click a chain button above to drag its IK sphere.
@@ -474,7 +512,7 @@ import { ref, computed, watch } from 'vue'
 import * as THREE from 'three'
 import { useAssetStore } from './useAssetStore'
 import AnimTimelinePanel from './anim/AnimTimelinePanel.vue'
-import type { SceneEditorConfig, EditorSelection, EditorNpcEntry, EditorZoneEntry } from './sceneEditorTypes'
+import type { SceneEditorConfig, EditorSelection, EditorNpcEntry, EditorZoneEntry, PoseBoneNode } from './sceneEditorTypes'
 
 const props = defineProps<{
   selection: EditorSelection
@@ -489,8 +527,10 @@ const props = defineProps<{
   /** D-5b: asset ID of the player animation pack GLB. */
   playerAnimPackAssetId?: string
   // ─── S4: Pose Editor ────────────────────────────────────────────────────
-  /** Bone names from the loaded pose mesh skeleton. Empty until mesh is loaded. */
-  poseBoneList: string[]
+  /** DFS-ordered bone tree of the loaded pose mesh. Empty until mesh is loaded. */
+  poseBoneList: PoseBoneNode[]
+  /** Saved pose memo names (localStorage-backed, view-owned). */
+  poseMemoNames: string[]
   /** Name of the bone currently attached to TransformControls, or null. */
   selectedPoseBoneName: string | null
   /** True when the pose character mesh is loaded and bones are available. */
@@ -536,6 +576,9 @@ const emit = defineEmits<{
   'pose-capture': []
   'pose-clear': []
   'ik-chain-select': [chainName: string]
+  'pose-memo-save': [name: string]
+  'pose-memo-apply': [name: string]
+  'pose-memo-remove': [name: string]
   // ─── S5-a: Anim timeline ──────────────────────────────────────────────────
   'anim-tab-activate': []
   'anim-scrub': [time: number]
@@ -555,11 +598,46 @@ type NpcTab = (typeof npcTabs)[number] | 'Pose' | 'Anim'
 const activeTab = ref<NpcTab>('Transform')
 
 const boneFilter = ref('')
-const filteredBones = computed(() =>
-  boneFilter.value
-    ? props.poseBoneList.filter(b => b.toLowerCase().includes(boneFilter.value.toLowerCase()))
-    : props.poseBoneList
-)
+const collapsedBones = ref(new Set<string>())
+
+function toggleBoneCollapse(name: string): void {
+  const next = new Set(collapsedBones.value)
+  if (next.has(name)) next.delete(name)
+  else next.add(name)
+  collapsedBones.value = next
+}
+
+/**
+ * Bones visible in the tree: filtering shows every name match flat (collapse
+ * ignored — a filter that hides matches inside collapsed branches would read
+ * as "bone missing"); otherwise a node hides when any ancestor is collapsed.
+ */
+const filteredBones = computed<PoseBoneNode[]>(() => {
+  if (boneFilter.value) {
+    const q = boneFilter.value.toLowerCase()
+    return props.poseBoneList.filter(b => b.name.toLowerCase().includes(q))
+  }
+  if (collapsedBones.value.size === 0) return props.poseBoneList
+  const parentOf = new Map(props.poseBoneList.map(b => [b.name, b.parent]))
+  return props.poseBoneList.filter(b => {
+    let p = b.parent
+    while (p !== null && p !== undefined) {
+      if (collapsedBones.value.has(p)) return false
+      p = parentOf.get(p) ?? null
+    }
+    return true
+  })
+})
+
+// Pose memo save field (list + persistence are view-owned)
+const memoName = ref('')
+
+function onMemoSaveClick(): void {
+  const name = memoName.value.trim()
+  if (!name) return
+  emit('pose-memo-save', name)
+  memoName.value = ''
+}
 
 function onPoseTabClick(): void {
   activeTab.value = 'Pose'
@@ -575,7 +653,13 @@ function onAnimTabClick(): void {
 watch(() => props.selection, () => {
   activeTab.value = 'Transform'
   boneFilter.value = ''
+  collapsedBones.value = new Set()
   if (pathEditMode.value) stopPathEditMode()
+})
+
+// A new skeleton (same-NPC asset swap) must not inherit stale collapse state
+watch(() => props.poseBoneList, () => {
+  collapsedBones.value = new Set()
 })
 
 // ─── Derived selection ────────────────────────────────────────────────────────
@@ -1156,6 +1240,76 @@ const fmt = (n: number) => n.toFixed(2)
 .bone-row:last-child { border-bottom: none; }
 .bone-row:hover { background: rgba(90,176,245,0.07); color: #7ab0d8; }
 .bone-row.active { background: rgba(90,176,245,0.14); color: #9dd4ff; }
+
+/* Bone tree — indentation set inline from node depth */
+.bone-tree-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid #0e1622;
+}
+.bone-tree-row:last-of-type { border-bottom: none; }
+.bone-tree-row .bone-row { border-bottom: none; flex: 1; min-width: 0; }
+.bone-toggle {
+  width: 16px;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #3a6080;
+  font-size: 9px;
+  cursor: pointer;
+  padding: 0;
+}
+.bone-toggle:hover { color: #7ab0d8; }
+.bone-toggle-spacer { width: 16px; flex-shrink: 0; }
+
+/* Pose memos */
+.memo-save-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.memo-name-input { flex: 1; min-width: 0; margin-bottom: 0; }
+.memo-save-row .btn-pose-capture { flex: 0 0 auto; }
+.memo-save-row .btn-pose-capture:disabled { opacity: 0.4; cursor: default; }
+.memo-list {
+  margin-top: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #182a40 transparent;
+}
+.memo-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #0e1622;
+}
+.memo-row:last-child { border-bottom: none; }
+.memo-apply {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: #8bafc8;
+  font-family: monospace;
+  font-size: 10px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.memo-apply:hover { background: rgba(90,176,245,0.07); color: #9dd4ff; }
+.memo-remove {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: #3a5060;
+  font-size: 13px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.memo-remove:hover { color: #ff6060; }
 .pose-actions {
   display: flex;
   gap: 6px;
