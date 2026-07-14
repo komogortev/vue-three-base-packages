@@ -163,6 +163,9 @@ importers:
 
   packages/ui:
     dependencies:
+      '@base/threejs-engine':
+        specifier: workspace:*
+        version: link:../threejs-engine
       dexie:
         specifier: ^4.0.10
         version: 4.4.2

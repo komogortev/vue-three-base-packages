@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import type { EventBus } from '@base/engine-core'
+import { localDracoDecoderPath, resetDracoLoaderOnInitFailure } from './dracoDecoder'
 
 export type { GLTF }
 
@@ -44,12 +45,6 @@ export interface FBXRoot {
   group: THREE.Group
   animations: THREE.AnimationClip[]
 }
-
-/**
- * Draco decoder served by Google — matches what three.js examples use.
- * Required for many Sketchfab / Blender-compressed GLBs.
- */
-const DRACO_DECODER_URL = 'https://www.gstatic.com/draco/versioned/decoders/1.5.7/'
 
 /**
  * {@link FBXLoader} warns on almost every Mixamo file; behaviour is already handled (truncate weights,
@@ -104,14 +99,39 @@ export class AssetLoader {
   private initGltfLoaderExtensions(): Promise<void> {
     if (this.gltfExtensionsReady === null) {
       this.gltfExtensionsReady = (async (): Promise<void> => {
-        this.dracoLoader = new DRACOLoader()
-        this.dracoLoader.setDecoderPath(DRACO_DECODER_URL)
-        this.gltfLoader.setDRACOLoader(this.dracoLoader)
+        const draco = new DRACOLoader()
+        draco.setDecoderPath(localDracoDecoderPath())
+        this.dracoLoader = draco
+        this.gltfLoader.setDRACOLoader(draco)
+        // Kick off decoder init now and reset ONLY on a decoder-init failure — a
+        // failed Draco fetch otherwise stays poisoned in DRACOLoader's cached
+        // promise until page reload (CodeReview 2026-07-11, problem 2). Scoping
+        // the reset to the decoder (not to every GLTF load error) means a plain
+        // model 404 can't dispose a decoder a concurrent Draco load is using.
+        draco.preload()
+        resetDracoLoaderOnInitFailure(draco, () => this.resetGltfLoaderExtensions(draco))
         await MeshoptDecoder.ready
         this.gltfLoader.setMeshoptDecoder(MeshoptDecoder)
-      })()
+      })().catch((err) => {
+        // Don't leave a rejected promise cached — the meshopt/decoder init would
+        // then fail every future load with no retry. Clear so the next call rebuilds.
+        this.resetGltfLoaderExtensions(this.dracoLoader)
+        throw err
+      })
     }
     return this.gltfExtensionsReady
+  }
+
+  /**
+   * Dispose the Draco decoder + clear the extension-init cache so the next
+   * {@link loadGLTF} rebuilds a fresh DRACOLoader. `expected` guards against a
+   * late/duplicate reset clobbering a decoder a newer init has already installed.
+   */
+  private resetGltfLoaderExtensions(expected: DRACOLoader | null): void {
+    if (this.dracoLoader !== expected) return
+    this.dracoLoader?.dispose()
+    this.dracoLoader = null
+    this.gltfExtensionsReady = null
   }
 
   /**

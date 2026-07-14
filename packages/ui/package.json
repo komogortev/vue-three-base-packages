@@ -18,6 +18,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@base/threejs-engine": "workspace:*",
     "dexie": "^4.0.10",
     "fflate": "^0.8.2",
     "nanoid": "^5.0.0"
