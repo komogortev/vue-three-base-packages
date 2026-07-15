@@ -187,6 +187,21 @@ export const useAssetStore = defineStore('assets', () => {
     return url
   }
 
+  /**
+   * S5-d kit authoring: replace an animation-pack's blob with a re-exported one
+   * that carries an extra clip, and grow its `clipNames`. The caller (viewport)
+   * produces the merged blob; this owns the Dexie write + cache invalidation so
+   * a subsequent `resolveBlobUrl` hands back the grown pack, not the stale one.
+   */
+  async function appendToPack(id: string, blob: Blob, clipNames: string[]): Promise<void> {
+    await assetDb.assets.update(id, { blob, size: blob.size, clipNames })
+    const cached = blobUrlCache.get(id)
+    if (cached) {
+      URL.revokeObjectURL(cached)
+      blobUrlCache.delete(id)
+    }
+  }
+
   async function remove(id: string): Promise<void> {
     const cached = blobUrlCache.get(id)
     if (cached) {
@@ -196,5 +211,5 @@ export const useAssetStore = defineStore('assets', () => {
     await assetDb.assets.delete(id)
   }
 
-  return { assets, upload, getById, resolveBlobUrl, remove }
+  return { assets, upload, getById, resolveBlobUrl, appendToPack, remove }
 })

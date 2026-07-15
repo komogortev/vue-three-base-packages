@@ -183,6 +183,7 @@
       :anim-timeline-duration="animTimelineDuration"
       :anim-preview-playing="animPreviewPlaying"
       :anim-export-busy="animExportBusy"
+      :audition-playing="auditionClipName"
       @anim-tab-activate="onAnimTabActivate"
       @anim-scrub="onAnimScrub"
       @anim-key-capture="onAnimKeyCapture"
@@ -190,13 +191,16 @@
       @anim-preview-toggle="onAnimPreviewToggle"
       @anim-duration-set="onAnimDurationSet"
       @anim-export="onAnimExport"
+      @anim-add-to-kit="onAnimAddToKit"
+      @audition-clip="onAuditionClip"
+      @audition-stop="onAuditionStop"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
     <AssetPicker
       :open="pickerOpen"
       :kind-filter="pickerKind"
-      @close="pickerOpen = false"
+      @close="onPickerClose"
       @select="onPickerSelect"
     />
 
@@ -341,6 +345,8 @@ const {
   stopAnimPreview,
   animPreviewPlaying,
   exportAnimClip,
+  auditionPackClip,
+  buildAppendedPackBlob,
 } = useSceneEditorViewport({
   canvas: canvasRef,
   config: effectiveConfig.value,
@@ -939,6 +945,7 @@ function onAnimPreviewToggle(): void {
   if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
   setPoseSelectedBone(null)
   activeIkChainName.value = null
+  auditionClipName.value = null // recorder preview reuses the mixer — drop the audition highlight
   startAnimPreview(animRecorder.build('preview'))
 }
 
@@ -953,8 +960,8 @@ async function onAnimExport(clipName: string): Promise<void> {
   if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
   animExportBusy.value = true
   try {
-    if (animPreviewPlaying.value) stopAnimPreview()
-    const blob = await exportAnimClip(animRecorder.build(clipName))
+    if (animPreviewPlaying.value) { stopAnimPreview(); auditionClipName.value = null }
+    const blob = await exportAnimClip([animRecorder.build(clipName)])
     if (!blob) { flashStatus('Export failed — no pose mesh attached'); return }
     // Thumbnail is best-effort, same posture as useAssetStore.upload()
     let thumbnail: Blob | undefined
@@ -964,10 +971,80 @@ async function onAnimExport(clipName: string): Promise<void> {
       console.warn('[onAnimExport] thumbnail generation failed:', err)
     }
     await assetDb.assets.add(buildAnimPackRow(clipName, blob, thumbnail))
-    flashStatus(`Animation pack "${clipName}" saved (${(blob.size / (1024 * 1024)).toFixed(1)} MB)`)
+    flashStatus(`Animation kit "${clipName}" saved (${(blob.size / (1024 * 1024)).toFixed(1)} MB)`)
   } catch (err) {
     console.error('[onAnimExport] failed:', err)
     flashStatus('Export failed')
+  } finally {
+    animExportBusy.value = false
+  }
+}
+
+// ─── S5-d: clip audition + kit append ────────────────────────────────────────
+
+/** Clip name currently auditioning on the selected NPC (drives the ▶/■ highlight). */
+const auditionClipName = ref<string | null>(null)
+
+// Any path that stops the shared preview mixer (scrub, key edit, tab/selection
+// change detaching the pose mesh) clears the audition highlight.
+watch(animPreviewPlaying, (playing) => {
+  if (!playing) auditionClipName.value = null
+})
+
+async function onAuditionClip(entityId: string, clipName: string): Promise<void> {
+  const npc = localNpcs.value.find(n => n.entityId === entityId)
+  if (!npc?.animationPackAssetId) { flashStatus('No animation pack bound'); return }
+  if (!npc.assetId) { flashStatus('Bind a character mesh to audition'); return }
+  // The ▶ lives in the Asset tab, which never activates the pose mesh — attach
+  // it here so audition works on the natural select-NPC → Asset tab → ▶ path
+  // (ensurePoseMeshAttached is idempotent and flashes its own failure reason).
+  if (!(await ensurePoseMeshAttached())) return
+  const url = assetStore.resolveBlobUrl(npc.animationPackAssetId)
+  if (!url) { flashStatus('Pack unavailable'); return }
+  const result = await auditionPackClip(url, clipName)
+  if (result.ok) {
+    auditionClipName.value = clipName
+  } else {
+    // Keep highlight + playback in sync: a rejected switch stops any clip still looping.
+    stopAnimPreview()
+    auditionClipName.value = null
+    flashStatus(result.reason)
+  }
+}
+
+function onAuditionStop(): void {
+  stopAnimPreview()
+  auditionClipName.value = null
+}
+
+async function onAnimAddToKit(clipName: string): Promise<void> {
+  if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
+  // Build the clip now — the recorder buffer could change before the pack is picked.
+  pendingKitClip = animRecorder.build(clipName)
+  pickerKind.value = 'animation-pack'
+  pickerIsForPlayer.value = false
+  pickerIsForAmbientAudio.value = false
+  pickerIsForAnimKit.value = true
+  pickerOpen.value = true
+}
+
+async function appendPendingClipToKit(targetAssetId: string): Promise<void> {
+  const clip = pendingKitClip
+  pendingKitClip = null
+  if (!clip) return
+  if (animExportBusy.value) { flashStatus('Busy — try again'); return }
+  animExportBusy.value = true
+  try {
+    if (animPreviewPlaying.value) { stopAnimPreview(); auditionClipName.value = null }
+    const url = assetStore.resolveBlobUrl(targetAssetId)
+    if (!url) { flashStatus('Target kit unavailable'); return }
+    const result = await buildAppendedPackBlob(url, clip)
+    if ('error' in result) { flashStatus(result.error); return }
+    await assetStore.appendToPack(targetAssetId, result.blob, result.clipNames)
+    flashStatus(`Added "${clip.name}" to kit (${result.clipNames.length} clips)`)
+  } catch (err) {
+    console.error('[appendPendingClipToKit] failed:', err)
+    flashStatus('Add to kit failed')
   } finally {
     animExportBusy.value = false
   }
@@ -996,12 +1073,17 @@ const pickerEntityId = ref('')
 const pickerKind = ref<AssetKind>('character')
 const pickerIsForPlayer = ref(false)
 const pickerIsForAmbientAudio = ref(false)
+// S5-d: the picker is choosing the target kit for an "Add to Kit…" append.
+const pickerIsForAnimKit = ref(false)
+// The clip captured at "Add to Kit…" click, held until the target pack is picked.
+let pendingKitClip: THREE.AnimationClip | null = null
 
 function onPickNpcAsset(entityId: string, kind: 'character' | 'animation-pack'): void {
   pickerEntityId.value = entityId
   pickerKind.value = kind
   pickerIsForPlayer.value = false
   pickerIsForAmbientAudio.value = false
+  pickerIsForAnimKit.value = false
   pickerOpen.value = true
 }
 
@@ -1014,6 +1096,7 @@ function onPickPlayerAsset(kind: 'character' | 'animation-pack'): void {
   pickerKind.value = kind
   pickerIsForPlayer.value = true
   pickerIsForAmbientAudio.value = false
+  pickerIsForAnimKit.value = false
   pickerOpen.value = true
 }
 
@@ -1023,6 +1106,7 @@ function onPickAmbientAudio(): void {
   pickerKind.value = 'audio'
   pickerIsForPlayer.value = false
   pickerIsForAmbientAudio.value = true
+  pickerIsForAnimKit.value = false
   pickerOpen.value = true
 }
 
@@ -1053,9 +1137,19 @@ async function applyPlayerCharAsset(): Promise<void> {
   await setPlayCharacterAsset(charUrl, animUrl)
 }
 
+function onPickerClose(): void {
+  pickerOpen.value = false
+  // Cancelled an "Add to Kit…" pick — drop the captured clip + intent.
+  pickerIsForAnimKit.value = false
+  pendingKitClip = null
+}
+
 function onPickerSelect(assetId: string): void {
   pickerOpen.value = false
-  if (pickerIsForAmbientAudio.value) {
+  if (pickerIsForAnimKit.value) {
+    pickerIsForAnimKit.value = false
+    void appendPendingClipToKit(assetId)
+  } else if (pickerIsForAmbientAudio.value) {
     ambientAudioAssetId.value = assetId
     pickerIsForAmbientAudio.value = false
   } else if (pickerIsForPlayer.value) {

@@ -68,9 +68,9 @@
         />
       </div>
 
-      <!-- S5-b: export as animation-pack asset -->
+      <!-- S5-b: export as new kit / S5-d: append into an existing kit -->
       <div class="anim-field-group">
-        <label class="anim-label" for="anim-clip-name">Save as animation pack</label>
+        <label class="anim-label" for="anim-clip-name">Save recorded clip</label>
         <div class="anim-export-row">
           <input
             id="anim-clip-name"
@@ -83,15 +83,22 @@
           <button
             class="anim-btn anim-btn-capture"
             :disabled="!canExport"
-            :title="canExport ? 'Export the recorded clip as an animation-pack asset' : 'Needs at least one keyframe and a clip name'"
+            :title="canExport ? 'Export the recorded clip as a new animation kit' : 'Needs at least one keyframe and a clip name'"
             @click="onExportClick"
-          >{{ exportBusy ? 'Exporting…' : 'Export Pack' }}</button>
+          >{{ exportBusy ? 'Saving…' : 'New Kit' }}</button>
+          <button
+            class="anim-btn"
+            :disabled="!canExport"
+            :title="canExport ? 'Add the recorded clip to an existing animation kit' : 'Needs at least one keyframe and a clip name'"
+            @click="onAddToKitClick"
+          >Add to Kit…</button>
         </div>
       </div>
 
       <p class="anim-hint">
         Pose the character (Pose tab or bone gizmo), scrub to a time, then Capture.
         Clip duration = last keyframe. Preview plays once and holds the final pose.
+        A kit is one asset holding many clips — "New Kit" starts one, "Add to Kit…" grows one.
       </p>
     </template>
   </div>
@@ -122,6 +129,8 @@ const emit = defineEmits<{
   'preview-toggle': []
   'duration-set': [seconds: number]
   'export-clip': [clipName: string]
+  /** S5-d: append the recorded clip to an existing kit (opens the pack picker). */
+  'add-to-kit': [clipName: string]
 }>()
 
 const selectedKeyTime = ref<number | null>(null)
@@ -134,6 +143,11 @@ const canExport = computed(
 function onExportClick(): void {
   if (!canExport.value) return
   emit('export-clip', clipName.value.trim())
+}
+
+function onAddToKitClick(): void {
+  if (!canExport.value) return
+  emit('add-to-kit', clipName.value.trim())
 }
 
 function onMarkerClick(t: number): void {

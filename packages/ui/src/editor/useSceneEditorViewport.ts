@@ -6,7 +6,7 @@ import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamM
 import type { SavedPlacedObject } from './sandboxSceneSchema'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
-import { exportAnimationGlb } from './anim/exportAnimPack'
+import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
 export type { EditorCamMode } from './sceneEditorTypes'
 
@@ -165,16 +165,32 @@ export interface SceneEditorViewportReturn {
   /** Attach TransformControls in translate mode to the named IK target sphere. */
   selectIkTarget: (chainName: string) => void
   // ─── Anim preview (S5-a) — thin delegators to PosePreviewMixer ───────────
-  /** Play a recorded clip once on the pose mesh (LoopOnce, clamps at end). */
-  startAnimPreview: (clip: THREE.AnimationClip) => void
+  /** Play a clip on the pose mesh. Default LoopOnce+clamp (recorder preview); `loop` = LoopRepeat (S5-d audition). */
+  startAnimPreview: (clip: THREE.AnimationClip, loop?: boolean) => void
   /** Stamp a recorder sample onto the pose skeleton (timeline scrub). */
   scrubAnimSample: (bones: PoseBoneSample[]) => void
   /** Stop preview playback, leaving bones at their current pose. */
   stopAnimPreview: () => void
   /** True while a preview clip is playing (flips false when LoopOnce finishes). */
   animPreviewPlaying: Readonly<Ref<boolean>>
-  /** S5-b: export a recorded clip as a self-contained GLB over the pose mesh. Null when no mesh attached. */
-  exportAnimClip: (clip: THREE.AnimationClip) => Promise<Blob | null>
+  /** S5-b: export recorded clip(s) as a self-contained GLB over the pose mesh. Null when no mesh attached. */
+  exportAnimClip: (clips: THREE.AnimationClip[]) => Promise<Blob | null>
+  /**
+   * S5-d: load a stored animation-pack GLB, extract `clipName`, and loop it on
+   * the pose mesh to audition it. Rejects (no play) when no pose mesh is
+   * attached, the clip is absent, or its bones don't resolve on this skeleton.
+   */
+  auditionPackClip: (packBlobUrl: string, clipName: string) => Promise<{ ok: true } | { ok: false; reason: string }>
+  /**
+   * S5-d: build the blob for appending `newClip` into the pack at `packBlobUrl`
+   * (kit authoring). Loads the pack, guards skeleton coherence + duplicate name
+   * against the current pose mesh, then re-exports all clips. The caller writes
+   * the Dexie row. Returns `{ error }` (not thrown) on any guard failure.
+   */
+  buildAppendedPackBlob: (
+    packBlobUrl: string,
+    newClip: THREE.AnimationClip,
+  ) => Promise<{ blob: Blob; clipNames: string[] } | { error: string }>
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -1018,7 +1034,7 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Anim preview (S5-a) — thin delegators, mechanics in PosePreviewMixer ───
 
-  function startAnimPreview(clip: THREE.AnimationClip): void {
+  function startAnimPreview(clip: THREE.AnimationClip, loop = false): void {
     if (!poseMeshRoot) return
     // TC fighting the mixer over bone quats would corrupt the preview — release it
     if (poseHasBoneAttached || ikActiveChainName !== null) {
@@ -1028,7 +1044,7 @@ export function useSceneEditorViewport(opts: {
       transformControls.enabled = false
     }
     animPreviewMixer.attach(poseMeshRoot)
-    animPreviewMixer.play(clip)
+    animPreviewMixer.play(clip, loop)
     animPreviewPlaying.value = true
   }
 
@@ -1051,9 +1067,66 @@ export function useSceneEditorViewport(opts: {
   // Safe against mid-export detach: the root is captured synchronously, the
   // exporter reads CPU-side buffer attributes (detach disposes GPU resources
   // only), and the resulting Dexie row is self-contained.
-  async function exportAnimClip(clip: THREE.AnimationClip): Promise<Blob | null> {
+  async function exportAnimClip(clips: THREE.AnimationClip[]): Promise<Blob | null> {
     if (!poseMeshRoot) return null
-    return exportAnimationGlb(poseMeshRoot, clip)
+    return exportAnimationGlb(poseMeshRoot, clips)
+  }
+
+  // ─── Clip audition + kit append (S5-d) ──────────────────────────────────────
+
+  // One-entry cache so re-auditioning clips from the same pack doesn't re-parse
+  // the ~5 MB GLB on every ▶. Keyed by blob URL — an appended pack gets a fresh
+  // URL (the store revokes the old one), so this never serves a stale kit.
+  let auditionPackCache: { url: string; clips: THREE.AnimationClip[] } | null = null
+
+  async function loadPackClips(packBlobUrl: string): Promise<THREE.AnimationClip[]> {
+    if (auditionPackCache?.url === packBlobUrl) return auditionPackCache.clips
+    const gltf = await createEditorGltfLoader().loadAsync(packBlobUrl)
+    auditionPackCache = { url: packBlobUrl, clips: gltf.animations }
+    return gltf.animations
+  }
+
+  async function auditionPackClip(
+    packBlobUrl: string,
+    clipName: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (!poseMeshRoot || !poseSkinnedMesh) return { ok: false, reason: 'No character loaded' }
+    let clips: THREE.AnimationClip[]
+    try {
+      clips = await loadPackClips(packBlobUrl)
+    } catch (e) {
+      console.warn('[SceneEditor] audition pack load failed:', e)
+      return { ok: false, reason: 'Pack failed to load' }
+    }
+    const clip = clips.find((c) => c.name === clipName)
+    if (!clip) return { ok: false, reason: `Clip "${clipName}" not found in pack` }
+    // Pre-flight: a clip authored on a different skeleton binds nothing and
+    // plays silently — refuse and tell the user rather than showing a frozen mesh.
+    if (resolveClipBones(clip, poseSkinnedMesh.skeleton).matched === 0) {
+      return { ok: false, reason: "Clip's bones don't match this character" }
+    }
+    startAnimPreview(clip, true)
+    return { ok: true }
+  }
+
+  async function buildAppendedPackBlob(
+    packBlobUrl: string,
+    newClip: THREE.AnimationClip,
+  ): Promise<{ blob: Blob; clipNames: string[] } | { error: string }> {
+    if (!poseMeshRoot || !poseSkinnedMesh) return { error: 'No character loaded' }
+    let existing: THREE.AnimationClip[]
+    try {
+      // Bypass the audition cache: append needs the authoritative on-disk clips.
+      const gltf = await createEditorGltfLoader().loadAsync(packBlobUrl)
+      existing = gltf.animations
+    } catch (e) {
+      console.warn('[SceneEditor] append pack load failed:', e)
+      return { error: 'Target pack failed to load' }
+    }
+    const check = validateKitAppend(existing, newClip, poseSkinnedMesh.skeleton)
+    if (!check.ok) return { error: check.reason }
+    const blob = await exportAnimationGlb(poseMeshRoot, [...existing, newClip])
+    return { blob, clipNames: [...existing.map((c) => c.name), newClip.name] }
   }
 
   // ─── GLB loading ────────────────────────────────────────────────────────────
@@ -1944,5 +2017,7 @@ export function useSceneEditorViewport(opts: {
     stopAnimPreview,
     animPreviewPlaying: shallowReadonly(animPreviewPlaying),
     exportAnimClip,
+    auditionPackClip,
+    buildAppendedPackBlob,
   }
 }

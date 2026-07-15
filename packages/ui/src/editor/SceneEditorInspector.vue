@@ -296,18 +296,33 @@
         </div>
       </div>
       <div v-if="selectedNpc" class="field-group">
-        <label class="field-label">Default clip</label>
-        <select
-          v-if="availableClips.length > 0"
-          class="field-select"
-          :value="selectedNpc.defaultClip ?? ''"
-          @change="emit('npc-changed', selectedNpc!.entityId, { defaultClip: ($event.target as HTMLSelectElement).value || undefined })"
-        >
-          <option value="">(none)</option>
-          <option v-for="clip in availableClips" :key="clip" :value="clip">{{ clip }}</option>
-        </select>
+        <label class="field-label">Clips</label>
+        <div v-if="availableClips.length > 0" class="clip-list">
+          <div
+            v-for="clip in availableClips"
+            :key="clip"
+            class="clip-row"
+            :class="{ auditioning: auditionPlaying === clip }"
+          >
+            <button
+              class="clip-audition"
+              :title="auditionPlaying === clip ? 'Stop' : 'Play this clip on the NPC'"
+              @click="onAuditionToggle(clip)"
+            >{{ auditionPlaying === clip ? '■' : '▶' }}</button>
+            <span class="clip-name" :title="clip">{{ clip }}</span>
+            <button
+              class="clip-default"
+              :class="{ active: selectedNpc.defaultClip === clip }"
+              :title="selectedNpc.defaultClip === clip ? 'Default clip (click to unset)' : 'Set as default clip'"
+              @click="onDefaultToggle(clip)"
+            >{{ selectedNpc.defaultClip === clip ? '★' : '☆' }}</button>
+          </div>
+        </div>
         <p v-else class="field-hint">
           {{ selectedNpc.animationPackAssetId ? 'No clips found in pack.' : 'Set an animation pack first.' }}
+        </p>
+        <p v-if="availableClips.length > 0" class="field-hint">
+          ▶ auditions on the NPC · ★ marks the clip the room player loops.
         </p>
       </div>
     </div>
@@ -420,6 +435,7 @@
         @preview-toggle="emit('anim-preview-toggle')"
         @duration-set="emit('anim-duration-set', $event)"
         @export-clip="emit('anim-export', $event)"
+        @add-to-kit="emit('anim-add-to-kit', $event)"
       />
     </div>
 
@@ -550,6 +566,8 @@ const props = defineProps<{
   animPreviewPlaying: boolean
   /** True while an animation-pack export is in flight. */
   animExportBusy: boolean
+  /** S5-d: name of the clip currently auditioning on the NPC, or null. */
+  auditionPlaying: string | null
 }>()
 
 const emit = defineEmits<{
@@ -587,6 +605,11 @@ const emit = defineEmits<{
   'anim-preview-toggle': []
   'anim-duration-set': [seconds: number]
   'anim-export': [clipName: string]
+  /** S5-d: append the recorded clip into an existing kit. */
+  'anim-add-to-kit': [clipName: string]
+  // ─── S5-d: clip audition ──────────────────────────────────────────────────
+  'audition-clip': [entityId: string, clipName: string]
+  'audition-stop': []
 }>()
 
 const assetStore = useAssetStore()
@@ -701,6 +724,21 @@ const availableClips = computed<string[]>(() => {
   if (!npc?.animationPackAssetId) return []
   return assetStore.getById(npc.animationPackAssetId)?.clipNames ?? []
 })
+
+function onAuditionToggle(clip: string): void {
+  const npc = selectedNpc.value
+  if (!npc) return
+  if (props.auditionPlaying === clip) emit('audition-stop')
+  else emit('audition-clip', npc.entityId, clip)
+}
+
+function onDefaultToggle(clip: string): void {
+  const npc = selectedNpc.value
+  if (!npc) return
+  // Star the clip, or un-star it when it's already the default.
+  const defaultClip = npc.defaultClip === clip ? undefined : clip
+  emit('npc-changed', npc.entityId, { defaultClip })
+}
 
 // ─── Remove action ────────────────────────────────────────────────────────────
 
@@ -1025,6 +1063,56 @@ const fmt = (n: number) => n.toFixed(2)
   white-space: nowrap;
 }
 .asset-id.unset { color: #2a4a5a; }
+
+/* ── S5-d clip audition list ─────────────────────────────────────────────── */
+.clip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.clip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border: 1px solid #14263c;
+  border-radius: 3px;
+}
+.clip-row.auditioning {
+  border-color: #235c36;
+  background: rgba(35,92,54,0.15);
+}
+.clip-name {
+  flex: 1;
+  font-size: 11px;
+  color: #b8d4f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.clip-audition {
+  width: 22px;
+  padding: 2px 0;
+  font-size: 10px;
+  background: transparent;
+  border: 1px solid #1a3050;
+  color: #9fe8b8;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.clip-audition:hover { background: rgba(90,176,245,0.1); }
+.clip-default {
+  padding: 2px 4px;
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: #3a5a6a;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.clip-default.active { color: #ffb347; }
+.clip-default:hover { color: #ffd18a; }
 .btn-asset-pick {
   padding: 3px 8px;
   font-size: 10px;
