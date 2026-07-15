@@ -49,6 +49,7 @@ export type {
   ReadonlyPoseBoneSample,
   ReadonlyRecordedKeyframe,
 } from './editor/anim/animationRecorder'
+export { createEditorGltfLoader } from './editor/gltfLoaderFactory'
 export { serializeEditorConfigTS, buildRoomPackageScene } from './editor/SceneEditorExporter'
 export { exportRoomPackage } from './editor/exportRoomPackage'
 export { loadRoomPackage, loadRoomFromDb } from './editor/loadRoomPackage'

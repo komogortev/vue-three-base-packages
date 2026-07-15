@@ -97,8 +97,8 @@ export async function loadRoomFromDb(sceneId: string): Promise<LoadedRoomPackage
   for (const obj of scene.placedObjects) assetIdSet.add(obj.assetId)
   for (const npc of scene.npcs) {
     if (npc.assetId) assetIdSet.add(npc.assetId)
-    // animationPackAssetId pre-fetched here for V2 (runtime animation); V1 RoomPlayerModule only
-    // plays static poses — the blob URL is held until revoke() but not consumed by loadRoom yet.
+    // animationPackAssetId is consumed by the room player (S5-c): RoomPlayerModule
+    // creates a mixer per NPC and loops npc.defaultClip from this pack blob.
     if (npc.animationPackAssetId) assetIdSet.add(npc.animationPackAssetId)
   }
   if (scene.ambientAudioAssetId) assetIdSet.add(scene.ambientAudioAssetId)
