@@ -191,6 +191,7 @@
       @anim-preview-toggle="onAnimPreviewToggle"
       @anim-duration-set="onAnimDurationSet"
       @anim-export="onAnimExport"
+      @anim-load-existing="onAnimLoadExisting"
       @anim-add-to-kit="onAnimAddToKit"
       @audition-clip="onAuditionClip"
       @audition-stop="onAuditionStop"
@@ -346,6 +347,7 @@ const {
   animPreviewPlaying,
   exportAnimClip,
   auditionPackClip,
+  loadPackClipForEdit,
   buildAppendedPackBlob,
 } = useSceneEditorViewport({
   canvas: canvasRef,
@@ -376,6 +378,7 @@ const {
   addKeyframe: animAddKeyframe,
   removeKeyframe: animRemoveKeyframe,
   setTimelineDuration: animSetTimelineDuration,
+  loadFromClip: animLoadFromClip,
   clear: animClear,
 } = useAnimRecorder()
 
@@ -975,6 +978,36 @@ async function onAnimExport(clipName: string): Promise<void> {
   } catch (err) {
     console.error('[onAnimExport] failed:', err)
     flashStatus('Export failed')
+  } finally {
+    animExportBusy.value = false
+  }
+}
+
+async function onAnimLoadExisting(entityId: string, clipName: string): Promise<void> {
+  if (animExportBusy.value) return
+  const npc = localNpcs.value.find(n => n.entityId === entityId)
+  if (!npc?.animationPackAssetId) { flashStatus('No animation pack bound'); return }
+  if (!npc.assetId) { flashStatus('Bind a character mesh to load a clip'); return }
+  // Reuse the export-busy flag: it disables the Load button too, so a slow
+  // first-load pack parse can't queue overlapping loads on rapid clicks.
+  animExportBusy.value = true
+  try {
+    // The pose mesh is what the loaded clip must resolve against + re-export from.
+    if (!(await ensurePoseMeshAttached())) return
+    const url = assetStore.resolveBlobUrl(npc.animationPackAssetId)
+    if (!url) { flashStatus('Pack unavailable'); return }
+    const result = await loadPackClipForEdit(url, clipName)
+    if (!result.ok) { flashStatus(result.reason); return }
+    // Drop any in-flight preview/audition before swapping the timeline contents.
+    if (animPreviewPlaying.value) { stopAnimPreview(); auditionClipName.value = null }
+    const skipped = animLoadFromClip(result.clip)
+    animScrubTime.value = 0
+    scrubAnimSample(animRecorder.sampleAt(0))
+    flashStatus(
+      skipped > 0
+        ? `Loaded "${clipName}" (${skipped} root-motion track${skipped === 1 ? '' : 's'} dropped — in-place only)`
+        : `Loaded "${clipName}" for editing`,
+    )
   } finally {
     animExportBusy.value = false
   }

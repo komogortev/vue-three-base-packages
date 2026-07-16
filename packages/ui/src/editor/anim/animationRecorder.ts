@@ -29,6 +29,66 @@ function cloneBones(bones: PoseBoneSample[]): PoseBoneSample[] {
   return bones.map((b) => ({ bone: b.bone, q: [...b.q] as PoseBoneSample['q'] }))
 }
 
+/** Outcome of pulling keyframes back out of an existing clip. */
+export interface ClipExtraction {
+  keyframes: RecordedKeyframe[]
+  /**
+   * Non-rotation tracks dropped during extraction (position / scale). The
+   * recorder is quaternion-only (in-place, OD-4), so a clip carrying root
+   * motion loses that translation — surfaced so the UI can warn.
+   */
+  skippedTracks: number
+}
+
+/**
+ * Reconstruct recorder keyframes from a `THREE.AnimationClip`, so an existing
+ * clip can be loaded back into the timeline for correction or save-as.
+ *
+ * Only `*.quaternion` tracks are read (in-place clips per OD-4); position/scale
+ * tracks are counted into `skippedTracks` and ignored. Bones are sampled at the
+ * union of every quaternion track's key times via each track's own linear
+ * (slerp) interpolant, so a clip authored by this recorder round-trips exactly
+ * and a foreign clip with per-bone time grids is resampled onto the union grid.
+ *
+ * Duration is re-derived from the last key on rebuild — a foreign clip whose
+ * `duration` extends past its final quaternion key (a trailing hold) loses that
+ * tail. Recorder-authored clips have `duration === last key`, so they are exact.
+ */
+export function extractKeyframesFromClip(clip: THREE.AnimationClip): ClipExtraction {
+  const qTracks = clip.tracks.filter(
+    (t): t is THREE.QuaternionKeyframeTrack =>
+      THREE.PropertyBinding.parseTrackName(t.name).propertyName === 'quaternion',
+  )
+  const skippedTracks = clip.tracks.length - qTracks.length
+  if (qTracks.length === 0) return { keyframes: [], skippedTracks }
+
+  const parsed = qTracks.map((t) => ({
+    bone: THREE.PropertyBinding.parseTrackName(t.name).nodeName ?? t.name,
+    interpolant: t.createInterpolant(),
+  }))
+
+  // Union of all sample times, de-duplicated within the keyframe epsilon.
+  const times: number[] = []
+  for (const t of qTracks) {
+    for (const time of t.times) {
+      if (!times.some((x) => Math.abs(x - time) < KEYFRAME_TIME_EPSILON)) times.push(time)
+    }
+  }
+  times.sort((a, b) => a - b)
+
+  const keyframes: RecordedKeyframe[] = times.map((time) => ({
+    time,
+    bones: parsed.map((p) => {
+      // Interpolant reuses one result buffer per call — read the 4 quat
+      // components immediately before the next evaluate() overwrites it.
+      const buf = p.interpolant.evaluate(time)
+      return { bone: p.bone, q: [buf[0], buf[1], buf[2], buf[3]] as PoseBoneSample['q'] }
+    }),
+  }))
+
+  return { keyframes, skippedTracks }
+}
+
 function assertValidTime(time: number, label: string): void {
   if (!Number.isFinite(time) || time < 0) {
     throw new RangeError(`AnimationRecorder: ${label} must be a finite time >= 0, got ${time}`)
@@ -180,6 +240,20 @@ export class AnimationRecorder {
     const clip = new THREE.AnimationClip(clipName, this.duration, tracks)
     if (options.optimize) clip.optimize()
     return clip
+  }
+
+  /**
+   * Replace all keyframes with those extracted from an existing clip
+   * (correction / save-as flow). Returns the number of non-rotation tracks
+   * that were dropped, so the caller can warn about lost root motion.
+   */
+  loadClip(clip: THREE.AnimationClip): number {
+    const { keyframes, skippedTracks } = extractKeyframesFromClip(clip)
+    for (const kf of keyframes) assertValidTime(kf.time, 'loadClip keyframe time')
+    this._keyframes = keyframes
+      .map((k) => ({ time: k.time, bones: cloneBones(k.bones) }))
+      .sort((a, b) => a.time - b.time)
+    return skippedTracks
   }
 
   clear(): void {

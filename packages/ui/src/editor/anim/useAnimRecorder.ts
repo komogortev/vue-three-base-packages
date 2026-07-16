@@ -1,4 +1,5 @@
 import { ref, type Ref } from 'vue'
+import type * as THREE from 'three'
 import { AnimationRecorder, type PoseBoneSample } from './animationRecorder'
 
 /** Default visible timeline range (seconds) before any keyframe extends it. */
@@ -16,6 +17,8 @@ export interface UseAnimRecorderReturn {
   addKeyframe: (time: number, bones: PoseBoneSample[]) => void
   removeKeyframe: (time: number) => void
   setTimelineDuration: (seconds: number) => void
+  /** Replace the timeline with an existing clip's keyframes; returns dropped non-rotation tracks. */
+  loadFromClip: (clip: THREE.AnimationClip) => number
   clear: () => void
 }
 
@@ -54,6 +57,15 @@ export function useAnimRecorder(): UseAnimRecorderReturn {
     if (scrubTime.value > timelineDuration.value) scrubTime.value = timelineDuration.value
   }
 
+  function loadFromClip(clip: THREE.AnimationClip): number {
+    const skipped = recorder.loadClip(clip)
+    scrubTime.value = 0
+    // Fit the visible range to the loaded clip (refresh only grows it).
+    timelineDuration.value = Math.max(recorder.duration, DEFAULT_TIMELINE_DURATION)
+    refresh()
+    return skipped
+  }
+
   function clear(): void {
     recorder.clear()
     keyframeTimes.value = []
@@ -69,6 +81,7 @@ export function useAnimRecorder(): UseAnimRecorderReturn {
     addKeyframe,
     removeKeyframe,
     setTimelineDuration,
+    loadFromClip,
     clear,
   }
 }

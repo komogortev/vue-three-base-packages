@@ -289,6 +289,13 @@
             Set…
           </button>
           <button
+            v-if="packPlayClip"
+            class="btn-asset-play"
+            :class="{ playing: isPackPlaying }"
+            :title="isPackPlaying ? 'Stop' : `Play “${packPlayClip}” on the NPC`"
+            @click="onPackPlayToggle"
+          >{{ isPackPlaying ? '■ Stop' : '▶ Play' }}</button>
+          <button
             v-if="selectedNpc.animationPackAssetId"
             class="btn-asset-clear"
             @click="emit('npc-changed', selectedNpc!.entityId, { animationPackAssetId: undefined })"
@@ -429,6 +436,7 @@
         :preview-playing="animPreviewPlaying"
         :has-character="hasPoseCharacter"
         :export-busy="animExportBusy"
+        :loadable-clips="availableClips"
         @scrub="emit('anim-scrub', $event)"
         @key-capture="emit('anim-key-capture', $event)"
         @key-remove="emit('anim-key-remove', $event)"
@@ -436,6 +444,7 @@
         @duration-set="emit('anim-duration-set', $event)"
         @export-clip="emit('anim-export', $event)"
         @add-to-kit="emit('anim-add-to-kit', $event)"
+        @load-existing="emit('anim-load-existing', selectedNpc!.entityId, $event)"
       />
     </div>
 
@@ -605,6 +614,7 @@ const emit = defineEmits<{
   'anim-preview-toggle': []
   'anim-duration-set': [seconds: number]
   'anim-export': [clipName: string]
+  'anim-load-existing': [entityId: string, clipName: string]
   /** S5-d: append the recorded clip into an existing kit. */
   'anim-add-to-kit': [clipName: string]
   // ─── S5-d: clip audition ──────────────────────────────────────────────────
@@ -728,6 +738,28 @@ const availableClips = computed<string[]>(() => {
 function onAuditionToggle(clip: string): void {
   const npc = selectedNpc.value
   if (!npc) return
+  if (props.auditionPlaying === clip) emit('audition-stop')
+  else emit('audition-clip', npc.entityId, clip)
+}
+
+// Clip the Play/Stop button (next to the animation-pack "Set…") runs on the NPC:
+// the starred default clip when it's still present in the pack, else the first clip.
+const packPlayClip = computed<string | null>(() => {
+  const npc = selectedNpc.value
+  if (!npc?.animationPackAssetId) return null
+  const clips = availableClips.value
+  if (npc.defaultClip && clips.includes(npc.defaultClip)) return npc.defaultClip
+  return clips[0] ?? null
+})
+
+const isPackPlaying = computed<boolean>(
+  () => packPlayClip.value != null && props.auditionPlaying === packPlayClip.value
+)
+
+function onPackPlayToggle(): void {
+  const npc = selectedNpc.value
+  const clip = packPlayClip.value
+  if (!npc || !clip) return
   if (props.auditionPlaying === clip) emit('audition-stop')
   else emit('audition-clip', npc.entityId, clip)
 }
@@ -1126,6 +1158,20 @@ const fmt = (n: number) => n.toFixed(2)
   flex-shrink: 0;
 }
 .btn-asset-pick:hover { background: rgba(90,176,245,0.1); }
+.btn-asset-play {
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid #1a3050;
+  color: #9fe8b8;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-asset-play:hover { background: rgba(90,176,245,0.1); }
+.btn-asset-play.playing { color: #ffb0b0; border-color: #4a1e1e; }
 .btn-asset-clear {
   padding: 3px 6px;
   font-size: 10px;

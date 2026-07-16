@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import {
   AnimationRecorder,
   KEYFRAME_TIME_EPSILON,
+  extractKeyframesFromClip,
   type PoseBoneSample,
 } from '../anim/animationRecorder'
 
@@ -225,6 +226,81 @@ describe('AnimationRecorder', () => {
       const clip = r.build('static')
       expect(clip.tracks[0].times.length).toBe(1)
       expect(clip.duration).toBe(0)
+    })
+  })
+
+  describe('loadClip / extractKeyframesFromClip', () => {
+    it('round-trips a recorder-authored clip byte-for-byte (build → loadClip → build)', () => {
+      const src = new AnimationRecorder()
+      src.addKeyframe(0, [pose('Spine', IDENTITY), pose('Head', IDENTITY)])
+      src.addKeyframe(1, [pose('Spine', Z90), pose('Head', IDENTITY)])
+      src.addKeyframe(2, [pose('Spine', IDENTITY), pose('Head', Z90)])
+      const clip = src.build('orig')
+
+      const round = new AnimationRecorder()
+      const skipped = round.loadClip(clip)
+      expect(skipped).toBe(0)
+      expect(round.keyframes.map((k) => k.time)).toEqual([0, 1, 2])
+
+      // Every bone quaternion at every keyframe matches within float32 precision.
+      const rebuilt = round.build('orig')
+      for (const name of ['Spine.quaternion', 'Head.quaternion']) {
+        const a = clip.tracks.find((t) => t.name === name)!
+        const b = rebuilt.tracks.find((t) => t.name === name)!
+        expect(Array.from(b.times)).toEqual(Array.from(a.times))
+        for (let i = 0; i < a.values.length; i++) {
+          expect(b.values[i]).toBeCloseTo(a.values[i], 5)
+        }
+      }
+    })
+
+    it('replaces any prior keyframes (load is not additive)', () => {
+      const r = new AnimationRecorder()
+      r.addKeyframe(0, [pose('Spine', Z90)])
+      r.addKeyframe(9, [pose('Spine', Z90)])
+      const clip = new THREE.AnimationClip('c', 1, [
+        new THREE.QuaternionKeyframeTrack('Hips.quaternion', [0, 1], [...IDENTITY, ...Z90]),
+      ])
+      r.loadClip(clip)
+      expect(r.keyframes.map((k) => k.time)).toEqual([0, 1])
+      expect(r.keyframes[0].bones.map((b) => b.bone)).toEqual(['Hips'])
+    })
+
+    it('skips (and counts) position/scale tracks — in-place clips only (OD-4)', () => {
+      const clip = new THREE.AnimationClip('rooted', 1, [
+        new THREE.QuaternionKeyframeTrack('Hips.quaternion', [0, 1], [...IDENTITY, ...Z90]),
+        new THREE.VectorKeyframeTrack('Hips.position', [0, 1], [0, 0, 0, 0, 1, 0]),
+        new THREE.VectorKeyframeTrack('Hips.scale', [0, 1], [1, 1, 1, 1, 1, 1]),
+      ])
+      const { keyframes, skippedTracks } = extractKeyframesFromClip(clip)
+      expect(skippedTracks).toBe(2)
+      expect(keyframes).toHaveLength(2)
+      expect(keyframes[0].bones.map((b) => b.bone)).toEqual(['Hips'])
+    })
+
+    it('resamples per-bone time grids onto the union of key times', () => {
+      // Spine keyed at 0 and 2; Head keyed only at 1 — union is [0, 1, 2].
+      const clip = new THREE.AnimationClip('sparse', 2, [
+        new THREE.QuaternionKeyframeTrack('Spine.quaternion', [0, 2], [...IDENTITY, ...Z90]),
+        new THREE.QuaternionKeyframeTrack('Head.quaternion', [1], [...Z90]),
+      ])
+      const { keyframes } = extractKeyframesFromClip(clip)
+      expect(keyframes.map((k) => k.time)).toEqual([0, 1, 2])
+      // Spine at the union midpoint t=1 is the ~45° interpolation of its own
+      // 0→2 track — sampled with three's own track interpolant, so it matches
+      // runtime playback exactly (tolerance covers slerp-vs-ideal-math drift).
+      const spineAt1 = quatOf(keyframes[1].bones, 'Spine')
+      const expected = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 4)
+      expect(spineAt1.angleTo(expected)).toBeLessThan(0.01)
+    })
+
+    it('returns empty extraction with a skip count for a rotation-free clip', () => {
+      const clip = new THREE.AnimationClip('noRot', 1, [
+        new THREE.VectorKeyframeTrack('Hips.position', [0, 1], [0, 0, 0, 0, 1, 0]),
+      ])
+      const { keyframes, skippedTracks } = extractKeyframesFromClip(clip)
+      expect(keyframes).toHaveLength(0)
+      expect(skippedTracks).toBe(1)
     })
   })
 

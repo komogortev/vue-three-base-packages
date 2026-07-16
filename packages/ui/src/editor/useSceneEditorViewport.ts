@@ -182,6 +182,12 @@ export interface SceneEditorViewportReturn {
    */
   auditionPackClip: (packBlobUrl: string, clipName: string) => Promise<{ ok: true } | { ok: false; reason: string }>
   /**
+   * Load a clip from an existing pack for editing (correction / save-as). Same
+   * skeleton guard as audition; returns the resolved `AnimationClip` so the
+   * caller can pull it into the recorder timeline. Does not play or attach it.
+   */
+  loadPackClipForEdit: (packBlobUrl: string, clipName: string) => Promise<{ ok: true; clip: THREE.AnimationClip } | { ok: false; reason: string }>
+  /**
    * S5-d: build the blob for appending `newClip` into the pack at `packBlobUrl`
    * (kit authoring). Loads the pack, guards skeleton coherence + duplicate name
    * against the current pose mesh, then re-exports all clips. The caller writes
@@ -1109,6 +1115,29 @@ export function useSceneEditorViewport(opts: {
     return { ok: true }
   }
 
+  async function loadPackClipForEdit(
+    packBlobUrl: string,
+    clipName: string,
+  ): Promise<{ ok: true; clip: THREE.AnimationClip } | { ok: false; reason: string }> {
+    if (!poseMeshRoot || !poseSkinnedMesh) return { ok: false, reason: 'No character loaded' }
+    let clips: THREE.AnimationClip[]
+    try {
+      clips = await loadPackClips(packBlobUrl)
+    } catch (e) {
+      console.warn('[SceneEditor] load-for-edit pack load failed:', e)
+      return { ok: false, reason: 'Pack failed to load' }
+    }
+    const clip = clips.find((c) => c.name === clipName)
+    if (!clip) return { ok: false, reason: `Clip "${clipName}" not found in pack` }
+    // Same guard as audition: a clip authored on a different skeleton would load
+    // as keyframes targeting bones this character lacks — refuse rather than
+    // silently populate a timeline that can't drive the mesh.
+    if (resolveClipBones(clip, poseSkinnedMesh.skeleton).matched === 0) {
+      return { ok: false, reason: "Clip's bones don't match this character" }
+    }
+    return { ok: true, clip }
+  }
+
   async function buildAppendedPackBlob(
     packBlobUrl: string,
     newClip: THREE.AnimationClip,
@@ -2018,6 +2047,7 @@ export function useSceneEditorViewport(opts: {
     animPreviewPlaying: shallowReadonly(animPreviewPlaying),
     exportAnimClip,
     auditionPackClip,
+    loadPackClipForEdit,
     buildAppendedPackBlob,
   }
 }

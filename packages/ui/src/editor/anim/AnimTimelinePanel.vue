@@ -68,6 +68,24 @@
         />
       </div>
 
+      <!-- Load an existing clip from the bound pack into the timeline to correct
+           it or save it under a new name. -->
+      <div v-if="loadableClips.length > 0" class="anim-field-group">
+        <label class="anim-label" for="anim-load-clip">Load existing clip</label>
+        <div class="anim-export-row">
+          <select id="anim-load-clip" v-model="loadClipName" class="clip-name-input">
+            <option value="" disabled>choose a clip…</option>
+            <option v-for="c in loadableClips" :key="c" :value="c">{{ c }}</option>
+          </select>
+          <button
+            class="anim-btn"
+            :disabled="exportBusy || !loadClipName"
+            title="Load this clip's keyframes into the timeline for editing"
+            @click="onLoadClick"
+          >Load</button>
+        </div>
+      </div>
+
       <!-- S5-b: export as new kit / S5-d: append into an existing kit -->
       <div class="anim-field-group">
         <label class="anim-label" for="anim-clip-name">Save recorded clip</label>
@@ -99,6 +117,7 @@
         Pose the character (Pose tab or bone gizmo), scrub to a time, then Capture.
         Clip duration = last keyframe. Preview plays once and holds the final pose.
         A kit is one asset holding many clips — "New Kit" starts one, "Add to Kit…" grows one.
+        Load an existing clip to correct it or save it under a new name.
       </p>
     </template>
   </div>
@@ -120,6 +139,8 @@ const props = defineProps<{
   hasCharacter: boolean
   /** True while an export is in flight — disables the Export button. */
   exportBusy: boolean
+  /** Clip names in the NPC's bound animation pack, loadable into the timeline. */
+  loadableClips: string[]
 }>()
 
 const emit = defineEmits<{
@@ -131,10 +152,13 @@ const emit = defineEmits<{
   'export-clip': [clipName: string]
   /** S5-d: append the recorded clip to an existing kit (opens the pack picker). */
   'add-to-kit': [clipName: string]
+  /** Load an existing pack clip into the timeline for correction / save-as. */
+  'load-existing': [clipName: string]
 }>()
 
 const selectedKeyTime = ref<number | null>(null)
 const clipName = ref('')
+const loadClipName = ref('')
 
 const canExport = computed(
   () => !props.exportBusy && clipName.value.trim().length > 0 && props.keyframeTimes.length > 0,
@@ -148,6 +172,15 @@ function onExportClick(): void {
 function onAddToKitClick(): void {
   if (!canExport.value) return
   emit('add-to-kit', clipName.value.trim())
+}
+
+function onLoadClick(): void {
+  const name = loadClipName.value
+  if (props.exportBusy || !name) return
+  // Prefill the save name with the loaded clip's name: keep it to overwrite via
+  // "Add to Kit…", or edit it for a save-as under an alternative name.
+  clipName.value = name
+  emit('load-existing', name)
 }
 
 function onMarkerClick(t: number): void {
@@ -166,6 +199,11 @@ watch(() => props.keyframeTimes, (times) => {
   if (selectedKeyTime.value !== null && !times.includes(selectedKeyTime.value)) {
     selectedKeyTime.value = null
   }
+})
+
+// Reset the load picker when the bound pack's clip set changes (NPC/pack swap).
+watch(() => props.loadableClips, (clips) => {
+  if (loadClipName.value && !clips.includes(loadClipName.value)) loadClipName.value = ''
 })
 
 // K hotkey — capture at scrub time, ignored while typing in a field
