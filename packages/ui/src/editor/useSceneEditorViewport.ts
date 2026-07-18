@@ -36,6 +36,28 @@ const MIXAMO_IK_CHAINS: Record<string, { effector: string; links: string[] }> = 
   leftLeg:  { effector: 'mixamorigLeftFoot',   links: ['mixamorigLeftLeg',      'mixamorigLeftUpLeg'] },
 }
 
+/**
+ * Safety net for grossly mis-scaled character meshes (e.g. a Mixamo GLB still
+ * authored in centimetres → ~180 units tall). Measured at load time in bind
+ * pose, so the naive Box3 height is reliable. Correctly-sized metres models
+ * fall inside [MIN, MAX] and are left untouched — this only rescues outliers,
+ * so a properly-baked asset is never double-scaled.
+ */
+const FIT_TARGET_HEIGHT = 1.7
+const FIT_MIN_HEIGHT = 0.3
+const FIT_MAX_HEIGHT = 4
+function fitCharacterScale(root: THREE.Object3D): void {
+  root.updateMatrixWorld(true)
+  const h = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).y
+  if (h > 1e-4 && (h < FIT_MIN_HEIGHT || h > FIT_MAX_HEIGHT)) {
+    root.scale.multiplyScalar(FIT_TARGET_HEIGHT / h)
+    root.updateMatrixWorld(true)
+    console.info(
+      `[SceneEditor] auto-fit mis-scaled character: ${h.toFixed(2)} → ${FIT_TARGET_HEIGHT} m`,
+    )
+  }
+}
+
 /** Simple iterative CCD IK — works on named bones, no skeleton modification needed. */
 function runCcdIk(
   sm: THREE.SkinnedMesh,
@@ -151,7 +173,9 @@ export interface SceneEditorViewportReturn {
   setPlayCharacterAsset: (charBlobUrl: string | null, animPackBlobUrl?: string | null) => Promise<void>
   // ─── Pose editor ─────────────────────────────────────────────────────────
   /** Load a character GLB for pose editing; returns the skeleton as a DFS-ordered bone tree. */
-  attachPoseNpc: (entityId: string, blobUrl: string) => Promise<PoseBoneNode[]>
+  attachPoseNpc: (entityId: string, blobUrl: string, npcScale?: number) => Promise<PoseBoneNode[]>
+  /** Live-update the attached pose mesh's uniform scale (NPC `scale` × fit base). */
+  setPoseMeshScale: (npcScale: number) => void
   /** Attach TransformControls in rotate mode to the named bone. */
   selectPoseBone: (boneName: string) => void
   /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
@@ -300,6 +324,9 @@ export function useSceneEditorViewport(opts: {
   let poseMeshRoot: THREE.Object3D | null = null
   let poseSkinnedMesh: THREE.SkinnedMesh | null = null
   let poseHelper: THREE.SkeletonHelper | null = null
+  // Fit-normalization scale of the attached pose mesh (before the NPC's own
+  // `scale` multiplier), so setPoseMeshScale can recompute total = base × npc.
+  let poseBaseScale = 1
   let poseHasBoneAttached = false  // true when TC is attached to a bone via selectPoseBone
 
   // IK state — persistent group added to scene in init(); children managed by attachPoseNpc/detachPoseNpc
@@ -687,6 +714,7 @@ export function useSceneEditorViewport(opts: {
     const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(pendingCharBlobUrl)
+      fitCharacterScale(gltf.scene)
 
       // Ground the character: shift mesh so bottom of bbox is at y=0
       const bbox = new THREE.Box3().setFromObject(gltf.scene)
@@ -925,7 +953,31 @@ export function useSceneEditorViewport(opts: {
     return out
   }
 
-  async function attachPoseNpc(entityId: string, blobUrl: string): Promise<PoseBoneNode[]> {
+  /** Re-ground the pose mesh so its feet sit at y=0 after a scale change. */
+  function _groundPoseMesh(): void {
+    if (!poseMeshRoot) return
+    poseMeshRoot.updateMatrixWorld(true)
+    const bbox = new THREE.Box3().setFromObject(poseMeshRoot)
+    poseMeshRoot.position.y = -bbox.min.y
+  }
+
+  /**
+   * Apply the NPC's uniform `scale` to the attached pose mesh, on top of the
+   * fit-normalization base scale, then re-ground. Mirrors the runtime
+   * (`RoomPlayerModule` does `root.scale.setScalar(npc.scale)`) so the editor
+   * preview matches the room player. No-op when no mesh is attached.
+   */
+  function setPoseMeshScale(npcScale: number): void {
+    if (!poseMeshRoot) return
+    poseMeshRoot.scale.setScalar(poseBaseScale * (npcScale || 1))
+    _groundPoseMesh()
+  }
+
+  async function attachPoseNpc(
+    entityId: string,
+    blobUrl: string,
+    npcScale = 1,
+  ): Promise<PoseBoneNode[]> {
     detachPoseNpc()
     const loader = createEditorGltfLoader()
     try {
@@ -935,7 +987,11 @@ export function useSceneEditorViewport(opts: {
       const sm = skinnedMeshes[0]
       if (!sm) return []
 
-      // Position near NPC marker and ground the mesh
+      // Fit-normalize, then apply the NPC's own uniform scale, then ground.
+      fitCharacterScale(gltf.scene)
+      poseBaseScale = gltf.scene.scale.x
+      if (npcScale !== 1) gltf.scene.scale.setScalar(poseBaseScale * npcScale)
+      gltf.scene.updateMatrixWorld(true)
       const marker = npcMarkerRoots.get(entityId)
       const bbox = new THREE.Box3().setFromObject(gltf.scene)
       gltf.scene.position.set(marker?.position.x ?? 0, -bbox.min.y, marker?.position.z ?? 0)
@@ -2035,6 +2091,7 @@ export function useSceneEditorViewport(opts: {
     removePlacedObject,
     setPlayCharacterAsset,
     attachPoseNpc,
+    setPoseMeshScale,
     selectPoseBone,
     capturePoseSnapshot,
     resetPoseBones,

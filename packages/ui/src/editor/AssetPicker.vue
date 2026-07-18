@@ -25,7 +25,7 @@
     <div class="picker-frame" @click.stop>
       <div class="picker-header">
         <span class="title">
-          Pick an asset<span v-if="kindFilter"> — {{ kindFilter }}</span>
+          Pick an asset<span v-if="headerLabel"> — {{ headerLabel }}</span>
         </span>
         <button
           class="close-btn"
@@ -39,8 +39,8 @@
 
       <div class="picker-body">
         <p v-if="filteredAssets.length === 0" class="empty">
-          <template v-if="kindFilter">
-            No {{ kindFilter }} assets yet — upload one from the Assets section.
+          <template v-if="headerLabel">
+            No {{ headerLabel }} assets yet — upload one from the Assets section.
           </template>
           <template v-else>
             No assets yet — upload one from the Assets section.
@@ -86,7 +86,14 @@ import type { AssetKind, AssetRow } from './assetDb'
 
 interface Props {
   open: boolean
-  kindFilter?: AssetKind
+  /** Restrict the listing to one kind or a set of kinds. Omit to list all. */
+  kindFilter?: AssetKind | AssetKind[]
+  /**
+   * Header / empty-state label describing the pick. Defaults to the kind(s).
+   * Pass when the display set is broader than the intent — e.g. the NPC
+   * character-body picker lists every model kind but is labelled "character".
+   */
+  filterLabel?: string
 }
 const props = defineProps<Props>()
 
@@ -98,10 +105,24 @@ const emit = defineEmits<{
 const store = useAssetStore()
 const dialogEl = ref<HTMLDialogElement | null>(null)
 
+const filterKinds = computed<AssetKind[] | null>(() => {
+  const f = props.kindFilter
+  if (!f) return null
+  return Array.isArray(f) ? f : [f]
+})
+
+const headerLabel = computed<string | null>(() => {
+  if (props.filterLabel) return props.filterLabel
+  const kinds = filterKinds.value
+  if (!kinds) return null
+  return kinds.join(' / ')
+})
+
 const filteredAssets = computed<AssetRow[]>(() => {
   const list = store.assets
-  if (!props.kindFilter) return list
-  return list.filter((a) => a.kind === props.kindFilter)
+  const kinds = filterKinds.value
+  if (!kinds) return list
+  return list.filter((a) => kinds.includes(a.kind))
 })
 
 // ── Dialog open / close ──────────────────────────────────────────────────

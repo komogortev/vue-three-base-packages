@@ -200,7 +200,8 @@
     <!-- Asset picker modal (F-9 / D-5b) -->
     <AssetPicker
       :open="pickerOpen"
-      :kind-filter="pickerKind"
+      :kind-filter="pickerKindFilter"
+      :filter-label="pickerKind"
       @close="onPickerClose"
       @select="onPickerSelect"
     />
@@ -335,6 +336,7 @@ const {
   removePlacedObject,
   setPlayCharacterAsset,
   attachPoseNpc,
+  setPoseMeshScale,
   selectPoseBone,
   capturePoseSnapshot,
   resetPoseBones,
@@ -793,6 +795,11 @@ function onNpcChanged(entityId: string, patch: Partial<EditorNpcEntry>): void {
     poseMeshEntityId = null
     animClear()
   }
+  // Live-scale the attached character mesh so the Scale field drives the model,
+  // not just the persisted value (runtime already honors npc.scale).
+  if ('scale' in patch && poseMeshEntityId === entityId) {
+    setPoseMeshScale(npc.scale ?? 1)
+  }
 }
 
 function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
@@ -819,7 +826,7 @@ async function ensurePoseMeshAttached(): Promise<boolean> {
   if (!npc?.assetId) return false
   const blobUrl = assetStore.resolveBlobUrl(npc.assetId)
   if (!blobUrl) { flashStatus('Character mesh not in asset store'); return false }
-  const boneNames = await attachPoseNpc(sel.entityId, blobUrl)
+  const boneNames = await attachPoseNpc(sel.entityId, blobUrl, npc.scale ?? 1)
   if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return false }
   setPoseBoneList(boneNames)
   poseMeshEntityId = sel.entityId
@@ -1104,6 +1111,15 @@ async function onCopyConfigTs(): Promise<void> {
 const pickerOpen = ref(false)
 const pickerEntityId = ref('')
 const pickerKind = ref<AssetKind>('character')
+
+// Every GLB-backed kind can serve as an NPC/player body — a "character" pick
+// lists all loaded models (props/environments render static; skinned ones
+// animate), not only assets the classifier tagged 'character'. Audio is the
+// only kind excluded. The narrower pickers (audio, animation-pack) stay exact.
+const MODEL_KINDS: AssetKind[] = ['character', 'prop', 'environment', 'animation-pack']
+const pickerKindFilter = computed<AssetKind | AssetKind[]>(() =>
+  pickerKind.value === 'character' ? MODEL_KINDS : pickerKind.value,
+)
 const pickerIsForPlayer = ref(false)
 const pickerIsForAmbientAudio = ref(false)
 // S5-d: the picker is choosing the target kit for an "Add to Kit…" append.
