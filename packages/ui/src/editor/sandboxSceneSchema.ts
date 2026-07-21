@@ -7,6 +7,44 @@
  * version: 1 is a literal so consumers can type-narrow against future format changes.
  */
 
+/**
+ * How a placed child meets its parent. Drives which validator checks apply and
+ * whether a gap failure is veto-class (contact required) or advisory.
+ */
+export type ContactType =
+  | 'embedded'
+  | 'socket'
+  | 'overlap'
+  | 'hinge'
+  | 'surface-contact'
+  | 'glued'
+
+/**
+ * L0 attachment record for a placed object (F-G1).
+ *
+ * Optional and additive — absent means today's free placement (no gate applies).
+ * The drag gesture authors the transform on {@link SavedPlacedObject}; a placement
+ * gesture sets `contactType`/`parentSocket` intent; `localStart`/`localEnd`/
+ * `embedDepth` are derived from geometry at drop.
+ */
+export interface PlacedAttachment {
+  /** Parent: another placed object 'placed-<id>', or a scene sentinel. */
+  parentId: string | 'room-root' | 'terrain'
+  /** Named socket / contact region on the parent (optional at L0). */
+  parentSocket?: string
+  /** Child root point, parent-local coords (the pivot should sit here). */
+  localStart: { x: number; y: number; z: number }
+  /** Child tip/end point, parent-local coords (mesh oriented start→end). */
+  localEnd: { x: number; y: number; z: number }
+  /** Penetration into the parent (metres). One of embedDepth / overlap. */
+  embedDepth?: number
+  /** Blend overlap with the parent (metres). One of embedDepth / overlap. */
+  overlap?: number
+  contactType: ContactType
+  /** Max acceptable visible gap between child root and parent surface (metres). */
+  gapTolerance: number
+}
+
 export interface SavedPlacedObject {
   /** Matches EditorPlacedObject.id — 'placed-<nanoid6>'. */
   id: string
@@ -23,6 +61,11 @@ export interface SavedPlacedObject {
   scaleX: number
   scaleY: number
   scaleZ: number
+  /**
+   * L0 attachment metadata (F-G1). Absent = free placement, no gate applies.
+   * Additive/backward-compatible — loaders stay lenient, no version bump.
+   */
+  attachment?: PlacedAttachment
 }
 
 export interface SandboxSceneSave {
