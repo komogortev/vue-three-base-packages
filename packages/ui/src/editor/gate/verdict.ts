@@ -110,3 +110,19 @@ export interface PlacementVerdict {
    */
   hash: string
 }
+
+/**
+ * Deterministic 32-bit FNV-1a hash as an 8-char hex string.
+ *
+ * Shared by every gate validator (`attachmentValidator`, `glbLinter`, …) that
+ * binds a verdict to its inputs for no-op re-check idempotence — one
+ * implementation instead of a per-validator copy.
+ */
+export function hashKey(key: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}

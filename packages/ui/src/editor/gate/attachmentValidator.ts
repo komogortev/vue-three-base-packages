@@ -25,6 +25,9 @@ import type {
   Vec3,
   VerdictStatus,
 } from './verdict'
+import { hashKey } from './verdict'
+
+export { hashKey } from './verdict'
 
 /** Default tolerance (m) for the pivot-at-start assertion — tight, authoring-level. */
 export const DEFAULT_PIVOT_EPSILON = 0.01
@@ -95,16 +98,6 @@ function canonicalKey(input: ValidatePlacementInput): string {
     ],
     round6(input.pivotEpsilon ?? DEFAULT_PIVOT_EPSILON),
   ])
-}
-
-/** Deterministic 32-bit FNV-1a hash as an 8-char hex string. */
-export function hashKey(key: string): string {
-  let h = 0x811c9dc5
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return (h >>> 0).toString(16).padStart(8, '0')
 }
 
 // ── validator ───────────────────────────────────────────────────────────────
