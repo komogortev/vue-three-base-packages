@@ -6,6 +6,8 @@ import { assetDb, type AssetRow, type AssetKind } from './assetDb'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { useLiveQuery } from './useLiveQuery'
 import { generateThumbnail } from './thumbnailGenerator'
+import { lintGlb } from './gate/glbLinter'
+import { deriveGlbLintInput } from './glbLintAdapter'
 
 /**
  * @base/ui asset registry — Pinia setup-store.
@@ -74,6 +76,7 @@ export const useAssetStore = defineStore('assets', () => {
       )
     }
 
+    const assetId = `asset-${nanoid()}`
     const blob = new Blob([await file.arrayBuffer()], {
       type: file.type || MIME_FALLBACK[ext] || '',
     })
@@ -117,6 +120,16 @@ export const useAssetStore = defineStore('assets', () => {
         else if (diag > 20) kind = 'environment'
         else kind = 'prop'
 
+        // L0 Asset Gate (F-G5) — warn-only at upload (Q2); never blocks the upload.
+        const lintVerdict = lintGlb(deriveGlbLintInput(gltf.scene, assetId))
+        if (!lintVerdict.passed) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[useAssetStore] "${file.name}" failed the L0 asset gate — placement/attachment math may be off:`,
+            lintVerdict.checks.filter((c) => !c.passed).map((c) => c.message),
+          )
+        }
+
         // Dispose parsed scene immediately — thumbnail generator re-parses.
         gltf.scene.traverse((obj) => {
           const mesh = obj as THREE.Mesh
@@ -149,7 +162,7 @@ export const useAssetStore = defineStore('assets', () => {
     }
 
     const row: AssetRow = {
-      id: `asset-${nanoid()}`,
+      id: assetId,
       name: file.name,
       kind,
       size: blob.size,
