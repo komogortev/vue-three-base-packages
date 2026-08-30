@@ -8,6 +8,9 @@ import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
+import { validatePlacement, summarizeVerdicts, type GateSummary } from './gate/attachmentValidator'
+import { toMat4 } from './gate/verdict'
+import type { Aabb, Mat4, Vec3 } from './gate/verdict'
 export type { EditorCamMode } from './sceneEditorTypes'
 
 /** A saved placed object with its blob URL resolved — input to restorePlacedObjects. */
@@ -150,6 +153,8 @@ export interface SceneEditorViewportReturn {
   enterPlaceMode: (objectId: string, assetId: string, blobUrl: string, label: string) => void
   exitPlaceMode: () => void
   snapshotPlacedTransforms: () => EditorPlacedObject[]
+  /** Run the L0 placement gate over live placements (F-G3). Consumed two-tier. */
+  runPlacementGate: () => GateSummary
   restorePlacedObjects: (objects: RestorableObject[]) => Promise<void>
   setCamMode: (mode: EditorCamMode) => void
   /** Move an NPC marker programmatically (from inspector inputs). */
@@ -1580,6 +1585,10 @@ export function useSceneEditorViewport(opts: {
         x: obj.x, y: obj.y, z: obj.z,
         rotationX: obj.rotationX, rotationY: obj.rotationY, rotationZ: obj.rotationZ,
         scaleX: obj.scaleX, scaleY: obj.scaleY, scaleZ: obj.scaleZ,
+        // Carry L0 attachment metadata across the save/load boundary (F-G1/F-G3).
+        // Dropping it here silently stripped every attachment on reload, which made
+        // runPlacementGate() a permanent no-op for any scene that had been saved.
+        attachment: obj.attachment,
       })
     }
 
@@ -2016,6 +2025,56 @@ export function useSceneEditorViewport(opts: {
     })
   }
 
+  // ─── L0 Asset Gate (F-G3) ────────────────────────────────────────────────────
+
+  const IDENTITY_MAT4: Mat4 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+
+  /**
+   * Run the deterministic placement gate over every placed object that declares
+   * an attachment (F-G3). This is the THREE adapter: it reads live world matrices
+   * and world AABBs from the placed roots, then hands plain numbers to the pure
+   * validator. Objects without an attachment are free placements and are skipped.
+   *
+   * Consumed two-tier: export hard-blocks on `blocked` (any veto), drop/save warn.
+   */
+  function runPlacementGate(): GateSummary {
+    placedGroup.updateMatrixWorld(true)
+    const _box = new THREE.Box3()
+    const verdicts = snapshotPlacedTransforms()
+      .filter((o) => o.attachment)
+      .map((child) => {
+        const att = child.attachment!
+        let parentWorldMatrix: Mat4 = IDENTITY_MAT4
+        let parentWorldBounds: Aabb | undefined
+        // Sentinel parents (room-root / terrain) sit at world origin → identity;
+        // their surface bounds are not tracked at L0, so contact-gap is advisory.
+        if (att.parentId !== 'room-root' && att.parentId !== 'terrain') {
+          const parentRoot = placedMeshRoots.get(att.parentId)
+          if (parentRoot) {
+            parentRoot.updateWorldMatrix(true, false)
+            parentWorldMatrix = toMat4(parentRoot.matrixWorld.elements)
+            // Bounds must reflect the visible mesh only. The placed root also holds
+            // an invisible, oversized (bbox + 0.2 m) pick hit-box; Box3.setFromObject
+            // would union it and inflate the AABB by 0.1 m/side, making the
+            // contact-gap veto too lenient. Expand over non-hit-box children instead.
+            const hitBox = placedHitBoxes.get(att.parentId)
+            _box.makeEmpty()
+            for (const child of parentRoot.children) {
+              if (child === hitBox) continue
+              _box.expandByObject(child)
+            }
+            if (!_box.isEmpty()) {
+              const min: Vec3 = { x: _box.min.x, y: _box.min.y, z: _box.min.z }
+              const max: Vec3 = { x: _box.max.x, y: _box.max.y, z: _box.max.z }
+              parentWorldBounds = { min, max }
+            }
+          }
+        }
+        return validatePlacement({ child, parentWorldMatrix, parentWorldBounds })
+      })
+    return summarizeVerdicts(verdicts)
+  }
+
   // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
   function dispose(): void {
@@ -2080,6 +2139,7 @@ export function useSceneEditorViewport(opts: {
     enterPlaceMode,
     exitPlaceMode,
     snapshotPlacedTransforms,
+    runPlacementGate,
     restorePlacedObjects,
     setCamMode,
     setNpcPosition,

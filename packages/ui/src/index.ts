@@ -74,3 +74,32 @@ export { default as AssetPicker } from './editor/AssetPicker.vue'
 // ── Sandbox scene schema ─────────────────────────────────────────────────────
 // Used by SandboxView (threejs-engine-dev) to load editor-saved scenes.
 export type { SavedPlacedObject, SandboxSceneSave } from './editor/sandboxSceneSchema'
+export type { PlacedAttachment, ContactType } from './editor/sandboxSceneSchema'
+
+// ── L0 Asset Gate ────────────────────────────────────────────────────────────
+// Deterministic placement/attachment validator (F-G2) + two-tier gate summary.
+// Engine-agnostic pure TS — geometry arrives as plain numbers so the same code
+// backs the in-editor gate and a future CLI twin. VLM reviewer fills the verdict
+// JSON later (F-G7) with no architecture change.
+export {
+  validatePlacement,
+  summarizeVerdicts,
+  transformPoint,
+  pointToAabbDistance,
+  hashKey,
+  DEFAULT_PIVOT_EPSILON,
+} from './editor/gate/attachmentValidator'
+export type {
+  ValidatePlacementInput,
+  GateSummary,
+} from './editor/gate/attachmentValidator'
+export type {
+  PlacementVerdict,
+  GateCheck,
+  VerdictStatus,
+  CheckSeverity,
+  Vec3,
+  Mat4,
+  Aabb,
+} from './editor/gate/verdict'
+export { toMat4 } from './editor/gate/verdict'
