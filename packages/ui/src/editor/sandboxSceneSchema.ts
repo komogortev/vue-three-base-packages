@@ -8,8 +8,16 @@
  */
 
 /**
- * How a placed child meets its parent. Drives which validator checks apply and
- * whether a gap failure is veto-class (contact required) or advisory.
+ * How a placed child meets its parent — declared placement intent.
+ *
+ * **At L0 this is descriptive, not behavioural.** `validatePlacement` does not
+ * branch on it: gap-failure severity is decided solely by whether
+ * `parentWorldBounds` could be measured (veto when it could, advisory when it
+ * could not). `contactType` currently feeds the idempotence hash and the
+ * human-readable failure message.
+ *
+ * Per-type checks (hinge pivots, embed-depth vs overlap semantics) are the
+ * deferred/warn tier and land with a later slice.
  */
 export type ContactType =
   | 'embedded'

@@ -1231,6 +1231,10 @@ export function useSceneEditorViewport(opts: {
         x: obj.x, y: obj.y, z: obj.z,
         rotationX: obj.rotationX, rotationY: obj.rotationY, rotationZ: obj.rotationZ,
         scaleX: obj.scaleX, scaleY: obj.scaleY, scaleZ: obj.scaleZ,
+        // Carry L0 attachment metadata across the save/load boundary (F-G1/F-G3).
+        // Dropping it here silently stripped every attachment on reload, which made
+        // runPlacementGate() a permanent no-op for any scene that had been saved.
+        attachment: obj.attachment,
       })
     }
 
