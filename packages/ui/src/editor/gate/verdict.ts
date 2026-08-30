@@ -7,8 +7,14 @@
  * owner's real-rAF glance. The same JSON shape is the seam a local-VLM reviewer
  * fills later (F-G7) with no architecture change.
  *
- * Engine-agnostic pure types — no Vue / Dexie / THREE imports — so the validator
- * can back both the in-editor gate and a future node CLI twin.
+ * **Contents:** the shared types, plus the small pure constructors/helpers that
+ * belong to them and would otherwise be duplicated across the validators
+ * ({@link toMat4}). Deliberately no domain logic — validation lives in
+ * `attachmentValidator.ts` / `glbLinter.ts`.
+ *
+ * **Constraint (unchanged):** engine-agnostic and dependency-free — no Vue /
+ * Dexie / THREE imports — so the validators can back both the in-editor gate and
+ * a future node CLI twin.
  */
 
 export interface Vec3 {
@@ -17,8 +23,36 @@ export interface Vec3 {
   z: number
 }
 
-/** Column-major 4x4 matrix (THREE `Matrix4.elements` convention), length 16. */
-export type Mat4 = readonly number[]
+/**
+ * Column-major 4x4 matrix (THREE `Matrix4.elements` convention).
+ *
+ * A fixed-length 16-tuple rather than `readonly number[]`: every consumer
+ * ({@link transformPoint}, the canonical idempotence hash key) indexes all 16
+ * slots, so a wrong-length array must fail to typecheck instead of silently
+ * producing `NaN` at runtime. Build one from a THREE `Matrix4.elements` — or
+ * from a hand-written array in the CLI twin — with {@link toMat4}.
+ */
+export type Mat4 = readonly [
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+]
+
+/**
+ * Narrow a loose numeric array (e.g. THREE's `Matrix4.elements`, typed
+ * `number[]`) to {@link Mat4}, throwing when it is not exactly 16 long.
+ *
+ * The runtime guard is the half a cast cannot give: the CLI twin hand-builds
+ * matrices, and a short array there would otherwise reach {@link transformPoint}
+ * and yield `NaN` coordinates.
+ */
+export function toMat4(elements: ArrayLike<number>): Mat4 {
+  if (elements.length !== 16) {
+    throw new RangeError(`Mat4 requires exactly 16 elements, received ${elements.length}`)
+  }
+  return Array.from(elements) as unknown as Mat4
+}
 
 /** Axis-aligned bounding box in a shared (world) frame. */
 export interface Aabb {

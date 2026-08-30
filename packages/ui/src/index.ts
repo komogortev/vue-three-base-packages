@@ -93,3 +93,4 @@ export type {
   Mat4,
   Aabb,
 } from './editor/gate/verdict'
+export { toMat4 } from './editor/gate/verdict'

@@ -28,8 +28,15 @@ export type ContactType =
  * `embedDepth` are derived from geometry at drop.
  */
 export interface PlacedAttachment {
-  /** Parent: another placed object 'placed-<id>', or a scene sentinel. */
-  parentId: string | 'room-root' | 'terrain'
+  /**
+   * Parent: another placed object (`placed-<nanoid6>`, matching
+   * {@link SavedPlacedObject.id}) or a scene sentinel.
+   *
+   * Typed as a template literal rather than `string | 'room-root' | 'terrain'` —
+   * that union collapses to bare `string` in TypeScript, so the sentinels were
+   * documentation only and a typo (`'Room-Root'`) typechecked.
+   */
+  parentId: `placed-${string}` | 'room-root' | 'terrain'
   /** Named socket / contact region on the parent (optional at L0). */
   parentSocket?: string
   /** Child root point, parent-local coords (the pivot should sit here). */

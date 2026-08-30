@@ -8,6 +8,7 @@ import {
   DEFAULT_PIVOT_EPSILON,
   type ValidatePlacementInput,
 } from '../gate/attachmentValidator'
+import { toMat4 } from '../gate/verdict'
 import type { Mat4, Aabb } from '../gate/verdict'
 import type { PlacedAttachment, SavedPlacedObject } from '../sandboxSceneSchema'
 
@@ -218,5 +219,23 @@ describe('summarizeVerdicts', () => {
 describe('defaults', () => {
   it('exposes a 1cm default pivot epsilon', () => {
     expect(DEFAULT_PIVOT_EPSILON).toBe(0.01)
+  })
+})
+
+describe('toMat4', () => {
+  it('accepts a 16-element array and preserves order', () => {
+    const elements = Array.from({ length: 16 }, (_, i) => i)
+    expect(Array.from(toMat4(elements))).toEqual(elements)
+  })
+
+  it('rejects a wrong-length array instead of yielding NaN downstream', () => {
+    expect(() => toMat4([1, 0, 0, 0])).toThrow(RangeError)
+  })
+
+  it('copies, so a later mutation of the source cannot corrupt the matrix', () => {
+    const elements = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1]
+    const m = toMat4(elements)
+    elements[12] = 999
+    expect(transformPoint(m, { x: 0, y: 0, z: 0 }).x).toBe(5)
   })
 })

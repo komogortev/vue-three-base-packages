@@ -6,6 +6,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
 import { validatePlacement, summarizeVerdicts, type GateSummary } from './gate/attachmentValidator'
+import { toMat4 } from './gate/verdict'
 import type { Aabb, Mat4, Vec3 } from './gate/verdict'
 export type { EditorCamMode } from './sceneEditorTypes'
 
@@ -1682,7 +1683,7 @@ export function useSceneEditorViewport(opts: {
           const parentRoot = placedMeshRoots.get(att.parentId)
           if (parentRoot) {
             parentRoot.updateWorldMatrix(true, false)
-            parentWorldMatrix = parentRoot.matrixWorld.elements
+            parentWorldMatrix = toMat4(parentRoot.matrixWorld.elements)
             // Bounds must reflect the visible mesh only. The placed root also holds
             // an invisible, oversized (bbox + 0.2 m) pick hit-box; Box3.setFromObject
             // would union it and inflate the AABB by 0.1 m/side, making the
