@@ -24,6 +24,7 @@
     "nanoid": "^5.0.0"
   },
   "peerDependencies": {
+    "@base/threejs-engine": "workspace:*",
     "pinia": "^2.2.0",
     "three": "^0.172.0",
     "vue": "^3.4.0"
