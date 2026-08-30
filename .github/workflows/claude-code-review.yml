@@ -42,4 +42,10 @@ jobs:
             (mcp__github_inline_comment__create_inline_comment) only for
             code-anchored findings. If the diff is clean, post a one-line
             all-clear comment.
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
+          # Read/Grep/Glob are REQUIRED: --allowedTools *replaces* the default
+          # allowlist rather than extending it, so without them the reviewer can
+          # only see `gh pr diff` output and cannot open a single file. On a large
+          # diff it burns the run on denied reads and exits green having posted
+          # nothing (PR #43, 2026-08-30: 38 of 39 turns were permission denials,
+          # $1.95, zero comments, check still SUCCESS).
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"'
