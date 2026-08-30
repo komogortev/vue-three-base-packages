@@ -98,8 +98,12 @@ export class AssetLoader {
 
   private initGltfLoaderExtensions(): Promise<void> {
     if (this.gltfExtensionsReady === null) {
+      // Constructed outside the async body so the `.catch()` below can name the
+      // decoder *this* init attempt created. Passing `this.dracoLoader` there made
+      // resetGltfLoaderExtensions' identity guard a tautology, so a failed init
+      // could dispose a newer decoder a later init had already installed.
+      const draco = new DRACOLoader()
       this.gltfExtensionsReady = (async (): Promise<void> => {
-        const draco = new DRACOLoader()
         draco.setDecoderPath(localDracoDecoderPath())
         this.dracoLoader = draco
         this.gltfLoader.setDRACOLoader(draco)
@@ -115,7 +119,7 @@ export class AssetLoader {
       })().catch((err) => {
         // Don't leave a rejected promise cached — the meshopt/decoder init would
         // then fail every future load with no retry. Clear so the next call rebuilds.
-        this.resetGltfLoaderExtensions(this.dracoLoader)
+        this.resetGltfLoaderExtensions(draco)
         throw err
       })
     }

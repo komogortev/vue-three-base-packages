@@ -38,6 +38,9 @@ export type {
   EditorNpcEntry,
   EditorZoneEntry,
   EditorSelection,
+  PoseBoneNode,
+  EditorCamMode,
+  EditorPlacedObject,
 } from './editor/sceneEditorTypes'
 export { EDITOR_ORBIT_BOOKMARKS, EDITOR_ORBIT_LOCOMOTION_IDS } from './editor/editorOrbitPresets'
 export type { EditorOrbitBookmark } from './editor/sceneEditorTypes'
