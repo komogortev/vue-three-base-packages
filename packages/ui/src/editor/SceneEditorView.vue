@@ -297,6 +297,7 @@ const {
   reinitScene,
   enterPlaceMode,
   snapshotPlacedTransforms,
+  runPlacementGate,
   restorePlacedObjects,
   setCamMode,
   setNpcPosition,
@@ -627,7 +628,15 @@ async function saveScene(): Promise<void> {
     })
     activeSavedSceneId.value = currentSceneId.value
     const n = save.placedObjects.length
-    flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}`)
+    // L0 Asset Gate (F-G3): save is warn-only — never blocks.
+    const gate = runPlacementGate()
+    let gateNote = ''
+    if (gate.blocked) {
+      gateNote = ` — ⚠ ${gate.vetoCount} placement issue${gate.vetoCount !== 1 ? 's' : ''}`
+    } else if (gate.advisoryCount > 0) {
+      gateNote = ` — ${gate.advisoryCount} unmeasured contact${gate.advisoryCount !== 1 ? 's' : ''}`
+    }
+    flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}${gateNote}`)
   } catch (err) {
     console.error('[saveScene] failed:', err)
     flashStatus('Save failed')
@@ -636,12 +645,40 @@ async function saveScene(): Promise<void> {
   }
 }
 
+/**
+ * L0 Asset Gate (F-G3) hard-block, shared by both export paths.
+ *
+ * Returns true when the export must not proceed. Both buttons write the same
+ * placement manifest schema, so gating only "Export Room" left "Export ZIP" as a
+ * bypass around the stated hard-block guarantee.
+ */
+function exportBlockedByGate(label: string): boolean {
+  const gate = runPlacementGate()
+  if (gate.blocked) {
+    const lines = gate.verdicts
+      .filter((v) => !v.passed)
+      .flatMap((v) =>
+        v.checks
+          .filter((c) => !c.passed && c.severity === 'veto')
+          .map((c) => `• ${v.placedId}: ${c.message}`),
+      )
+    console.warn(`[asset-gate] ${label} blocked — veto-class placement failures:\n` + lines.join('\n'))
+    flashStatus(`Export blocked — ${gate.vetoCount} placement${gate.vetoCount !== 1 ? 's' : ''} floating/gapped. Fix before exporting.`)
+    return true
+  }
+  if (gate.advisoryCount > 0) {
+    console.warn(`[asset-gate] ${gate.advisoryCount} advisory placement warning(s) — exporting anyway.`)
+  }
+  return false
+}
+
 const isExporting = ref(false)
 
 async function onExportZip(): Promise<void> {
   if (isExporting.value) return
   isExporting.value = true
   try {
+    if (exportBlockedByGate('ZIP export')) return
     await exportSandboxZip(buildSave())
     const n = placedObjects.value.length
     flashStatus(`ZIP exported — ${n} object${n !== 1 ? 's' : ''}`)
@@ -659,6 +696,8 @@ async function onExportRoomPackage(): Promise<void> {
   if (isExportingRoom.value) return
   isExportingRoom.value = true
   try {
+    // L0 Asset Gate (F-G3): hard-block export on any veto-class placement failure.
+    if (exportBlockedByGate('Room package export')) return
     const scene = buildRoomPackageScene(snapshotPlacedTransforms(), effectiveConfig.value)
     await exportRoomPackage(scene, sceneName.value.trim() || 'Untitled Scene')
     const n = placedObjects.value.length

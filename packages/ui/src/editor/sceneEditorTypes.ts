@@ -135,6 +135,11 @@ export interface EditorPlacedObject {
   scaleX: number
   scaleY: number
   scaleZ: number
+  /**
+   * L0 attachment metadata (F-G1). Absent = free placement, no gate applies.
+   * Flows through snapshotPlacedTransforms() into the saved scene / export.
+   */
+  attachment?: import('./sandboxSceneSchema').PlacedAttachment
 }
 
 // ─── Camera mode ─────────────────────────────────────────────────────────────
