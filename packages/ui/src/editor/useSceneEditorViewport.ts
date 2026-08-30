@@ -2115,6 +2115,10 @@ export function useSceneEditorViewport(opts: {
     npcPathViz.clear()
     placedMeshRoots.clear()
     placedHitBoxes.clear()
+    // Drop the ?editordebug handle — it holds scene/camera/renderer/
+    // transformControls, so leaving it set keeps every disposed object
+    // reachable across a remount (CI review 2026-08-30).
+    delete (window as unknown as Record<string, unknown>).__editorViewport
   }
 
   onMounted(init)
