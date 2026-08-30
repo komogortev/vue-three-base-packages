@@ -65,6 +65,7 @@
         <span class="row-icon npc-dot">●</span>
         <span class="row-label">{{ npc.label ?? npc.entityId }}</span>
         <span v-if="npcHasPath(npc.entityId)" class="badge-path" title="Has waypoint path">path</span>
+        <button class="btn-remove" title="Remove NPC" @click.stop="emit('remove-npc', npc.entityId)">×</button>
       </div>
       <p v-if="npcs.length === 0" class="section-empty">None</p>
     </div>
@@ -86,6 +87,7 @@
         <span class="row-icon" :class="zone.type === 'exit' ? 'exit-dot' : 'prox-dot'">◆</span>
         <span class="row-label">{{ zone.label ?? zone.id }}</span>
         <span class="badge-type">{{ zone.type }}</span>
+        <button class="btn-remove" title="Remove zone" @click.stop="emit('remove-zone', zone.id)">×</button>
       </div>
       <p v-if="zones.length === 0" class="section-empty">None</p>
     </div>
@@ -144,6 +146,8 @@ const emit = defineEmits<{
   'load-scene': [sceneId: string]
   'add-npc': []
   'add-zone': []
+  'remove-npc': [entityId: string]
+  'remove-zone': [id: string]
   'remove-placed': [objectId: string]
 }>()
 

@@ -1,11 +1,13 @@
 import { ref } from 'vue'
+import type { PoseBoneNode } from './sceneEditorTypes'
 
 export function usePoseEditor() {
-  const boneList = ref<string[]>([])
+  /** DFS-ordered bone tree of the attached pose mesh (empty = no mesh). */
+  const boneList = ref<PoseBoneNode[]>([])
   const selectedBoneName = ref<string | null>(null)
 
-  function setBoneList(names: string[]): void {
-    boneList.value = names
+  function setBoneList(nodes: PoseBoneNode[]): void {
+    boneList.value = nodes
     selectedBoneName.value = null
   }
 

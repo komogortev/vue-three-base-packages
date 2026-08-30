@@ -13,7 +13,11 @@ export default defineConfig({
       formats: ['es'],
     },
     rollupOptions: {
-      external: ['vue', 'three'],
+      // @base/threejs-engine must be external: it is a peer, and inlining it
+      // ships a second copy of the Draco decoder wiring inside @base/ui, giving
+      // any app that also depends on it two mismatched instances (CI review
+      // 2026-08-30). Mirrors @base/threejs-engine's own @base/engine-core setup.
+      external: ['vue', 'three', '@base/threejs-engine'],
       output: {
         assetFileNames: 'assets/[name][extname]',
       },

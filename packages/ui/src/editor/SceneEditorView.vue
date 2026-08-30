@@ -37,6 +37,8 @@
       @load-scene="onLoadScene"
       @add-npc="onAddNpc"
       @add-zone="onAddZone"
+      @remove-npc="onRemoveNpc"
+      @remove-zone="onRemoveZone"
       @remove-placed="onRemovePlaced"
     />
 
@@ -58,7 +60,7 @@
         <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Click</kbd> select</span>
         <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Drag</kbd> orbit</span>
         <span v-if="!isInPlaceMode && !isPlayerMode"><kbd>Scroll</kbd> zoom</span>
-        <span v-if="hasObjectSelected && !isPathEditing && !isInPlaceMode"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale</span>
+        <span v-if="hasObjectSelected && !isPathEditing && !isInPlaceMode"><kbd>T</kbd> translate · <kbd>R</kbd> rotate · <kbd>S</kbd> scale · <kbd>Ctrl+Z</kbd> revert drag</span>
         <span v-if="hasObjectSelected && !isInPlaceMode"><kbd>Esc</kbd> deselect</span>
         <span v-if="isPathEditing"><kbd>Click floor</kbd> add waypoint &nbsp;<kbd>Ctrl+Z</kbd> undo</span>
         <span v-if="isPathEditing"><kbd>Esc</kbd> stop editing</span>
@@ -167,18 +169,40 @@
       :has-pose-character="poseBoneList.length > 0"
       :ik-chain-names="ikChainNames"
       :active-ik-chain-name="activeIkChainName"
+      :pose-memo-names="poseMemoNames"
       @pose-tab-activate="onPoseTabActivate"
       @pose-bone-select="onPoseBoneSelect"
       @pose-capture="onPoseCapture"
       @pose-clear="onPoseClear"
       @ik-chain-select="onIkChainSelect"
+      @pose-memo-save="onPoseMemoSave"
+      @pose-memo-apply="onPoseMemoApply"
+      @pose-memo-remove="onPoseMemoRemove"
+      :anim-keyframe-times="animKeyframeTimes"
+      :anim-scrub-time="animScrubTime"
+      :anim-timeline-duration="animTimelineDuration"
+      :anim-preview-playing="animPreviewPlaying"
+      :anim-export-busy="animExportBusy"
+      :audition-playing="auditionClipName"
+      @anim-tab-activate="onAnimTabActivate"
+      @anim-scrub="onAnimScrub"
+      @anim-key-capture="onAnimKeyCapture"
+      @anim-key-remove="onAnimKeyRemove"
+      @anim-preview-toggle="onAnimPreviewToggle"
+      @anim-duration-set="onAnimDurationSet"
+      @anim-export="onAnimExport"
+      @anim-load-existing="onAnimLoadExisting"
+      @anim-add-to-kit="onAnimAddToKit"
+      @audition-clip="onAuditionClip"
+      @audition-stop="onAuditionStop"
     />
 
     <!-- Asset picker modal (F-9 / D-5b) -->
     <AssetPicker
       :open="pickerOpen"
-      :kind-filter="pickerKind"
-      @close="pickerOpen = false"
+      :kind-filter="pickerKindFilter"
+      :filter-label="pickerKind"
+      @close="onPickerClose"
       @select="onPickerSelect"
     />
 
@@ -193,6 +217,10 @@ import { nanoid } from 'nanoid'
 import { useSceneEditorViewport } from './useSceneEditorViewport'
 import { useAssetStore } from './useAssetStore'
 import { usePoseEditor } from './usePoseEditor'
+import { useAnimRecorder } from './anim/useAnimRecorder'
+import type { PoseBoneSample } from './anim/animationRecorder'
+import { buildAnimPackRow } from './anim/exportAnimPack'
+import { generateThumbnail } from './thumbnailGenerator'
 import { exportSandboxZip } from './exportSandboxZip'
 import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExporter'
 import { exportRoomPackage } from './exportRoomPackage'
@@ -309,12 +337,21 @@ const {
   removePlacedObject,
   setPlayCharacterAsset,
   attachPoseNpc,
+  setPoseMeshScale,
   selectPoseBone,
   capturePoseSnapshot,
   resetPoseBones,
   detachPoseNpc,
   ikChainNames,
   selectIkTarget,
+  startAnimPreview,
+  scrubAnimSample,
+  stopAnimPreview,
+  animPreviewPlaying,
+  exportAnimClip,
+  auditionPackClip,
+  loadPackClipForEdit,
+  buildAppendedPackBlob,
 } = useSceneEditorViewport({
   canvas: canvasRef,
   config: effectiveConfig.value,
@@ -331,6 +368,22 @@ const assetStore = useAssetStore()
 
 const { boneList: poseBoneList, selectedBoneName: poseSelectedBone, setBoneList: setPoseBoneList, selectBone: setPoseSelectedBone, reset: resetPoseEditor } = usePoseEditor()
 const activeIkChainName = ref<string | null>(null)
+/** Entity whose mesh is currently attached for pose/anim editing — idempotence guard. */
+let poseMeshEntityId: string | null = null
+
+// ─── Anim recorder reactive state (S5-a) ─────────────────────────────────────
+
+const {
+  recorder: animRecorder,
+  keyframeTimes: animKeyframeTimes,
+  scrubTime: animScrubTime,
+  timelineDuration: animTimelineDuration,
+  addKeyframe: animAddKeyframe,
+  removeKeyframe: animRemoveKeyframe,
+  setTimelineDuration: animSetTimelineDuration,
+  loadFromClip: animLoadFromClip,
+  clear: animClear,
+} = useAnimRecorder()
 
 function onAssetPicked(assetId: string): void {
   const asset = assetStore.getById(assetId)
@@ -356,10 +409,13 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   ambientAudioVolume.value = undefined
   // Clear waypoint display — new scene has its own localStorage keys
   waypointMap.value = new Map()
-  // Reset path-edit mode and pose IK state
+  // Reset path-edit mode and pose/anim state (pose mesh dies with reinitScene)
   isPathEditing.value = false
   setPathEditMode(false)
+  resetPoseEditor()
   activeIkChainName.value = null
+  poseMeshEntityId = null
+  animClear()
   // Reload viewport with effective config (local NPC/zone edits merged in)
   await reinitScene(effectiveConfig.value)
   // Restore waypoints for new scene
@@ -391,7 +447,12 @@ async function onLoadScene(sceneId: string): Promise<void> {
     }
 
     // Reload scene geometry using effectiveConfig (now has saved NPCs/zones merged in)
+    // — this destroys any attached pose mesh, so pose/anim state must reset with it
     await reinitScene(effectiveConfig.value)
+    resetPoseEditor()
+    activeIkChainName.value = null
+    poseMeshEntityId = null
+    animClear()
 
     // Resolve blob URLs — skip objects whose asset was deleted
     const resolvable = row.placedObjects.flatMap(obj => {
@@ -468,6 +529,9 @@ watch(selection, (newSel, oldSel) => {
     detachPoseNpc()
     resetPoseEditor()
     activeIkChainName.value = null
+    poseMeshEntityId = null
+    // Keyframes belong to one skeleton — never carry them across NPCs
+    animClear()
   }
 })
 
@@ -722,6 +786,16 @@ function onAddNpc(): void {
 }
 
 function onRemoveNpc(entityId: string): void {
+  // Explicitly release pose/anim state when the pose-attached NPC is removed —
+  // the selection-sync watch chain also gets there, but don't depend on it
+  // (same local-handling precedent as the asset-swap branch in onNpcChanged)
+  if (poseMeshEntityId === entityId) {
+    detachPoseNpc()
+    resetPoseEditor()
+    activeIkChainName.value = null
+    poseMeshEntityId = null
+    animClear()
+  }
   localNpcs.value = localNpcs.value.filter(n => n.entityId !== entityId)
   removeNpcMarker(entityId)
 }
@@ -750,6 +824,21 @@ function onNpcChanged(entityId: string, patch: Partial<EditorNpcEntry>): void {
   if ('x' in patch || 'z' in patch) {
     setNpcPosition(entityId, npc.x, npc.z)
   }
+  // Swapping the character asset invalidates the attached pose mesh AND any
+  // keyframes recorded against its skeleton — reset so the idempotence guard
+  // in ensurePoseMeshAttached can't hand back the old mesh.
+  if ('assetId' in patch && poseMeshEntityId === entityId) {
+    detachPoseNpc()
+    resetPoseEditor()
+    activeIkChainName.value = null
+    poseMeshEntityId = null
+    animClear()
+  }
+  // Live-scale the attached character mesh so the Scale field drives the model,
+  // not just the persisted value (runtime already honors npc.scale).
+  if ('scale' in patch && poseMeshEntityId === entityId) {
+    setPoseMeshScale(npc.scale ?? 1)
+  }
 }
 
 function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
@@ -763,16 +852,28 @@ function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
 
 // ─── Pose editor event handlers (S4) ─────────────────────────────────────────
 
-async function onPoseTabActivate(): Promise<void> {
+/**
+ * Load the selected NPC's character mesh for pose/anim editing. Idempotent:
+ * a Pose↔Anim tab switch reuses the already-attached mesh so the working
+ * pose survives. Returns true when a mesh with a skeleton is attached.
+ */
+async function ensurePoseMeshAttached(): Promise<boolean> {
   const sel = selection.value
-  if (sel?.kind !== 'npc') return
+  if (sel?.kind !== 'npc') return false
+  if (poseMeshEntityId === sel.entityId && poseBoneList.value.length > 0) return true
   const npc = localNpcs.value.find(n => n.entityId === sel.entityId)
-  if (!npc?.assetId) return
+  if (!npc?.assetId) return false
   const blobUrl = assetStore.resolveBlobUrl(npc.assetId)
-  if (!blobUrl) { flashStatus('Character mesh not in asset store'); return }
-  const boneNames = await attachPoseNpc(sel.entityId, blobUrl)
-  if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return }
+  if (!blobUrl) { flashStatus('Character mesh not in asset store'); return false }
+  const boneNames = await attachPoseNpc(sel.entityId, blobUrl, npc.scale ?? 1)
+  if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return false }
   setPoseBoneList(boneNames)
+  poseMeshEntityId = sel.entityId
+  return true
+}
+
+async function onPoseTabActivate(): Promise<void> {
+  await ensurePoseMeshAttached()
 }
 
 function onPoseBoneSelect(boneName: string): void {
@@ -804,6 +905,230 @@ function onIkChainSelect(chainName: string): void {
   selectIkTarget(chainName)
 }
 
+// ─── Pose memos — named pose snapshots for reuse (localStorage) ──────────────
+// Bones are matched by name on apply, so a memo carries across any character
+// sharing the skeleton family; unmatched bones are skipped silently.
+
+const POSE_MEMO_STORAGE_KEY = '@base-editor:pose-memos'
+
+interface PoseMemo { name: string; bones: PoseBoneSample[] }
+
+function loadPoseMemos(): PoseMemo[] {
+  try {
+    const raw = localStorage.getItem(POSE_MEMO_STORAGE_KEY)
+    if (!raw) return []
+    // Shape-guard: valid JSON of the wrong shape must not crash setup
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return (parsed as PoseMemo[]).filter(m => typeof m?.name === 'string' && Array.isArray(m?.bones))
+  } catch {
+    return []
+  }
+}
+
+const poseMemos = ref<PoseMemo[]>(loadPoseMemos())
+const poseMemoNames = computed(() => poseMemos.value.map(m => m.name))
+
+function persistPoseMemos(): void {
+  try {
+    localStorage.setItem(POSE_MEMO_STORAGE_KEY, JSON.stringify(poseMemos.value))
+  } catch (err) {
+    console.warn('[poseMemos] persist failed:', err)
+  }
+}
+
+function onPoseMemoSave(rawName: string): void {
+  const name = rawName.trim()
+  if (!name) { flashStatus('Memo name required'); return }
+  const bones = capturePoseSnapshot()
+  if (bones.length === 0) { flashStatus('No pose mesh attached'); return }
+  const existing = poseMemos.value.findIndex(m => m.name === name)
+  if (existing !== -1) poseMemos.value.splice(existing, 1, { name, bones })
+  else poseMemos.value.push({ name, bones })
+  persistPoseMemos()
+  flashStatus(`Pose memo "${name}" saved${existing !== -1 ? ' (replaced)' : ''}`)
+}
+
+function onPoseMemoApply(name: string): void {
+  const memo = poseMemos.value.find(m => m.name === name)
+  if (!memo) return
+  scrubAnimSample(memo.bones)
+  flashStatus(`Pose memo "${name}" applied`)
+}
+
+function onPoseMemoRemove(name: string): void {
+  poseMemos.value = poseMemos.value.filter(m => m.name !== name)
+  persistPoseMemos()
+}
+
+// ─── Anim recorder event handlers (S5-a) ─────────────────────────────────────
+
+async function onAnimTabActivate(): Promise<void> {
+  await ensurePoseMeshAttached()
+}
+
+function onAnimScrub(time: number): void {
+  animScrubTime.value = time
+  scrubAnimSample(animRecorder.sampleAt(time))
+}
+
+function onAnimKeyCapture(time: number): void {
+  if (animPreviewPlaying.value) stopAnimPreview()
+  const snapshot = capturePoseSnapshot()
+  if (snapshot.length === 0) return
+  animAddKeyframe(time, snapshot)
+  flashStatus(`Keyframe @ ${time.toFixed(2)}s`)
+}
+
+function onAnimKeyRemove(time: number): void {
+  if (animPreviewPlaying.value) stopAnimPreview()
+  animRemoveKeyframe(time)
+  flashStatus('Keyframe removed')
+}
+
+function onAnimPreviewToggle(): void {
+  if (animPreviewPlaying.value) {
+    stopAnimPreview()
+    return
+  }
+  if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
+  setPoseSelectedBone(null)
+  activeIkChainName.value = null
+  auditionClipName.value = null // recorder preview reuses the mixer — drop the audition highlight
+  startAnimPreview(animRecorder.build('preview'))
+}
+
+function onAnimDurationSet(seconds: number): void {
+  animSetTimelineDuration(seconds)
+}
+
+const animExportBusy = ref(false)
+
+async function onAnimExport(clipName: string): Promise<void> {
+  if (animExportBusy.value) return
+  if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
+  animExportBusy.value = true
+  try {
+    if (animPreviewPlaying.value) { stopAnimPreview(); auditionClipName.value = null }
+    const blob = await exportAnimClip([animRecorder.build(clipName)])
+    if (!blob) { flashStatus('Export failed — no pose mesh attached'); return }
+    // Thumbnail is best-effort, same posture as useAssetStore.upload()
+    let thumbnail: Blob | undefined
+    try {
+      thumbnail = await generateThumbnail(blob)
+    } catch (err) {
+      console.warn('[onAnimExport] thumbnail generation failed:', err)
+    }
+    await assetDb.assets.add(buildAnimPackRow(clipName, blob, thumbnail))
+    flashStatus(`Animation kit "${clipName}" saved (${(blob.size / (1024 * 1024)).toFixed(1)} MB)`)
+  } catch (err) {
+    console.error('[onAnimExport] failed:', err)
+    flashStatus('Export failed')
+  } finally {
+    animExportBusy.value = false
+  }
+}
+
+async function onAnimLoadExisting(entityId: string, clipName: string): Promise<void> {
+  if (animExportBusy.value) return
+  const npc = localNpcs.value.find(n => n.entityId === entityId)
+  if (!npc?.animationPackAssetId) { flashStatus('No animation pack bound'); return }
+  if (!npc.assetId) { flashStatus('Bind a character mesh to load a clip'); return }
+  // Reuse the export-busy flag: it disables the Load button too, so a slow
+  // first-load pack parse can't queue overlapping loads on rapid clicks.
+  animExportBusy.value = true
+  try {
+    // The pose mesh is what the loaded clip must resolve against + re-export from.
+    if (!(await ensurePoseMeshAttached())) return
+    const url = assetStore.resolveBlobUrl(npc.animationPackAssetId)
+    if (!url) { flashStatus('Pack unavailable'); return }
+    const result = await loadPackClipForEdit(url, clipName)
+    if (!result.ok) { flashStatus(result.reason); return }
+    // Drop any in-flight preview/audition before swapping the timeline contents.
+    if (animPreviewPlaying.value) { stopAnimPreview(); auditionClipName.value = null }
+    const skipped = animLoadFromClip(result.clip)
+    animScrubTime.value = 0
+    scrubAnimSample(animRecorder.sampleAt(0))
+    flashStatus(
+      skipped > 0
+        ? `Loaded "${clipName}" (${skipped} root-motion track${skipped === 1 ? '' : 's'} dropped — in-place only)`
+        : `Loaded "${clipName}" for editing`,
+    )
+  } finally {
+    animExportBusy.value = false
+  }
+}
+
+// ─── S5-d: clip audition + kit append ────────────────────────────────────────
+
+/** Clip name currently auditioning on the selected NPC (drives the ▶/■ highlight). */
+const auditionClipName = ref<string | null>(null)
+
+// Any path that stops the shared preview mixer (scrub, key edit, tab/selection
+// change detaching the pose mesh) clears the audition highlight.
+watch(animPreviewPlaying, (playing) => {
+  if (!playing) auditionClipName.value = null
+})
+
+async function onAuditionClip(entityId: string, clipName: string): Promise<void> {
+  const npc = localNpcs.value.find(n => n.entityId === entityId)
+  if (!npc?.animationPackAssetId) { flashStatus('No animation pack bound'); return }
+  if (!npc.assetId) { flashStatus('Bind a character mesh to audition'); return }
+  // The ▶ lives in the Asset tab, which never activates the pose mesh — attach
+  // it here so audition works on the natural select-NPC → Asset tab → ▶ path
+  // (ensurePoseMeshAttached is idempotent and flashes its own failure reason).
+  if (!(await ensurePoseMeshAttached())) return
+  const url = assetStore.resolveBlobUrl(npc.animationPackAssetId)
+  if (!url) { flashStatus('Pack unavailable'); return }
+  const result = await auditionPackClip(url, clipName)
+  if (result.ok) {
+    auditionClipName.value = clipName
+  } else {
+    // Keep highlight + playback in sync: a rejected switch stops any clip still looping.
+    stopAnimPreview()
+    auditionClipName.value = null
+    flashStatus(result.reason)
+  }
+}
+
+function onAuditionStop(): void {
+  stopAnimPreview()
+  auditionClipName.value = null
+}
+
+async function onAnimAddToKit(clipName: string): Promise<void> {
+  if (animRecorder.keyframes.length === 0) { flashStatus('No keyframes recorded'); return }
+  // Build the clip now — the recorder buffer could change before the pack is picked.
+  pendingKitClip = animRecorder.build(clipName)
+  pickerKind.value = 'animation-pack'
+  pickerIsForPlayer.value = false
+  pickerIsForAmbientAudio.value = false
+  pickerIsForAnimKit.value = true
+  pickerOpen.value = true
+}
+
+async function appendPendingClipToKit(targetAssetId: string): Promise<void> {
+  const clip = pendingKitClip
+  pendingKitClip = null
+  if (!clip) return
+  if (animExportBusy.value) { flashStatus('Busy — try again'); return }
+  animExportBusy.value = true
+  try {
+    if (animPreviewPlaying.value) { stopAnimPreview(); auditionClipName.value = null }
+    const url = assetStore.resolveBlobUrl(targetAssetId)
+    if (!url) { flashStatus('Target kit unavailable'); return }
+    const result = await buildAppendedPackBlob(url, clip)
+    if ('error' in result) { flashStatus(result.error); return }
+    await assetStore.appendToPack(targetAssetId, result.blob, result.clipNames)
+    flashStatus(`Added "${clip.name}" to kit (${result.clipNames.length} clips)`)
+  } catch (err) {
+    console.error('[appendPendingClipToKit] failed:', err)
+    flashStatus('Add to kit failed')
+  } finally {
+    animExportBusy.value = false
+  }
+}
+
 // ─── TS config export (F-13) ─────────────────────────────────────────────────
 
 const isCopyingTs = ref(false)
@@ -825,14 +1150,28 @@ async function onCopyConfigTs(): Promise<void> {
 const pickerOpen = ref(false)
 const pickerEntityId = ref('')
 const pickerKind = ref<AssetKind>('character')
+
+// Every GLB-backed kind can serve as an NPC/player body — a "character" pick
+// lists all loaded models (props/environments render static; skinned ones
+// animate), not only assets the classifier tagged 'character'. Audio is the
+// only kind excluded. The narrower pickers (audio, animation-pack) stay exact.
+const MODEL_KINDS: AssetKind[] = ['character', 'prop', 'environment', 'animation-pack']
+const pickerKindFilter = computed<AssetKind | AssetKind[]>(() =>
+  pickerKind.value === 'character' ? MODEL_KINDS : pickerKind.value,
+)
 const pickerIsForPlayer = ref(false)
 const pickerIsForAmbientAudio = ref(false)
+// S5-d: the picker is choosing the target kit for an "Add to Kit…" append.
+const pickerIsForAnimKit = ref(false)
+// The clip captured at "Add to Kit…" click, held until the target pack is picked.
+let pendingKitClip: THREE.AnimationClip | null = null
 
 function onPickNpcAsset(entityId: string, kind: 'character' | 'animation-pack'): void {
   pickerEntityId.value = entityId
   pickerKind.value = kind
   pickerIsForPlayer.value = false
   pickerIsForAmbientAudio.value = false
+  pickerIsForAnimKit.value = false
   pickerOpen.value = true
 }
 
@@ -845,6 +1184,7 @@ function onPickPlayerAsset(kind: 'character' | 'animation-pack'): void {
   pickerKind.value = kind
   pickerIsForPlayer.value = true
   pickerIsForAmbientAudio.value = false
+  pickerIsForAnimKit.value = false
   pickerOpen.value = true
 }
 
@@ -854,6 +1194,7 @@ function onPickAmbientAudio(): void {
   pickerKind.value = 'audio'
   pickerIsForPlayer.value = false
   pickerIsForAmbientAudio.value = true
+  pickerIsForAnimKit.value = false
   pickerOpen.value = true
 }
 
@@ -884,9 +1225,19 @@ async function applyPlayerCharAsset(): Promise<void> {
   await setPlayCharacterAsset(charUrl, animUrl)
 }
 
+function onPickerClose(): void {
+  pickerOpen.value = false
+  // Cancelled an "Add to Kit…" pick — drop the captured clip + intent.
+  pickerIsForAnimKit.value = false
+  pendingKitClip = null
+}
+
 function onPickerSelect(assetId: string): void {
   pickerOpen.value = false
-  if (pickerIsForAmbientAudio.value) {
+  if (pickerIsForAnimKit.value) {
+    pickerIsForAnimKit.value = false
+    void appendPendingClipToKit(assetId)
+  } else if (pickerIsForAmbientAudio.value) {
     ambientAudioAssetId.value = assetId
     pickerIsForAmbientAudio.value = false
   } else if (pickerIsForPlayer.value) {

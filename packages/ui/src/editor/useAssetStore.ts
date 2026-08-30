@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia'
 import { nanoid } from 'nanoid'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 import { assetDb, type AssetRow, type AssetKind } from './assetDb'
+import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { useLiveQuery } from './useLiveQuery'
 import { generateThumbnail } from './thumbnailGenerator'
 
@@ -86,7 +86,7 @@ export const useAssetStore = defineStore('assets', () => {
       contentType = ext === 'glb' ? 'model/gltf-binary' : 'model/gltf+json'
       try {
         const buf = await blob.arrayBuffer()
-        const loader = new GLTFLoader()
+        const loader = createEditorGltfLoader()
         const gltf = await loader.parseAsync(buf, '')
         if (!gltf.scene) {
           throw new Error('GLB has no scene')
@@ -103,8 +103,17 @@ export const useAssetStore = defineStore('assets', () => {
         const size = box.isEmpty() ? new THREE.Vector3() : box.getSize(new THREE.Vector3())
         const diag = Math.sqrt(size.x * size.x + size.y * size.y + size.z * size.z)
 
-        if (animCount > 0 && skinnedCount > 0) kind = 'character'
-        else if (animCount > 0 && skinnedCount === 0) kind = 'animation-pack'
+        // A skinned mesh is a character body even without embedded clips —
+        // rigged-but-unanimated exports (e.g. three-dreams npc-*.glb) must not
+        // fall through to 'prop' or the NPC character picker never lists them.
+        // Tradeoff: skinning outranks size, so a large scene GLB containing any
+        // SkinnedMesh classifies 'character' — platform environment exports
+        // don't embed skinning, and the picker's kind filter is user-correctable.
+        if (skinnedCount > 0) kind = 'character'
+        // Large unskinned GLBs with clips are scenes carrying baked animation
+        // (rotating door, tour path) — not clip packs for characters.
+        else if (animCount > 0 && diag > 20) kind = 'environment'
+        else if (animCount > 0) kind = 'animation-pack'
         else if (diag > 20) kind = 'environment'
         else kind = 'prop'
 
@@ -178,6 +187,21 @@ export const useAssetStore = defineStore('assets', () => {
     return url
   }
 
+  /**
+   * S5-d kit authoring: replace an animation-pack's blob with a re-exported one
+   * that carries an extra clip, and grow its `clipNames`. The caller (viewport)
+   * produces the merged blob; this owns the Dexie write + cache invalidation so
+   * a subsequent `resolveBlobUrl` hands back the grown pack, not the stale one.
+   */
+  async function appendToPack(id: string, blob: Blob, clipNames: string[]): Promise<void> {
+    await assetDb.assets.update(id, { blob, size: blob.size, clipNames })
+    const cached = blobUrlCache.get(id)
+    if (cached) {
+      URL.revokeObjectURL(cached)
+      blobUrlCache.delete(id)
+    }
+  }
+
   async function remove(id: string): Promise<void> {
     const cached = blobUrlCache.get(id)
     if (cached) {
@@ -187,5 +211,5 @@ export const useAssetStore = defineStore('assets', () => {
     await assetDb.assets.delete(id)
   }
 
-  return { assets, upload, getById, resolveBlobUrl, remove }
+  return { assets, upload, getById, resolveBlobUrl, appendToPack, remove }
 })

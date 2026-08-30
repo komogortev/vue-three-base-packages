@@ -8,6 +8,19 @@
 
 // ─── Scene object descriptors ─────────────────────────────────────────────────
 
+/**
+ * One skeleton bone in DFS order — the pose editor renders these as an
+ * indented, collapsible tree so parent/child relations are visible.
+ */
+export interface PoseBoneNode {
+  name: string
+  /** 0 for skeleton roots; children are depth+1. */
+  depth: number
+  /** Parent bone name, or null for roots — drives collapse visibility. */
+  parent: string | null
+  hasChildren: boolean
+}
+
 export interface EditorNpcEntry {
   /** Matches the entityId used in the Reaction Engine (e.g. 'npc-dad-scene-01'). */
   entityId: string

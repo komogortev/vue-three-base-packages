@@ -1,10 +1,13 @@
 import { ref, onMounted, onUnmounted, shallowReadonly, type Ref } from 'vue'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
-import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode } from './sceneEditorTypes'
+import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode, PoseBoneNode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
+import { createEditorGltfLoader } from './gltfLoaderFactory'
+import { PosePreviewMixer } from './anim/posePreviewMixer'
+import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
+import type { PoseBoneSample } from './anim/animationRecorder'
 import { validatePlacement, summarizeVerdicts, type GateSummary } from './gate/attachmentValidator'
 import { toMat4 } from './gate/verdict'
 import type { Aabb, Mat4, Vec3 } from './gate/verdict'
@@ -34,6 +37,28 @@ const MIXAMO_IK_CHAINS: Record<string, { effector: string; links: string[] }> = 
   leftArm:  { effector: 'mixamorigLeftHand',   links: ['mixamorigLeftForeArm',  'mixamorigLeftArm'] },
   rightLeg: { effector: 'mixamorigRightFoot',  links: ['mixamorigRightLeg',     'mixamorigRightUpLeg'] },
   leftLeg:  { effector: 'mixamorigLeftFoot',   links: ['mixamorigLeftLeg',      'mixamorigLeftUpLeg'] },
+}
+
+/**
+ * Safety net for grossly mis-scaled character meshes (e.g. a Mixamo GLB still
+ * authored in centimetres → ~180 units tall). Measured at load time in bind
+ * pose, so the naive Box3 height is reliable. Correctly-sized metres models
+ * fall inside [MIN, MAX] and are left untouched — this only rescues outliers,
+ * so a properly-baked asset is never double-scaled.
+ */
+const FIT_TARGET_HEIGHT = 1.7
+const FIT_MIN_HEIGHT = 0.3
+const FIT_MAX_HEIGHT = 4
+function fitCharacterScale(root: THREE.Object3D): void {
+  root.updateMatrixWorld(true)
+  const h = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).y
+  if (h > 1e-4 && (h < FIT_MIN_HEIGHT || h > FIT_MAX_HEIGHT)) {
+    root.scale.multiplyScalar(FIT_TARGET_HEIGHT / h)
+    root.updateMatrixWorld(true)
+    console.info(
+      `[SceneEditor] auto-fit mis-scaled character: ${h.toFixed(2)} → ${FIT_TARGET_HEIGHT} m`,
+    )
+  }
 }
 
 /** Simple iterative CCD IK — works on named bones, no skeleton modification needed. */
@@ -152,12 +177,14 @@ export interface SceneEditorViewportReturn {
    */
   setPlayCharacterAsset: (charBlobUrl: string | null, animPackBlobUrl?: string | null) => Promise<void>
   // ─── Pose editor ─────────────────────────────────────────────────────────
-  /** Load a character GLB for pose editing; returns the skeleton bone name list. */
-  attachPoseNpc: (entityId: string, blobUrl: string) => Promise<string[]>
+  /** Load a character GLB for pose editing; returns the skeleton as a DFS-ordered bone tree. */
+  attachPoseNpc: (entityId: string, blobUrl: string, npcScale?: number) => Promise<PoseBoneNode[]>
+  /** Live-update the attached pose mesh's uniform scale (NPC `scale` × fit base). */
+  setPoseMeshScale: (npcScale: number) => void
   /** Attach TransformControls in rotate mode to the named bone. */
   selectPoseBone: (boneName: string) => void
   /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
-  capturePoseSnapshot: () => Array<{ bone: string; q: [number, number, number, number] }>
+  capturePoseSnapshot: () => PoseBoneSample[]
   /** Reset all skeleton bones to bind pose and detach TC from any active bone/IK target. */
   resetPoseBones: () => void
   /** Remove the pose mesh + SkeletonHelper from the scene and release TC. */
@@ -166,6 +193,39 @@ export interface SceneEditorViewportReturn {
   ikChainNames: Readonly<Ref<string[]>>
   /** Attach TransformControls in translate mode to the named IK target sphere. */
   selectIkTarget: (chainName: string) => void
+  // ─── Anim preview (S5-a) — thin delegators to PosePreviewMixer ───────────
+  /** Play a clip on the pose mesh. Default LoopOnce+clamp (recorder preview); `loop` = LoopRepeat (S5-d audition). */
+  startAnimPreview: (clip: THREE.AnimationClip, loop?: boolean) => void
+  /** Stamp a recorder sample onto the pose skeleton (timeline scrub). */
+  scrubAnimSample: (bones: PoseBoneSample[]) => void
+  /** Stop preview playback, leaving bones at their current pose. */
+  stopAnimPreview: () => void
+  /** True while a preview clip is playing (flips false when LoopOnce finishes). */
+  animPreviewPlaying: Readonly<Ref<boolean>>
+  /** S5-b: export recorded clip(s) as a self-contained GLB over the pose mesh. Null when no mesh attached. */
+  exportAnimClip: (clips: THREE.AnimationClip[]) => Promise<Blob | null>
+  /**
+   * S5-d: load a stored animation-pack GLB, extract `clipName`, and loop it on
+   * the pose mesh to audition it. Rejects (no play) when no pose mesh is
+   * attached, the clip is absent, or its bones don't resolve on this skeleton.
+   */
+  auditionPackClip: (packBlobUrl: string, clipName: string) => Promise<{ ok: true } | { ok: false; reason: string }>
+  /**
+   * Load a clip from an existing pack for editing (correction / save-as). Same
+   * skeleton guard as audition; returns the resolved `AnimationClip` so the
+   * caller can pull it into the recorder timeline. Does not play or attach it.
+   */
+  loadPackClipForEdit: (packBlobUrl: string, clipName: string) => Promise<{ ok: true; clip: THREE.AnimationClip } | { ok: false; reason: string }>
+  /**
+   * S5-d: build the blob for appending `newClip` into the pack at `packBlobUrl`
+   * (kit authoring). Loads the pack, guards skeleton coherence + duplicate name
+   * against the current pose mesh, then re-exports all clips. The caller writes
+   * the Dexie row. Returns `{ error }` (not thrown) on any guard failure.
+   */
+  buildAppendedPackBlob: (
+    packBlobUrl: string,
+    newClip: THREE.AnimationClip,
+  ) => Promise<{ blob: Blob; clipNames: string[] } | { error: string }>
 }
 
 // ─── Composable ───────────────────────────────────────────────────────────────
@@ -269,6 +329,9 @@ export function useSceneEditorViewport(opts: {
   let poseMeshRoot: THREE.Object3D | null = null
   let poseSkinnedMesh: THREE.SkinnedMesh | null = null
   let poseHelper: THREE.SkeletonHelper | null = null
+  // Fit-normalization scale of the attached pose mesh (before the NPC's own
+  // `scale` multiplier), so setPoseMeshScale can recompute total = base × npc.
+  let poseBaseScale = 1
   let poseHasBoneAttached = false  // true when TC is attached to a bone via selectPoseBone
 
   // IK state — persistent group added to scene in init(); children managed by attachPoseNpc/detachPoseNpc
@@ -276,6 +339,21 @@ export function useSceneEditorViewport(opts: {
   const ikTargetMeshes = new Map<string, THREE.Mesh>()
   let ikActiveChainName: string | null = null
   const ikChainNames = ref<string[]>([])
+
+  // Anim preview (S5-a) — mixer mechanics live in PosePreviewMixer; this
+  // composable only delegates and mirrors the playing flag.
+  const animPreviewMixer = new PosePreviewMixer()
+  const animPreviewPlaying = ref(false)
+  animPreviewMixer.onFinished = () => { animPreviewPlaying.value = false }
+
+  // Single-slot gesture revert (Ctrl+Z) — one step back to the state captured
+  // at the start of the last gizmo drag. Overwritten by each new drag,
+  // consumed on use. Deliberately NOT a history stack (owner-scoped 2026-07-12).
+  let lastGestureRestore: (() => void) | null = null
+  /** Object the captured gesture targets — lets removals invalidate precisely. */
+  let lastGestureTarget: THREE.Object3D | null = null
+  /** True while a gizmo drag is in progress — Ctrl+Z must not fire mid-drag. */
+  let gizmoDragActive = false
 
   // Delta time
   const clock = new THREE.Clock()
@@ -330,7 +408,10 @@ export function useSceneEditorViewport(opts: {
 
     // Disable OrbitControls while gizmo dragged.
     transformControls.addEventListener('dragging-changed', (e) => {
-      controls.enabled = !(e as unknown as { value: boolean }).value
+      const dragging = (e as unknown as { value: boolean }).value
+      controls.enabled = !dragging
+      gizmoDragActive = dragging
+      if (dragging) snapshotGesture()
     })
 
     // Enforce uniform scale in scale mode + sync live positions for inspector reactivity.
@@ -352,23 +433,17 @@ export function useSceneEditorViewport(opts: {
         return  // skip NPC/zone live-position updates while dragging IK target
       }
 
-      const sel = selection.value
-      if (sel?.kind === 'npc') {
-        const root = npcMarkerRoots.get(sel.entityId)
-        if (root) {
-          const next = new Map(npcLivePositions.value)
-          next.set(sel.entityId, { x: root.position.x, y: root.position.y, z: root.position.z })
-          npcLivePositions.value = next
-        }
-      } else if (sel?.kind === 'zone') {
-        const root = zoneMarkerRoots.get(sel.id)
-        if (root) {
-          const next = new Map(zoneLivePositions.value)
-          next.set(sel.id, { x: root.position.x, z: root.position.z })
-          zoneLivePositions.value = next
-        }
-      }
+      syncSelectedLivePosition()
     })
+
+    // Opt-in introspection handle (?editordebug) — headless previews can't
+    // screenshot, so scene-graph state + renderer.info are the debugging
+    // surface. Query-param gate survives the library production build
+    // (import.meta.env.DEV compiles to false in dist) — same pattern as
+    // dbox's ?perf handle. Must sit AFTER TransformControls creation.
+    if (new URLSearchParams(window.location.search).has('editordebug')) {
+      ;(window as unknown as Record<string, unknown>).__editorViewport = { scene, camera, renderer, placedMeshRoots, transformControls }
+    }
 
     // Lighting — editor-neutral, persistent across scene switches
     scene.add(new THREE.AmbientLight('#c8d8f0', 0.65))
@@ -444,6 +519,9 @@ export function useSceneEditorViewport(opts: {
     // Detach gizmo before clearing objects it may reference
     transformControls.detach()
     transformControls.enabled = false
+    // Any captured gesture points at objects being destroyed
+    lastGestureRestore = null
+    lastGestureTarget = null
 
     // Cancel place mode
     placeMode = { ...PLACE_MODE_IDLE }
@@ -572,6 +650,12 @@ export function useSceneEditorViewport(opts: {
   function removePlacedObject(objectId: string): void {
     const root = placedMeshRoots.get(objectId)
     if (root) {
+      // Invalidate a captured gesture that targets the object being destroyed
+      // (leave gestures on other objects intact)
+      if (lastGestureTarget === root) {
+        lastGestureRestore = null
+        lastGestureTarget = null
+      }
       root.traverse(child => {
         const mesh = child as THREE.Mesh
         if (mesh.isMesh) {
@@ -632,9 +716,10 @@ export function useSceneEditorViewport(opts: {
     _disposePlayCharacter()
     if (!pendingCharBlobUrl) return
 
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(pendingCharBlobUrl)
+      fitCharacterScale(gltf.scene)
 
       // Ground the character: shift mesh so bottom of bbox is at y=0
       const bbox = new THREE.Box3().setFromObject(gltf.scene)
@@ -710,9 +795,107 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
+  // ─── Gesture revert (Ctrl+Z, single slot) ────────────────────────────────────
+
+  /** Mirror the TC-selected marker's transform into the live-position maps. */
+  function syncSelectedLivePosition(): void {
+    const sel = selection.value
+    if (sel?.kind === 'npc') {
+      const root = npcMarkerRoots.get(sel.entityId)
+      if (root) {
+        const next = new Map(npcLivePositions.value)
+        next.set(sel.entityId, { x: root.position.x, y: root.position.y, z: root.position.z })
+        npcLivePositions.value = next
+      }
+    } else if (sel?.kind === 'zone') {
+      const root = zoneMarkerRoots.get(sel.id)
+      if (root) {
+        const next = new Map(zoneLivePositions.value)
+        next.set(sel.id, { x: root.position.x, z: root.position.z })
+        zoneLivePositions.value = next
+      }
+    }
+  }
+
+  /**
+   * Mirror a specific marker root into the live-position maps by reverse
+   * lookup. The gesture-restore path needs this: selection may have moved to
+   * a different entity between drag-end and Ctrl+Z, and syncing the *current*
+   * selection would leave the reverted entity's persisted draft stale.
+   */
+  function syncLivePositionForRoot(root: THREE.Object3D): void {
+    for (const [id, r] of npcMarkerRoots) {
+      if (r === root) {
+        const next = new Map(npcLivePositions.value)
+        next.set(id, { x: root.position.x, y: root.position.y, z: root.position.z })
+        npcLivePositions.value = next
+        return
+      }
+    }
+    for (const [id, r] of zoneMarkerRoots) {
+      if (r === root) {
+        const next = new Map(zoneLivePositions.value)
+        next.set(id, { x: root.position.x, z: root.position.z })
+        zoneLivePositions.value = next
+        return
+      }
+    }
+  }
+
+  /** Capture the pre-drag state of whatever TC is about to mutate. */
+  function snapshotGesture(): void {
+    const obj = transformControls.object
+    if (!obj) { lastGestureRestore = null; lastGestureTarget = null; return }
+    lastGestureTarget = obj
+
+    // IK drag: the solver rewrites every chain link during the drag — snapshot
+    // the whole chain plus the target sphere, not just the dragged object.
+    if (ikActiveChainName !== null && poseSkinnedMesh) {
+      const chain = MIXAMO_IK_CHAINS[ikActiveChainName]
+      if (!chain) { lastGestureRestore = null; lastGestureTarget = null; return }
+      const bones = [chain.effector, ...chain.links]
+        .map(n => poseSkinnedMesh!.skeleton.getBoneByName(n))
+        .filter((b): b is THREE.Bone => b != null)
+      const quats = bones.map(b => b.quaternion.clone())
+      const spherePos = obj.position.clone()
+      lastGestureRestore = () => {
+        bones.forEach((b, i) => b.quaternion.copy(quats[i]))
+        obj.position.copy(spherePos)
+      }
+      return
+    }
+
+    // FK bone / marker / placed root: full local transform of the one object
+    const pos = obj.position.clone()
+    const quat = obj.quaternion.clone()
+    const scale = obj.scale.clone()
+    lastGestureRestore = () => {
+      obj.position.copy(pos)
+      obj.quaternion.copy(quat)
+      obj.scale.copy(scale)
+      syncLivePositionForRoot(obj)
+    }
+  }
+
+  /** Revert the last gizmo drag (one step, consumed on use). Returns false when nothing to revert. */
+  function revertLastGesture(): boolean {
+    if (gizmoDragActive) return false // mid-drag: TC would rewrite the restore next frame
+    if (!lastGestureRestore) return false
+    lastGestureRestore()
+    lastGestureRestore = null
+    lastGestureTarget = null
+    return true
+  }
+
   // ─── Pose editor ─────────────────────────────────────────────────────────────
 
   function detachPoseNpc(): void {
+    // Tear down any preview mixer before the mesh it drives is disposed
+    animPreviewMixer.dispose()
+    animPreviewPlaying.value = false
+    // A captured gesture may point at bones that are about to be disposed
+    lastGestureRestore = null
+    lastGestureTarget = null
     if (poseHasBoneAttached || ikActiveChainName !== null) {
       transformControls.detach()
       poseHasBoneAttached = false
@@ -757,9 +940,51 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  async function attachPoseNpc(entityId: string, blobUrl: string): Promise<string[]> {
+  /**
+   * Flatten the skeleton into DFS order with depth/parent info so the UI can
+   * render an indented, collapsible tree. Roots = bones whose parent is not a
+   * Bone (skeleton.bones order is file order, not guaranteed hierarchical).
+   */
+  function buildBoneTree(skeleton: THREE.Skeleton): PoseBoneNode[] {
+    const inSkeleton = new Set(skeleton.bones)
+    const roots = skeleton.bones.filter(b => !(b.parent && (b.parent as THREE.Bone).isBone && inSkeleton.has(b.parent as THREE.Bone)))
+    const out: PoseBoneNode[] = []
+    const visit = (bone: THREE.Bone, depth: number, parent: string | null): void => {
+      const childBones = bone.children.filter((c): c is THREE.Bone => (c as THREE.Bone).isBone && inSkeleton.has(c as THREE.Bone))
+      out.push({ name: bone.name, depth, parent, hasChildren: childBones.length > 0 })
+      for (const c of childBones) visit(c, depth + 1, bone.name)
+    }
+    for (const r of roots) visit(r, 0, null)
+    return out
+  }
+
+  /** Re-ground the pose mesh so its feet sit at y=0 after a scale change. */
+  function _groundPoseMesh(): void {
+    if (!poseMeshRoot) return
+    poseMeshRoot.updateMatrixWorld(true)
+    const bbox = new THREE.Box3().setFromObject(poseMeshRoot)
+    poseMeshRoot.position.y = -bbox.min.y
+  }
+
+  /**
+   * Apply the NPC's uniform `scale` to the attached pose mesh, on top of the
+   * fit-normalization base scale, then re-ground. Mirrors the runtime
+   * (`RoomPlayerModule` does `root.scale.setScalar(npc.scale)`) so the editor
+   * preview matches the room player. No-op when no mesh is attached.
+   */
+  function setPoseMeshScale(npcScale: number): void {
+    if (!poseMeshRoot) return
+    poseMeshRoot.scale.setScalar(poseBaseScale * (npcScale || 1))
+    _groundPoseMesh()
+  }
+
+  async function attachPoseNpc(
+    entityId: string,
+    blobUrl: string,
+    npcScale = 1,
+  ): Promise<PoseBoneNode[]> {
     detachPoseNpc()
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(blobUrl)
       const skinnedMeshes: THREE.SkinnedMesh[] = []
@@ -767,7 +992,11 @@ export function useSceneEditorViewport(opts: {
       const sm = skinnedMeshes[0]
       if (!sm) return []
 
-      // Position near NPC marker and ground the mesh
+      // Fit-normalize, then apply the NPC's own uniform scale, then ground.
+      fitCharacterScale(gltf.scene)
+      poseBaseScale = gltf.scene.scale.x
+      if (npcScale !== 1) gltf.scene.scale.setScalar(poseBaseScale * npcScale)
+      gltf.scene.updateMatrixWorld(true)
       const marker = npcMarkerRoots.get(entityId)
       const bbox = new THREE.Box3().setFromObject(gltf.scene)
       gltf.scene.position.set(marker?.position.x ?? 0, -bbox.min.y, marker?.position.z ?? 0)
@@ -799,7 +1028,7 @@ export function useSceneEditorViewport(opts: {
       }
       ikChainNames.value = newChainNames
 
-      return sm.skeleton.bones.map(b => b.name)
+      return buildBoneTree(sm.skeleton)
     } catch (e) {
       console.warn('[PoseEditor] Failed to load character mesh:', e)
       return []
@@ -829,7 +1058,7 @@ export function useSceneEditorViewport(opts: {
     ikActiveChainName = chainName
   }
 
-  function capturePoseSnapshot(): Array<{ bone: string; q: [number, number, number, number] }> {
+  function capturePoseSnapshot(): PoseBoneSample[] {
     if (!poseSkinnedMesh) return []
     return poseSkinnedMesh.skeleton.bones.map(b => ({
       bone: b.name,
@@ -837,10 +1066,9 @@ export function useSceneEditorViewport(opts: {
     }))
   }
 
-  function resetPoseBones(): void {
+  /** Reposition IK target spheres onto their effectors' current world positions. */
+  function syncIkSpheres(): void {
     if (!poseSkinnedMesh) return
-    poseSkinnedMesh.skeleton.pose()
-    // Reposition IK spheres back to bind-pose effector world positions
     for (const [chainName, sphere] of ikTargetMeshes) {
       const chain = MIXAMO_IK_CHAINS[chainName]
       if (!chain) continue
@@ -849,6 +1077,12 @@ export function useSceneEditorViewport(opts: {
       effector.updateWorldMatrix(true, false)
       sphere.position.setFromMatrixPosition(effector.matrixWorld)
     }
+  }
+
+  function resetPoseBones(): void {
+    if (!poseSkinnedMesh) return
+    poseSkinnedMesh.skeleton.pose()
+    syncIkSpheres()
     if (poseHasBoneAttached || ikActiveChainName !== null) {
       transformControls.detach()
       poseHasBoneAttached = false
@@ -865,10 +1099,130 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
+  // ─── Anim preview (S5-a) — thin delegators, mechanics in PosePreviewMixer ───
+
+  function startAnimPreview(clip: THREE.AnimationClip, loop = false): void {
+    if (!poseMeshRoot) return
+    // TC fighting the mixer over bone quats would corrupt the preview — release it
+    if (poseHasBoneAttached || ikActiveChainName !== null) {
+      transformControls.detach()
+      poseHasBoneAttached = false
+      ikActiveChainName = null
+      transformControls.enabled = false
+    }
+    animPreviewMixer.attach(poseMeshRoot)
+    animPreviewMixer.play(clip, loop)
+    animPreviewPlaying.value = true
+  }
+
+  function scrubAnimSample(bones: PoseBoneSample[]): void {
+    if (!poseSkinnedMesh || bones.length === 0) return
+    if (animPreviewMixer.playing) stopAnimPreview()
+    for (const s of bones) {
+      poseSkinnedMesh.skeleton.getBoneByName(s.bone)?.quaternion.fromArray(s.q)
+    }
+    // Stamped pose moved the effectors — stale spheres would snap the limb
+    // on the next IK drag
+    syncIkSpheres()
+  }
+
+  function stopAnimPreview(): void {
+    animPreviewMixer.stop()
+    animPreviewPlaying.value = false
+  }
+
+  // Safe against mid-export detach: the root is captured synchronously, the
+  // exporter reads CPU-side buffer attributes (detach disposes GPU resources
+  // only), and the resulting Dexie row is self-contained.
+  async function exportAnimClip(clips: THREE.AnimationClip[]): Promise<Blob | null> {
+    if (!poseMeshRoot) return null
+    return exportAnimationGlb(poseMeshRoot, clips)
+  }
+
+  // ─── Clip audition + kit append (S5-d) ──────────────────────────────────────
+
+  // One-entry cache so re-auditioning clips from the same pack doesn't re-parse
+  // the ~5 MB GLB on every ▶. Keyed by blob URL — an appended pack gets a fresh
+  // URL (the store revokes the old one), so this never serves a stale kit.
+  let auditionPackCache: { url: string; clips: THREE.AnimationClip[] } | null = null
+
+  async function loadPackClips(packBlobUrl: string): Promise<THREE.AnimationClip[]> {
+    if (auditionPackCache?.url === packBlobUrl) return auditionPackCache.clips
+    const gltf = await createEditorGltfLoader().loadAsync(packBlobUrl)
+    auditionPackCache = { url: packBlobUrl, clips: gltf.animations }
+    return gltf.animations
+  }
+
+  async function auditionPackClip(
+    packBlobUrl: string,
+    clipName: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (!poseMeshRoot || !poseSkinnedMesh) return { ok: false, reason: 'No character loaded' }
+    let clips: THREE.AnimationClip[]
+    try {
+      clips = await loadPackClips(packBlobUrl)
+    } catch (e) {
+      console.warn('[SceneEditor] audition pack load failed:', e)
+      return { ok: false, reason: 'Pack failed to load' }
+    }
+    const clip = clips.find((c) => c.name === clipName)
+    if (!clip) return { ok: false, reason: `Clip "${clipName}" not found in pack` }
+    // Pre-flight: a clip authored on a different skeleton binds nothing and
+    // plays silently — refuse and tell the user rather than showing a frozen mesh.
+    if (resolveClipBones(clip, poseSkinnedMesh.skeleton).matched === 0) {
+      return { ok: false, reason: "Clip's bones don't match this character" }
+    }
+    startAnimPreview(clip, true)
+    return { ok: true }
+  }
+
+  async function loadPackClipForEdit(
+    packBlobUrl: string,
+    clipName: string,
+  ): Promise<{ ok: true; clip: THREE.AnimationClip } | { ok: false; reason: string }> {
+    if (!poseMeshRoot || !poseSkinnedMesh) return { ok: false, reason: 'No character loaded' }
+    let clips: THREE.AnimationClip[]
+    try {
+      clips = await loadPackClips(packBlobUrl)
+    } catch (e) {
+      console.warn('[SceneEditor] load-for-edit pack load failed:', e)
+      return { ok: false, reason: 'Pack failed to load' }
+    }
+    const clip = clips.find((c) => c.name === clipName)
+    if (!clip) return { ok: false, reason: `Clip "${clipName}" not found in pack` }
+    // Same guard as audition: a clip authored on a different skeleton would load
+    // as keyframes targeting bones this character lacks — refuse rather than
+    // silently populate a timeline that can't drive the mesh.
+    if (resolveClipBones(clip, poseSkinnedMesh.skeleton).matched === 0) {
+      return { ok: false, reason: "Clip's bones don't match this character" }
+    }
+    return { ok: true, clip }
+  }
+
+  async function buildAppendedPackBlob(
+    packBlobUrl: string,
+    newClip: THREE.AnimationClip,
+  ): Promise<{ blob: Blob; clipNames: string[] } | { error: string }> {
+    if (!poseMeshRoot || !poseSkinnedMesh) return { error: 'No character loaded' }
+    let existing: THREE.AnimationClip[]
+    try {
+      // Bypass the audition cache: append needs the authoritative on-disk clips.
+      const gltf = await createEditorGltfLoader().loadAsync(packBlobUrl)
+      existing = gltf.animations
+    } catch (e) {
+      console.warn('[SceneEditor] append pack load failed:', e)
+      return { error: 'Target pack failed to load' }
+    }
+    const check = validateKitAppend(existing, newClip, poseSkinnedMesh.skeleton)
+    if (!check.ok) return { error: check.reason }
+    const blob = await exportAnimationGlb(poseMeshRoot, [...existing, newClip])
+    return { blob, clipNames: [...existing.map((c) => c.name), newClip.name] }
+  }
+
   // ─── GLB loading ────────────────────────────────────────────────────────────
 
   async function loadGLB(url: string, isFloor: boolean): Promise<void> {
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     try {
       const gltf = await loader.loadAsync(url)
       scene.add(gltf.scene)
@@ -1127,7 +1481,7 @@ export function useSceneEditorViewport(opts: {
     const root = new THREE.Group()
     root.position.copy(pos)
 
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     let localBbox = new THREE.Box3()
 
     try {
@@ -1184,7 +1538,7 @@ export function useSceneEditorViewport(opts: {
   // ─── Restore placed objects (load saved scene) ───────────────────────────────
 
   async function restorePlacedObjects(objects: RestorableObject[]): Promise<void> {
-    const loader = new GLTFLoader()
+    const loader = createEditorGltfLoader()
     const restored: EditorPlacedObject[] = []
 
     for (const obj of objects) {
@@ -1389,6 +1743,9 @@ export function useSceneEditorViewport(opts: {
     animId = requestAnimationFrame(animate)
     const delta = Math.min(clock.getDelta(), 0.05)
 
+    // Anim preview runs in any cam mode (no-op unless playing)
+    animPreviewMixer.update(delta)
+
     if (editorCamMode.value === 'follow-3p') {
       // Use real character when loaded, capsule otherwise
       const moveTarget: THREE.Object3D | null = charRoot ?? playerMesh
@@ -1572,6 +1929,14 @@ export function useSceneEditorViewport(opts: {
 
     keyState.add(e.code)
 
+    // Ctrl+Z: revert the last gizmo drag. Orbit-only (same gate as T/R/S —
+    // Ctrl is the descend key in free-float); path-edit mode owns its own
+    // Ctrl+Z (waypoint pop in the inspector) — stay out of its way.
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !pathEditActive && editorCamMode.value === 'orbit') {
+      if (revertLastGesture()) e.preventDefault()
+      return
+    }
+
     if (e.code === 'Tab') {
       e.preventDefault()
       cycleEditorCamMode()
@@ -1750,6 +2115,10 @@ export function useSceneEditorViewport(opts: {
     npcPathViz.clear()
     placedMeshRoots.clear()
     placedHitBoxes.clear()
+    // Drop the ?editordebug handle — it holds scene/camera/renderer/
+    // transformControls, so leaving it set keeps every disposed object
+    // reachable across a remount (CI review 2026-08-30).
+    delete (window as unknown as Record<string, unknown>).__editorViewport
   }
 
   onMounted(init)
@@ -1786,11 +2155,20 @@ export function useSceneEditorViewport(opts: {
     removePlacedObject,
     setPlayCharacterAsset,
     attachPoseNpc,
+    setPoseMeshScale,
     selectPoseBone,
     capturePoseSnapshot,
     resetPoseBones,
     detachPoseNpc,
     ikChainNames: shallowReadonly(ikChainNames),
     selectIkTarget,
+    startAnimPreview,
+    scrubAnimSample,
+    stopAnimPreview,
+    animPreviewPlaying: shallowReadonly(animPreviewPlaying),
+    exportAnimClip,
+    auditionPackClip,
+    loadPackClipForEdit,
+    buildAppendedPackBlob,
   }
 }
