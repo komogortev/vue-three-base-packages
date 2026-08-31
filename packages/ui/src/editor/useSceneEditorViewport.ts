@@ -5,6 +5,19 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode, PoseBoneNode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
+import {
+  hitBoxDims,
+  makePlacedObject,
+  resolveLocalBbox,
+  transformOf,
+  withTransform,
+  IDENTITY_PLACED_TRANSFORM,
+  type PlacedTransform,
+} from './placedObjectModel'
+import { describeSelection as describeSelectionText, sceneStatus as sceneStatusText } from './selectionText'
+import { fitScaleFor } from './characterFit'
+import { nextCamMode } from './camModes'
+import { NPC_MARKER_COLOR, NPC_STEM_COLOR, zoneColorHex } from './markerStyle'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
@@ -46,19 +59,16 @@ const MIXAMO_IK_CHAINS: Record<string, { effector: string; links: string[] }> = 
  * fall inside [MIN, MAX] and are left untouched — this only rescues outliers,
  * so a properly-baked asset is never double-scaled.
  */
-const FIT_TARGET_HEIGHT = 1.7
-const FIT_MIN_HEIGHT = 0.3
-const FIT_MAX_HEIGHT = 4
 function fitCharacterScale(root: THREE.Object3D): void {
   root.updateMatrixWorld(true)
   const h = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).y
-  if (h > 1e-4 && (h < FIT_MIN_HEIGHT || h > FIT_MAX_HEIGHT)) {
-    root.scale.multiplyScalar(FIT_TARGET_HEIGHT / h)
-    root.updateMatrixWorld(true)
-    console.info(
-      `[SceneEditor] auto-fit mis-scaled character: ${h.toFixed(2)} → ${FIT_TARGET_HEIGHT} m`,
-    )
-  }
+  const factor = fitScaleFor(h)
+  if (factor === null) return
+  root.scale.multiplyScalar(factor)
+  root.updateMatrixWorld(true)
+  console.info(
+    `[SceneEditor] auto-fit mis-scaled character: ${h.toFixed(2)} → ${(h * factor).toFixed(2)} m`,
+  )
 }
 
 /** Simple iterative CCD IK — works on named bones, no skeleton modification needed. */
@@ -122,6 +132,40 @@ function runCcdIk(
       }
       link.updateWorldMatrix(false, true)
     }
+  }
+}
+
+// ─── THREE ↔ pure-kernel boundary ─────────────────────────────────────────────
+// The placement record shape and its bbox arithmetic live in `placedObjectModel`
+// (engine-agnostic, unit-tested). These two adapters are the only places THREE
+// objects are translated into that vocabulary.
+
+/** Plain-number bounds from a Box3, or null when the box is empty. */
+function aabbFromBox3(b: THREE.Box3): Aabb | null {
+  if (b.isEmpty()) return null
+  return {
+    min: { x: b.min.x, y: b.min.y, z: b.min.z },
+    max: { x: b.max.x, y: b.max.y, z: b.max.z },
+  }
+}
+
+/** Invisible padded hit box for raycast selection of a placed GLB. */
+function buildHitBox(localBbox: THREE.Box3): THREE.Mesh {
+  const { size, center } = hitBoxDims(resolveLocalBbox(aabbFromBox3(localBbox)))
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(size.x, size.y, size.z),
+    new THREE.MeshBasicMaterial({ visible: false }),
+  )
+  mesh.position.set(center.x, center.y, center.z)
+  return mesh
+}
+
+/** Read an object's live transform into the kernel's plain-number form. */
+function liveTransformOf(o: THREE.Object3D): PlacedTransform {
+  return {
+    position: { x: o.position.x, y: o.position.y, z: o.position.z },
+    rotation: { x: o.rotation.x, y: o.rotation.y, z: o.rotation.z },
+    scale: { x: o.scale.x, y: o.scale.y, z: o.scale.z },
   }
 }
 
@@ -1260,14 +1304,14 @@ export function useSceneEditorViewport(opts: {
     const markerRoot = new THREE.Group()
     markerRoot.position.set(npc.x, yBase, npc.z)
 
-    const mat = new THREE.MeshBasicMaterial({ color: '#00aaff' })
+    const mat = new THREE.MeshBasicMaterial({ color: NPC_MARKER_COLOR })
     const sphere = new THREE.Mesh(npcSphereGeo, mat)
     sphere.position.set(0, 0.9, 0)
     markerRoot.add(sphere)
     npcSpheres.set(npc.entityId, sphere)
 
     const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.9, 6)
-    const stemMat = new THREE.MeshBasicMaterial({ color: '#0077bb' })
+    const stemMat = new THREE.MeshBasicMaterial({ color: NPC_STEM_COLOR })
     const stem = new THREE.Mesh(stemGeo, stemMat)
     stem.position.set(0, 0.45, 0)
     markerRoot.add(stem)
@@ -1305,10 +1349,7 @@ export function useSceneEditorViewport(opts: {
 
   /** Shared mesh-building logic used by buildZoneMarkers and addZoneMarker. */
   function _addZoneMarkerMesh(zone: import('./sceneEditorTypes').EditorZoneEntry): void {
-    const defaultColor = zone.type === 'exit' ? '#ffdd44' : '#44ff88'
-    const colorHex = zone.color
-      ? `#${zone.color.toString(16).padStart(6, '0')}`
-      : defaultColor
+    const colorHex = zoneColorHex(zone)
 
     // Group root — TC attaches here so ring + pip move together
     const zoneRoot = new THREE.Group()
@@ -1411,33 +1452,15 @@ export function useSceneEditorViewport(opts: {
   }
 
   function describeSelection(s: EditorSelection): string {
-    if (!s || s.kind === 'scene') {
-      return sceneStatus(config)
-    }
-    if (s.kind === 'player') {
-      return 'Player — WASD to move · Tab to cycle camera'
-    }
-    if (s.kind === 'npc') {
-      const npc = config.npcs?.find(n => n.entityId === s.entityId)
-      const label = npc?.label ?? s.entityId
-      const pathHint = pathEditActive ? ' — click floor to add waypoint' : ''
-      return `NPC: ${label}${pathHint}`
-    }
-    if (s.kind === 'zone') {
-      const zone = config.zones?.find(z => z.id === s.id)
-      return `Zone: ${zone?.label ?? s.id} (${zone?.type ?? 'unknown'}, r=${zone?.radius ?? '?'}m)`
-    }
-    if (s.kind === 'placed') {
-      const obj = placedObjects.value.find(p => p.id === s.objectId)
-      return `Object: ${obj?.label ?? s.objectId}`
-    }
-    return ''
+    return describeSelectionText(s, {
+      config,
+      placedObjects: placedObjects.value,
+      pathEditActive,
+    })
   }
 
   function sceneStatus(cfg: SceneEditorConfig): string {
-    const n = cfg.npcs?.length ?? 0
-    const z = cfg.zones?.length ?? 0
-    return `Scene loaded — ${n} NPC${n !== 1 ? 's' : ''}, ${z} zone${z !== 1 ? 's' : ''}`
+    return sceneStatusText(cfg)
   }
 
   // ─── Transform mode ───────────────────────────────────────────────────────────
@@ -1501,18 +1524,8 @@ export function useSceneEditorViewport(opts: {
       localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
     }
 
-    if (localBbox.isEmpty()) {
-      localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
-    }
-
     // Invisible hit box sized to the GLB bbox — used for raycasting / selection
-    const bboxSize = localBbox.getSize(new THREE.Vector3())
-    const bboxCenter = localBbox.getCenter(new THREE.Vector3())
-    const hitBox = new THREE.Mesh(
-      new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
-      new THREE.MeshBasicMaterial({ visible: false }),
-    )
-    hitBox.position.copy(bboxCenter)
+    const hitBox = buildHitBox(localBbox)
     root.add(hitBox)
 
     placedGroup.add(root)
@@ -1523,12 +1536,10 @@ export function useSceneEditorViewport(opts: {
 
     placedObjects.value = [
       ...placedObjects.value,
-      {
-        id: objectId, assetId, label,
-        x: pos.x, y: pos.y, z: pos.z,
-        rotationX: 0, rotationY: 0, rotationZ: 0,
-        scaleX: 1, scaleY: 1, scaleZ: 1,
-      },
+      makePlacedObject(
+        { id: objectId, assetId, label },
+        { ...IDENTITY_PLACED_TRANSFORM, position: { x: pos.x, y: pos.y, z: pos.z } },
+      ),
     ]
 
     // Auto-select the freshly placed object
@@ -1563,33 +1574,22 @@ export function useSceneEditorViewport(opts: {
         localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
       }
 
-      if (localBbox.isEmpty()) {
-        localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
-      }
-
-      const bboxSize = localBbox.getSize(new THREE.Vector3())
-      const bboxCenter = localBbox.getCenter(new THREE.Vector3())
-      const hitBox = new THREE.Mesh(
-        new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
-        new THREE.MeshBasicMaterial({ visible: false }),
-      )
-      hitBox.position.copy(bboxCenter)
+      const hitBox = buildHitBox(localBbox)
       root.add(hitBox)
 
       placedGroup.add(root)
       placedMeshRoots.set(obj.id, root)
       placedHitBoxes.set(obj.id, hitBox)
 
-      restored.push({
-        id: obj.id, assetId: obj.assetId, label: obj.label,
-        x: obj.x, y: obj.y, z: obj.z,
-        rotationX: obj.rotationX, rotationY: obj.rotationY, rotationZ: obj.rotationZ,
-        scaleX: obj.scaleX, scaleY: obj.scaleY, scaleZ: obj.scaleZ,
-        // Carry L0 attachment metadata across the save/load boundary (F-G1/F-G3).
-        // Dropping it here silently stripped every attachment on reload, which made
-        // runPlacementGate() a permanent no-op for any scene that had been saved.
-        attachment: obj.attachment,
-      })
+      // Attachment metadata rides through makePlacedObject (F-G1/F-G3) — the
+      // record is built in exactly one place so a field cannot be dropped here.
+      restored.push(
+        makePlacedObject(
+          { id: obj.id, assetId: obj.assetId, label: obj.label },
+          transformOf(obj),
+          obj.attachment,
+        ),
+      )
     }
 
     placedObjects.value = restored
@@ -1653,8 +1653,6 @@ export function useSceneEditorViewport(opts: {
   }
 
   // ─── Camera mode ─────────────────────────────────────────────────────────────
-
-  const CAM_MODE_ORDER: EditorCamMode[] = ['orbit', 'first-person', 'follow-3p', 'free-float']
 
   /** Switch camera mode — handles Three.js state only, no selection changes. */
   function setEditorCamMode(mode: EditorCamMode): void {
@@ -1733,8 +1731,7 @@ export function useSceneEditorViewport(opts: {
 
   /** Tab cycles orbit → first-person → follow-3p → free-float → orbit, syncing selection. */
   function cycleEditorCamMode(): void {
-    const next = CAM_MODE_ORDER[(CAM_MODE_ORDER.indexOf(editorCamMode.value) + 1) % CAM_MODE_ORDER.length]
-    setCamMode(next)
+    setCamMode(nextCamMode(editorCamMode.value))
   }
 
   // ─── Render loop ─────────────────────────────────────────────────────────────
@@ -2010,18 +2007,7 @@ export function useSceneEditorViewport(opts: {
     return placedObjects.value.map(obj => {
       const root = placedMeshRoots.get(obj.id)
       if (!root) return { ...obj }
-      return {
-        ...obj,
-        x: root.position.x,
-        y: root.position.y,
-        z: root.position.z,
-        rotationX: root.rotation.x,
-        rotationY: root.rotation.y,
-        rotationZ: root.rotation.z,
-        scaleX: root.scale.x,
-        scaleY: root.scale.y,
-        scaleZ: root.scale.z,
-      }
+      return withTransform(obj, liveTransformOf(root))
     })
   }
 
