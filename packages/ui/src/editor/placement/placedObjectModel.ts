@@ -14,9 +14,9 @@
  * unit-testable without a renderer. The caller converts `THREE.Box3` to
  * {@link Aabb} at the boundary (mirrors `glbLintAdapter`'s split).
  */
-import type { Aabb, Vec3 } from './gate/verdict'
-import type { EditorPlacedObject } from './sceneEditorTypes'
-import type { PlacedAttachment } from './sandboxSceneSchema'
+import type { Aabb, Vec3 } from '../gate/verdict'
+import type { EditorPlacedObject } from '../sceneEditorTypes'
+import type { PlacedAttachment } from '../sandboxSceneSchema'
 
 /** Padding added to each axis of the invisible raycast hit box around a placed GLB. */
 export const HITBOX_PADDING = 0.2

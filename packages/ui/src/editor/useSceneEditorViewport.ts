@@ -13,11 +13,11 @@ import {
   withTransform,
   IDENTITY_PLACED_TRANSFORM,
   type PlacedTransform,
-} from './placedObjectModel'
-import { describeSelection as describeSelectionText, sceneStatus as sceneStatusText } from './selectionText'
-import { fitScaleFor } from './characterFit'
-import { nextCamMode } from './camModes'
-import { NPC_MARKER_COLOR, NPC_STEM_COLOR, zoneColorHex } from './markerStyle'
+} from './placement/placedObjectModel'
+import { describeSelection as describeSelectionText, sceneStatus as sceneStatusText } from './selection/selectionText'
+import { fitScaleFor } from './pose/characterFit'
+import { nextCamMode } from './camera/camModes'
+import { createMarkerRegistry } from './markers/markerRegistry'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
@@ -305,9 +305,8 @@ export function useSceneEditorViewport(opts: {
   let floorMeshes: THREE.Object3D[] = []
   let sceneObjects: THREE.Object3D[] = []  // all scene-level objects added per config
 
-  // Marker groups — cleared and rebuilt on scene switch
-  const npcMarkerGroup = new THREE.Group()
-  const zoneMarkerGroup = new THREE.Group()
+  // NPC / zone marker meshes + their lookup maps (decomposition stage 2).
+  const markers = createMarkerRegistry()
   const pathGroup = new THREE.Group()
 
   // Placed objects group — persistent container, children cleared on scene switch
@@ -320,16 +319,6 @@ export function useSceneEditorViewport(opts: {
   // Place mode state — plain object (not reactive; status + isInPlaceMode carry the UI signal)
   let placeMode: PlaceMode = { ...PLACE_MODE_IDLE }
 
-  // Selection maps: entityId/zoneId → clickable mesh (for raycasting + highlight)
-  const npcSpheres = new Map<string, THREE.Mesh>()
-  const zoneRingPips = new Map<string, THREE.Mesh>()
-
-  // Per-NPC root groups — used for TransformControls attachment so all parts move together
-  const npcMarkerRoots = new Map<string, THREE.Group>()
-
-  // Per-zone root groups — ring + pip grouped so TC moves both together
-  const zoneMarkerRoots = new Map<string, THREE.Group>()
-
   // Live positions — updated by TC objectChange; drives inspector two-way binding
   const npcLivePositions = ref<Map<string, { x: number; y: number; z: number }>>(new Map())
   const zoneLivePositions = ref<Map<string, { x: number; z: number }>>(new Map())
@@ -337,8 +326,7 @@ export function useSceneEditorViewport(opts: {
   // Per-NPC path visualization
   const npcPathViz = new Map<string, { line: THREE.Line; dots: THREE.Group }>()
 
-  // Shared geometries (disposed on component unmount, not on scene switch)
-  const npcSphereGeo = new THREE.SphereGeometry(0.35, 12, 8)
+  // Shared geometry for path dots (disposed on unmount; marker geometry lives in the registry)
   const dotGeo = new THREE.SphereGeometry(0.12, 8, 6)
 
   // Drag detection
@@ -499,8 +487,8 @@ export function useSceneEditorViewport(opts: {
     scene.add(new THREE.GridHelper(100, 100, '#1a2d4a', '#0e1622'))
 
     // Marker groups are persistent containers — their children are rebuilt per scene
-    scene.add(npcMarkerGroup)
-    scene.add(zoneMarkerGroup)
+    scene.add(markers.npcGroup)
+    scene.add(markers.zoneGroup)
     scene.add(pathGroup)
     scene.add(placedGroup)
     scene.add(ikTargetGroup)
@@ -549,9 +537,13 @@ export function useSceneEditorViewport(opts: {
       await loadGLB(url, false)
     }
 
-    buildNpcMarkers(cfg)
-    buildZoneMarkers(cfg)
-    buildSpawnMarker(cfg)
+    npcLivePositions.value = markers.buildNpcs(cfg)
+    zoneLivePositions.value = markers.buildZones(cfg)
+    const spawnMesh = markers.buildSpawnMesh(cfg)
+    if (spawnMesh) {
+      scene.add(spawnMesh)
+      sceneObjects.push(spawnMesh)
+    }
 
     isReady.value = true
     statusMessage.value = sceneStatus(cfg)
@@ -578,22 +570,8 @@ export function useSceneEditorViewport(opts: {
     sceneObjects = []
     floorMeshes = []
 
-    // Clear marker groups — dispose per-marker materials/geometries first
-    npcMarkerGroup.traverse(obj => {
-      const m = obj as THREE.Mesh
-      if (m.isMesh) { m.geometry?.dispose(); (m.material as THREE.Material)?.dispose() }
-    })
-    npcMarkerGroup.clear()
-    zoneMarkerGroup.traverse(obj => {
-      const m = obj as THREE.Mesh
-      if (m.isMesh) { m.geometry?.dispose(); (m.material as THREE.Material)?.dispose() }
-    })
-    zoneMarkerGroup.clear()
-
-    npcSpheres.clear()
-    zoneRingPips.clear()
-    npcMarkerRoots.clear()
-    zoneMarkerRoots.clear()
+    // Clear marker groups — disposal semantics live in the registry
+    markers.clear()
     npcLivePositions.value = new Map()
     zoneLivePositions.value = new Map()
 
@@ -630,7 +608,7 @@ export function useSceneEditorViewport(opts: {
   // ─── Live transform setters (inspector → viewport) ───────────────────────────
 
   function setNpcPosition(entityId: string, x: number, z: number): void {
-    const root = npcMarkerRoots.get(entityId)
+    const root = markers.npcRoot(entityId)
     if (!root) return
     root.position.x = x
     root.position.z = z
@@ -640,7 +618,7 @@ export function useSceneEditorViewport(opts: {
   }
 
   function setZonePosition(id: string, x: number, z: number): void {
-    const root = zoneMarkerRoots.get(id)
+    const root = markers.zoneRoot(id)
     if (!root) return
     root.position.x = x
     root.position.z = z
@@ -652,17 +630,14 @@ export function useSceneEditorViewport(opts: {
   // ─── Dynamic marker add/remove (F-11) ─────────────────────────────────────────
 
   function addNpcMarker(npc: import('./sceneEditorTypes').EditorNpcEntry): void {
-    _addNpcMarkerMesh(npc)
+    markers.addNpc(npc)
     const next = new Map(npcLivePositions.value)
     next.set(npc.entityId, { x: npc.x, y: npc.y ?? 0, z: npc.z })
     npcLivePositions.value = next
   }
 
   function removeNpcMarker(entityId: string): void {
-    const root = npcMarkerRoots.get(entityId)
-    if (root) npcMarkerGroup.remove(root)
-    npcMarkerRoots.delete(entityId)
-    npcSpheres.delete(entityId)
+    markers.removeNpc(entityId)
     const next = new Map(npcLivePositions.value)
     next.delete(entityId)
     npcLivePositions.value = next
@@ -672,17 +647,14 @@ export function useSceneEditorViewport(opts: {
   }
 
   function addZoneMarker(zone: import('./sceneEditorTypes').EditorZoneEntry): void {
-    _addZoneMarkerMesh(zone)
+    markers.addZone(zone)
     const next = new Map(zoneLivePositions.value)
     next.set(zone.id, { x: zone.x, z: zone.z })
     zoneLivePositions.value = next
   }
 
   function removeZoneMarker(id: string): void {
-    const root = zoneMarkerRoots.get(id)
-    if (root) zoneMarkerGroup.remove(root)
-    zoneMarkerRoots.delete(id)
-    zoneRingPips.delete(id)
+    markers.removeZone(id)
     const next = new Map(zoneLivePositions.value)
     next.delete(id)
     zoneLivePositions.value = next
@@ -845,14 +817,14 @@ export function useSceneEditorViewport(opts: {
   function syncSelectedLivePosition(): void {
     const sel = selection.value
     if (sel?.kind === 'npc') {
-      const root = npcMarkerRoots.get(sel.entityId)
+      const root = markers.npcRoot(sel.entityId)
       if (root) {
         const next = new Map(npcLivePositions.value)
         next.set(sel.entityId, { x: root.position.x, y: root.position.y, z: root.position.z })
         npcLivePositions.value = next
       }
     } else if (sel?.kind === 'zone') {
-      const root = zoneMarkerRoots.get(sel.id)
+      const root = markers.zoneRoot(sel.id)
       if (root) {
         const next = new Map(zoneLivePositions.value)
         next.set(sel.id, { x: root.position.x, z: root.position.z })
@@ -868,7 +840,7 @@ export function useSceneEditorViewport(opts: {
    * selection would leave the reverted entity's persisted draft stale.
    */
   function syncLivePositionForRoot(root: THREE.Object3D): void {
-    for (const [id, r] of npcMarkerRoots) {
+    for (const [id, r] of markers.npcRootEntries()) {
       if (r === root) {
         const next = new Map(npcLivePositions.value)
         next.set(id, { x: root.position.x, y: root.position.y, z: root.position.z })
@@ -876,7 +848,7 @@ export function useSceneEditorViewport(opts: {
         return
       }
     }
-    for (const [id, r] of zoneMarkerRoots) {
+    for (const [id, r] of markers.zoneRootEntries()) {
       if (r === root) {
         const next = new Map(zoneLivePositions.value)
         next.set(id, { x: root.position.x, z: root.position.z })
@@ -948,7 +920,7 @@ export function useSceneEditorViewport(opts: {
       // Re-attach TC to the NPC marker if that NPC is still selected
       const sel = selection.value
       if (sel?.kind === 'npc') {
-        const root = npcMarkerRoots.get(sel.entityId)
+        const root = markers.npcRoot(sel.entityId)
         if (root) { transformControls.attach(root); transformControls.enabled = true }
         else transformControls.enabled = false
       } else {
@@ -1041,7 +1013,7 @@ export function useSceneEditorViewport(opts: {
       poseBaseScale = gltf.scene.scale.x
       if (npcScale !== 1) gltf.scene.scale.setScalar(poseBaseScale * npcScale)
       gltf.scene.updateMatrixWorld(true)
-      const marker = npcMarkerRoots.get(entityId)
+      const marker = markers.npcRoot(entityId)
       const bbox = new THREE.Box3().setFromObject(gltf.scene)
       gltf.scene.position.set(marker?.position.x ?? 0, -bbox.min.y, marker?.position.z ?? 0)
 
@@ -1134,7 +1106,7 @@ export function useSceneEditorViewport(opts: {
       transformControls.setMode(transformMode.value)
       const sel = selection.value
       if (sel?.kind === 'npc') {
-        const root = npcMarkerRoots.get(sel.entityId)
+        const root = markers.npcRoot(sel.entityId)
         if (root) { transformControls.attach(root); transformControls.enabled = true }
         else transformControls.enabled = false
       } else {
@@ -1281,111 +1253,6 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  // ─── Marker construction ─────────────────────────────────────────────────────
-
-  function buildNpcMarkers(cfg: SceneEditorConfig): void {
-    npcMarkerGroup.clear()
-    npcSpheres.clear()
-    npcMarkerRoots.clear()
-
-    const liveNpcs = new Map<string, { x: number; y: number; z: number }>()
-
-    for (const npc of cfg.npcs ?? []) {
-      _addNpcMarkerMesh(npc)
-      liveNpcs.set(npc.entityId, { x: npc.x, y: npc.y ?? 0, z: npc.z })
-    }
-
-    npcLivePositions.value = liveNpcs
-  }
-
-  /** Shared mesh-building logic used by buildNpcMarkers and addNpcMarker. */
-  function _addNpcMarkerMesh(npc: import('./sceneEditorTypes').EditorNpcEntry): void {
-    const yBase = npc.y ?? 0
-    const markerRoot = new THREE.Group()
-    markerRoot.position.set(npc.x, yBase, npc.z)
-
-    const mat = new THREE.MeshBasicMaterial({ color: NPC_MARKER_COLOR })
-    const sphere = new THREE.Mesh(npcSphereGeo, mat)
-    sphere.position.set(0, 0.9, 0)
-    markerRoot.add(sphere)
-    npcSpheres.set(npc.entityId, sphere)
-
-    const stemGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.9, 6)
-    const stemMat = new THREE.MeshBasicMaterial({ color: NPC_STEM_COLOR })
-    const stem = new THREE.Mesh(stemGeo, stemMat)
-    stem.position.set(0, 0.45, 0)
-    markerRoot.add(stem)
-
-    if (npc.proximityRadius && npc.proximityRadius > 0) {
-      const r = npc.proximityRadius
-      const ringGeo = new THREE.RingGeometry(r - 0.06, r + 0.06, 56)
-      ringGeo.rotateX(-Math.PI / 2)
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: '#00aaff', transparent: true, opacity: 0.22, side: THREE.DoubleSide,
-      })
-      const ring = new THREE.Mesh(ringGeo, ringMat)
-      ring.position.set(0, 0.03, 0)
-      markerRoot.add(ring)
-    }
-
-    npcMarkerGroup.add(markerRoot)
-    npcMarkerRoots.set(npc.entityId, markerRoot)
-  }
-
-  function buildZoneMarkers(cfg: SceneEditorConfig): void {
-    zoneMarkerGroup.clear()
-    zoneRingPips.clear()
-    zoneMarkerRoots.clear()
-
-    const liveZones = new Map<string, { x: number; z: number }>()
-
-    for (const zone of cfg.zones ?? []) {
-      _addZoneMarkerMesh(zone)
-      liveZones.set(zone.id, { x: zone.x, z: zone.z })
-    }
-
-    zoneLivePositions.value = liveZones
-  }
-
-  /** Shared mesh-building logic used by buildZoneMarkers and addZoneMarker. */
-  function _addZoneMarkerMesh(zone: import('./sceneEditorTypes').EditorZoneEntry): void {
-    const colorHex = zoneColorHex(zone)
-
-    // Group root — TC attaches here so ring + pip move together
-    const zoneRoot = new THREE.Group()
-    zoneRoot.position.set(zone.x, 0, zone.z)
-
-    const r = zone.radius
-    const ringGeo = new THREE.RingGeometry(r - 0.07, r + 0.07, 56)
-    ringGeo.rotateX(-Math.PI / 2)
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: colorHex, transparent: true, opacity: 0.65, side: THREE.DoubleSide,
-    })
-    const ring = new THREE.Mesh(ringGeo, ringMat)
-    ring.position.set(0, 0.04, 0)
-    zoneRoot.add(ring)
-
-    const pipGeo = new THREE.SphereGeometry(0.15, 8, 6)
-    const pip = new THREE.Mesh(pipGeo, new THREE.MeshBasicMaterial({ color: colorHex }))
-    pip.position.set(0, 0.18, 0)
-    zoneRoot.add(pip)
-    zoneRingPips.set(zone.id, pip)
-
-    zoneMarkerGroup.add(zoneRoot)
-    zoneMarkerRoots.set(zone.id, zoneRoot)
-  }
-
-  function buildSpawnMarker(cfg: SceneEditorConfig): void {
-    if (!cfg.spawnPoint) return
-    const { x, z } = cfg.spawnPoint
-    const geo = new THREE.OctahedronGeometry(0.3)
-    const mat = new THREE.MeshBasicMaterial({ color: '#ff44ff' })
-    const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(x, 0.4, z)
-    scene.add(mesh)
-    sceneObjects.push(mesh)
-  }
-
   // ─── Selection ───────────────────────────────────────────────────────────────
 
   function setSelection(s: EditorSelection): void {
@@ -1411,7 +1278,7 @@ export function useSceneEditorViewport(opts: {
     // Attach TransformControls to the selected object's root group / pip.
     // Disabled when nothing is selected to avoid TC stealing pointer from OrbitControls.
     if (s?.kind === 'npc') {
-      const root = npcMarkerRoots.get(s.entityId)
+      const root = markers.npcRoot(s.entityId)
       if (root) {
         transformControls.attach(root)
         transformControls.enabled = true
@@ -1420,7 +1287,7 @@ export function useSceneEditorViewport(opts: {
         transformControls.enabled = false
       }
     } else if (s?.kind === 'zone') {
-      const root = zoneMarkerRoots.get(s.id)
+      const root = markers.zoneRoot(s.id)
       if (root) {
         transformControls.attach(root)
         transformControls.enabled = true
@@ -1445,7 +1312,7 @@ export function useSceneEditorViewport(opts: {
 
   function refreshNpcHighlights(): void {
     const sel = selection.value
-    for (const [id, mesh] of npcSpheres) {
+    for (const [id, mesh] of markers.npcSphereEntries()) {
       const isSelected = sel?.kind === 'npc' && sel.entityId === id
       ;(mesh.material as THREE.MeshBasicMaterial).color.set(isSelected ? '#ff8800' : '#00aaff')
     }
@@ -1881,19 +1748,19 @@ export function useSceneEditorViewport(opts: {
     }
 
     // 1. NPC sphere hit?
-    const npcHits = raycaster.intersectObjects([...npcSpheres.values()])
+    const npcHits = raycaster.intersectObjects(markers.npcSphereMeshes())
     if (npcHits.length > 0) {
       const hit = npcHits[0].object as THREE.Mesh
-      for (const [id, m] of npcSpheres) {
+      for (const [id, m] of markers.npcSphereEntries()) {
         if (m === hit) { setSelection({ kind: 'npc', entityId: id }); return }
       }
     }
 
     // 2. Zone pip hit?
-    const zoneHits = raycaster.intersectObjects([...zoneRingPips.values()])
+    const zoneHits = raycaster.intersectObjects(markers.zonePipMeshes())
     if (zoneHits.length > 0) {
       const hit = zoneHits[0].object as THREE.Mesh
-      for (const [id, m] of zoneRingPips) {
+      for (const [id, m] of markers.zonePipEntries()) {
         if (m === hit) { setSelection({ kind: 'zone', id }); return }
       }
     }
@@ -2089,15 +1956,11 @@ export function useSceneEditorViewport(opts: {
     }
     controls?.dispose()
     renderer?.dispose()
-    npcSphereGeo.dispose()
+    markers.dispose()
     dotGeo.dispose()
     scene?.clear()
     floorMeshes = []
     sceneObjects = []
-    npcSpheres.clear()
-    zoneRingPips.clear()
-    npcMarkerRoots.clear()
-    zoneMarkerRoots.clear()
     npcPathViz.clear()
     placedMeshRoots.clear()
     placedHitBoxes.clear()

@@ -5,7 +5,7 @@
  * lock); the ordering it cycles through is not, and an off-by-one in the wrap
  * is silent. Split out so the cycle is testable on its own.
  */
-import type { EditorCamMode } from './sceneEditorTypes'
+import type { EditorCamMode } from '../sceneEditorTypes'
 
 /** Tab cycles through the modes in this order, wrapping at the end. */
 export const CAM_MODE_ORDER: readonly EditorCamMode[] = [

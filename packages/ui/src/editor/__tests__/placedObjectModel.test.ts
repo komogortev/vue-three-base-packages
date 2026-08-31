@@ -13,7 +13,7 @@ import {
   transformOf,
   withTransform,
   type PlacedTransform,
-} from '../placedObjectModel'
+} from '../placement/placedObjectModel'
 
 const IDENTITY = { id: 'placed-abc123', assetId: 'asset-xyz', label: 'crate.glb' }
 

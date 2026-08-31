@@ -5,7 +5,7 @@
  * scene config and the placed-object list and produce a label, touching no
  * THREE state, so the wording and the pluralisation are unit-testable.
  */
-import type { EditorPlacedObject, EditorSelection, SceneEditorConfig } from './sceneEditorTypes'
+import type { EditorPlacedObject, EditorSelection, SceneEditorConfig } from '../sceneEditorTypes'
 
 /** Everything `describeSelection` needs beyond the selection itself. */
 export interface SelectionTextContext {
