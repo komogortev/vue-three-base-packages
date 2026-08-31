@@ -5,6 +5,15 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamMode, PoseBoneNode } from './sceneEditorTypes'
 import type { SavedPlacedObject } from './sandboxSceneSchema'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
+import {
+  hitBoxDims,
+  makePlacedObject,
+  resolveLocalBbox,
+  transformOf,
+  withTransform,
+  IDENTITY_PLACED_TRANSFORM,
+  type PlacedTransform,
+} from './placedObjectModel'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
@@ -122,6 +131,40 @@ function runCcdIk(
       }
       link.updateWorldMatrix(false, true)
     }
+  }
+}
+
+// ─── THREE ↔ pure-kernel boundary ─────────────────────────────────────────────
+// The placement record shape and its bbox arithmetic live in `placedObjectModel`
+// (engine-agnostic, unit-tested). These two adapters are the only places THREE
+// objects are translated into that vocabulary.
+
+/** Plain-number bounds from a Box3, or null when the box is empty. */
+function aabbFromBox3(b: THREE.Box3): Aabb | null {
+  if (b.isEmpty()) return null
+  return {
+    min: { x: b.min.x, y: b.min.y, z: b.min.z },
+    max: { x: b.max.x, y: b.max.y, z: b.max.z },
+  }
+}
+
+/** Invisible padded hit box for raycast selection of a placed GLB. */
+function buildHitBox(localBbox: THREE.Box3): THREE.Mesh {
+  const { size, center } = hitBoxDims(resolveLocalBbox(aabbFromBox3(localBbox)))
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(size.x, size.y, size.z),
+    new THREE.MeshBasicMaterial({ visible: false }),
+  )
+  mesh.position.set(center.x, center.y, center.z)
+  return mesh
+}
+
+/** Read an object's live transform into the kernel's plain-number form. */
+function liveTransformOf(o: THREE.Object3D): PlacedTransform {
+  return {
+    position: { x: o.position.x, y: o.position.y, z: o.position.z },
+    rotation: { x: o.rotation.x, y: o.rotation.y, z: o.rotation.z },
+    scale: { x: o.scale.x, y: o.scale.y, z: o.scale.z },
   }
 }
 
@@ -1501,18 +1544,8 @@ export function useSceneEditorViewport(opts: {
       localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
     }
 
-    if (localBbox.isEmpty()) {
-      localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
-    }
-
     // Invisible hit box sized to the GLB bbox — used for raycasting / selection
-    const bboxSize = localBbox.getSize(new THREE.Vector3())
-    const bboxCenter = localBbox.getCenter(new THREE.Vector3())
-    const hitBox = new THREE.Mesh(
-      new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
-      new THREE.MeshBasicMaterial({ visible: false }),
-    )
-    hitBox.position.copy(bboxCenter)
+    const hitBox = buildHitBox(localBbox)
     root.add(hitBox)
 
     placedGroup.add(root)
@@ -1523,12 +1556,10 @@ export function useSceneEditorViewport(opts: {
 
     placedObjects.value = [
       ...placedObjects.value,
-      {
-        id: objectId, assetId, label,
-        x: pos.x, y: pos.y, z: pos.z,
-        rotationX: 0, rotationY: 0, rotationZ: 0,
-        scaleX: 1, scaleY: 1, scaleZ: 1,
-      },
+      makePlacedObject(
+        { id: objectId, assetId, label },
+        { ...IDENTITY_PLACED_TRANSFORM, position: { x: pos.x, y: pos.y, z: pos.z } },
+      ),
     ]
 
     // Auto-select the freshly placed object
@@ -1563,33 +1594,22 @@ export function useSceneEditorViewport(opts: {
         localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
       }
 
-      if (localBbox.isEmpty()) {
-        localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
-      }
-
-      const bboxSize = localBbox.getSize(new THREE.Vector3())
-      const bboxCenter = localBbox.getCenter(new THREE.Vector3())
-      const hitBox = new THREE.Mesh(
-        new THREE.BoxGeometry(bboxSize.x + 0.2, bboxSize.y + 0.2, bboxSize.z + 0.2),
-        new THREE.MeshBasicMaterial({ visible: false }),
-      )
-      hitBox.position.copy(bboxCenter)
+      const hitBox = buildHitBox(localBbox)
       root.add(hitBox)
 
       placedGroup.add(root)
       placedMeshRoots.set(obj.id, root)
       placedHitBoxes.set(obj.id, hitBox)
 
-      restored.push({
-        id: obj.id, assetId: obj.assetId, label: obj.label,
-        x: obj.x, y: obj.y, z: obj.z,
-        rotationX: obj.rotationX, rotationY: obj.rotationY, rotationZ: obj.rotationZ,
-        scaleX: obj.scaleX, scaleY: obj.scaleY, scaleZ: obj.scaleZ,
-        // Carry L0 attachment metadata across the save/load boundary (F-G1/F-G3).
-        // Dropping it here silently stripped every attachment on reload, which made
-        // runPlacementGate() a permanent no-op for any scene that had been saved.
-        attachment: obj.attachment,
-      })
+      // Attachment metadata rides through makePlacedObject (F-G1/F-G3) — the
+      // record is built in exactly one place so a field cannot be dropped here.
+      restored.push(
+        makePlacedObject(
+          { id: obj.id, assetId: obj.assetId, label: obj.label },
+          transformOf(obj),
+          obj.attachment,
+        ),
+      )
     }
 
     placedObjects.value = restored
@@ -2010,18 +2030,7 @@ export function useSceneEditorViewport(opts: {
     return placedObjects.value.map(obj => {
       const root = placedMeshRoots.get(obj.id)
       if (!root) return { ...obj }
-      return {
-        ...obj,
-        x: root.position.x,
-        y: root.position.y,
-        z: root.position.z,
-        rotationX: root.rotation.x,
-        rotationY: root.rotation.y,
-        rotationZ: root.rotation.z,
-        scaleX: root.scale.x,
-        scaleY: root.scale.y,
-        scaleZ: root.scale.z,
-      }
+      return withTransform(obj, liveTransformOf(root))
     })
   }
 
