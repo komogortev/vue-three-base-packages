@@ -2,18 +2,24 @@
  * GLB linter — L0 Asset Gate (F-G5).
  *
  * Pure, engine-agnostic "action-ready" preflight for an uploaded GLB's root node.
- * Three deterministic checks, all veto-class (Q3 "required/error" tier):
+ * Three deterministic checks from the Q3 "required/error" tier, split across the
+ * two severity classes per **Q6**: a check is veto-class only when failing it
+ * corrupts data downstream; a check that merely describes bad authoring the
+ * editor can absorb is advisory-class. Consumers apply one uniform rule
+ * (`verdict.ts`: veto blocks export, advisory warns) — severity is declared
+ * here, in the verdict, never decided per call site.
  *
- *  - **named-root** — the scene root must carry a stable, human-authored name.
+ *  - **named-root** (veto) — the scene root must carry a stable, human-authored name.
  *    Auto-generated exporter placeholders ("Scene", "RootNode", "Object_0", ...)
  *    give sockets/collider metadata nothing stable to reference once the file is
  *    re-exported.
- *  - **base-pivot-sanity** — the root's local origin must sit at (or within
- *    tolerance of) the base of its own bounding box, not floating at the
+ *  - **base-pivot-sanity** (advisory) — the root's local origin should sit at (or
+ *    within tolerance of) the base of its own bounding box, not floating at the
  *    geometric centre. This is the placement convention the editor's click-to-place
  *    Y-snap already assumes; a centred pivot makes props embed into or hover above
- *    the floor.
- *  - **scale-sanity** — the root's local scale must be (approximately) baked to
+ *    the floor. Advisory rather than veto (Q6): the Y-snap compensates at placement
+ *    time, so a centred pivot is bad authoring, not corrupt data.
+ *  - **scale-sanity** (veto) — the root's local scale must be (approximately) baked to
  *    1,1,1. Unbaked scale (common from some DCC exports) silently corrupts the
  *    attachment validator's (F-G2) world-matrix math downstream.
  *
@@ -129,12 +135,12 @@ export function lintGlb(input: GlbLintInput): GlbLintVerdict {
       : `Root node carries a stable name ("${input.rootName}").`,
   })
 
-  // Check 2 — base-pivot-sanity (veto).
+  // Check 2 — base-pivot-sanity (advisory per Q6 — the editor's Y-snap compensates).
   const pivotGap = Math.abs(input.localBounds.min.y)
   checks.push({
     id: 'base-pivot-sanity',
     passed: pivotGap <= pivotEps,
-    severity: 'veto',
+    severity: 'advisory',
     message:
       pivotGap <= pivotEps
         ? 'Root pivot sits at the base of its bounding box.'
@@ -162,12 +168,14 @@ export function lintGlb(input: GlbLintInput): GlbLintVerdict {
   })
 
   const vetoFailed = checks.some((c) => !c.passed && c.severity === 'veto')
+  const advisoryFailed = checks.some((c) => !c.passed && c.severity === 'advisory')
+  // Advisory failures never flip `passed` (see verdict.ts) — they warn, they don't block.
   const passed = !vetoFailed
 
   return {
     assetId: input.assetId,
     status: passed ? 'continue' : 'refine-code',
-    severity: vetoFailed ? 'veto' : 'none',
+    severity: vetoFailed ? 'veto' : advisoryFailed ? 'advisory' : 'none',
     passed,
     checks,
     hash,

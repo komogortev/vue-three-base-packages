@@ -66,26 +66,60 @@ describe('lintGlb — base-pivot-sanity', () => {
     expect(check.measured).toBe(0)
   })
 
-  it('vetoes a pivot floating above the base (centred pivot)', () => {
+  it('flags a pivot floating above the base (centred pivot) as advisory, not veto', () => {
     const centred: Aabb = { min: { x: -0.5, y: -0.9, z: -0.5 }, max: { x: 0.5, y: 0.9, z: 0.5 } }
     const v = lintGlb(input({ localBounds: centred }))
     const check = v.checks.find((c) => c.id === 'base-pivot-sanity')!
     expect(check.passed).toBe(false)
+    expect(check.severity).toBe('advisory')
     expect(check.measured).toBeCloseTo(0.9, 6)
   })
 
-  it('vetoes a pivot sunk below the base (mesh embeds on placement)', () => {
+  it('flags a pivot sunk below the base (mesh embeds on placement)', () => {
     const sunk: Aabb = { min: { x: -0.5, y: 0.3, z: -0.5 }, max: { x: 0.5, y: 2, z: 0.5 } }
     const v = lintGlb(input({ localBounds: sunk }))
     const check = v.checks.find((c) => c.id === 'base-pivot-sanity')!
     expect(check.passed).toBe(false)
+    expect(check.severity).toBe('advisory')
     expect(check.measured).toBeCloseTo(0.3, 6)
   })
 
   it('honours a custom pivotEpsilon', () => {
     const nearBase: Aabb = { min: { x: -0.5, y: 0.03, z: -0.5 }, max: { x: 0.5, y: 1.8, z: 0.5 } }
-    expect(lintGlb(input({ localBounds: nearBase })).passed).toBe(false) // 0.03 > default 0.02
-    expect(lintGlb(input({ localBounds: nearBase, pivotEpsilon: 0.05 })).passed).toBe(true)
+    const check = (b: Aabb, eps?: number) =>
+      lintGlb(input({ localBounds: b, pivotEpsilon: eps })).checks.find(
+        (c) => c.id === 'base-pivot-sanity',
+      )!
+    expect(check(nearBase).passed).toBe(false) // 0.03 > default 0.02
+    expect(check(nearBase, 0.05).passed).toBe(true)
+  })
+})
+
+// ─── severity tiers (Q6) ──────────────────────────────────────────────────────
+
+describe('lintGlb — severity tiers', () => {
+  const CENTRED: Aabb = { min: { x: -0.5, y: -0.9, z: -0.5 }, max: { x: 0.5, y: 0.9, z: 0.5 } }
+
+  it('an advisory-only failure does not block: passed stays true', () => {
+    const v = lintGlb(input({ localBounds: CENTRED }))
+    expect(v.checks.find((c) => c.id === 'base-pivot-sanity')!.passed).toBe(false)
+    expect(v.passed).toBe(true)
+    expect(v.severity).toBe('advisory')
+    expect(v.status).toBe('continue')
+  })
+
+  it('a veto failure blocks and outranks a concurrent advisory failure', () => {
+    const v = lintGlb(input({ rootName: 'Scene', localBounds: CENTRED }))
+    expect(v.checks.find((c) => c.id === 'named-root')!.passed).toBe(false)
+    expect(v.checks.find((c) => c.id === 'base-pivot-sanity')!.passed).toBe(false)
+    expect(v.passed).toBe(false)
+    expect(v.severity).toBe('veto')
+  })
+
+  it("reports 'none' when every check passes", () => {
+    const v = lintGlb(input({}))
+    expect(v.passed).toBe(true)
+    expect(v.severity).toBe('none')
   })
 })
 

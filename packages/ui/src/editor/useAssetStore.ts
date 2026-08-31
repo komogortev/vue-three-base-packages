@@ -121,12 +121,15 @@ export const useAssetStore = defineStore('assets', () => {
         else kind = 'prop'
 
         // L0 Asset Gate (F-G5) — warn-only at upload (Q2); never blocks the upload.
+        // Surface EVERY failing check, not just veto-class: `passed` is false only for
+        // veto failures (Q6), so testing it would silently swallow advisory findings.
         const lintVerdict = lintGlb(deriveGlbLintInput(gltf.scene, assetId))
-        if (!lintVerdict.passed) {
+        const lintFailures = lintVerdict.checks.filter((c) => !c.passed)
+        if (lintFailures.length > 0) {
           // eslint-disable-next-line no-console
           console.warn(
-            `[useAssetStore] "${file.name}" failed the L0 asset gate — placement/attachment math may be off:`,
-            lintVerdict.checks.filter((c) => !c.passed).map((c) => c.message),
+            `[useAssetStore] "${file.name}" — L0 asset gate (${lintVerdict.severity}) — placement/attachment math may be off:`,
+            lintFailures.map((c) => `[${c.severity}] ${c.message}`),
           )
         }
 
