@@ -15,7 +15,7 @@
  */
 import * as THREE from 'three'
 
-import type { EditorNpcEntry, EditorZoneEntry, SceneEditorConfig } from './sceneEditorTypes'
+import type { EditorNpcEntry, EditorZoneEntry, SceneEditorConfig } from '../sceneEditorTypes'
 import { NPC_MARKER_COLOR, NPC_STEM_COLOR, zoneColorHex } from './markerStyle'
 
 export interface NpcLivePos {

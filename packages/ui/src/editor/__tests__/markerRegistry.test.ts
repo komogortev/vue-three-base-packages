@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import * as THREE from 'three'
 
-import { createMarkerRegistry } from '../markerRegistry'
-import { ZONE_DEFAULT_COLORS } from '../markerStyle'
+import { createMarkerRegistry } from '../markers/markerRegistry'
+import { ZONE_DEFAULT_COLORS } from '../markers/markerStyle'
 import type { SceneEditorConfig } from '../sceneEditorTypes'
 
 const CFG = {

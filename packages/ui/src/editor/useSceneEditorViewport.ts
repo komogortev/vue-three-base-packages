@@ -13,11 +13,11 @@ import {
   withTransform,
   IDENTITY_PLACED_TRANSFORM,
   type PlacedTransform,
-} from './placedObjectModel'
-import { describeSelection as describeSelectionText, sceneStatus as sceneStatusText } from './selectionText'
-import { fitScaleFor } from './characterFit'
-import { nextCamMode } from './camModes'
-import { createMarkerRegistry } from './markerRegistry'
+} from './placement/placedObjectModel'
+import { describeSelection as describeSelectionText, sceneStatus as sceneStatusText } from './selection/selectionText'
+import { fitScaleFor } from './pose/characterFit'
+import { nextCamMode } from './camera/camModes'
+import { createMarkerRegistry } from './markers/markerRegistry'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'

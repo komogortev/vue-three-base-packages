@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 
-import { describeSelection, sceneStatus } from '../selectionText'
-import { fitScaleFor, FIT_TARGET_HEIGHT, FIT_MIN_HEIGHT, FIT_MAX_HEIGHT } from '../characterFit'
-import { CAM_MODE_ORDER, nextCamMode } from '../camModes'
-import { ZONE_DEFAULT_COLORS, zoneColorHex } from '../markerStyle'
+import { describeSelection, sceneStatus } from '../selection/selectionText'
+import { fitScaleFor, FIT_TARGET_HEIGHT, FIT_MIN_HEIGHT, FIT_MAX_HEIGHT } from '../pose/characterFit'
+import { CAM_MODE_ORDER, nextCamMode } from '../camera/camModes'
+import { ZONE_DEFAULT_COLORS, zoneColorHex } from '../markers/markerStyle'
 import type { EditorPlacedObject, SceneEditorConfig } from '../sceneEditorTypes'
 
 // ─── selectionText ────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@
  * must be zero-padded to six digits, or 0x00ff88 renders as the three-digit
  * CSS colour "#ff88" — a different colour that still parses.
  */
-import type { EditorZoneEntry } from './sceneEditorTypes'
+import type { EditorZoneEntry } from '../sceneEditorTypes'
 
 /** NPC marker: head sphere and stem. */
 export const NPC_MARKER_COLOR = '#00aaff'
