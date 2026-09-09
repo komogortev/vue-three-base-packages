@@ -399,6 +399,10 @@ function onAssetPicked(assetId: string): void {
 
 async function onSwitchScene(sceneId: string): Promise<void> {
   if (sceneId === activeSceneId.value && !activeSavedSceneId.value) return
+  // The sidebar stays interactive when the viewport failed to start, so a click
+  // can still arrive here. `reinitScene` would no-op and every line below would
+  // then rewire save-tracking to a scene that was never loaded.
+  if (initError.value) { flashStatus('Viewport unavailable — cannot switch scene'); return }
   activeSceneId.value = sceneId
   // Reset local NPC/zone state to new scene's prop config
   initLocalEntries()
@@ -429,6 +433,10 @@ const isLoading = ref(false)
 
 async function onLoadScene(sceneId: string): Promise<void> {
   if (isLoading.value) return
+  // Same reachability as onSwitchScene: without this the UI flashes
+  // `Loaded "<name>"` and repoints currentSceneId at a row that never loaded,
+  // so a later Save would overwrite it from an empty viewport.
+  if (initError.value) { flashStatus('Viewport unavailable — cannot load scene'); return }
   isLoading.value = true
   try {
     const row = await assetDb.scenes.get(sceneId)
