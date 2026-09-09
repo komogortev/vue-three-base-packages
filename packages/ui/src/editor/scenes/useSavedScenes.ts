@@ -4,9 +4,16 @@
  *
  * Exists as one composable rather than two copies because both consumers need
  * the *same* answer to "can this row be opened", and one of them puts a
- * permanent delete behind it. Two independent Dexie subscriptions over the same
- * table could disagree mid-flight, and the guard below would then have to be
- * written — and kept correct — twice.
+ * permanent delete behind it — so the guard is written and kept correct once.
+ *
+ * **What is and is not shared.** This is a plain function, not a singleton: each
+ * call site gets its own `liveQuery` subscription to the `scenes` table. Shared
+ * are the classification logic and the asset half (`useAssetStore` is a Pinia
+ * singleton, so `assets`/`assetsLoaded` are genuinely one source). The duplicate
+ * scene subscription is same-query/same-microtask and each instance gates its
+ * own Remove button on its own `loaded`, so the two cannot disagree in a way
+ * that matters — but it is duplicated work, and collapsing it (props from the
+ * parent, or provide/inject) is the fix if a third consumer appears.
  *
  * **The load guard is the point.** Asset rows arrive asynchronously and
  * `useLiveQuery` seeds with `[]`, which is indistinguishable from a genuinely

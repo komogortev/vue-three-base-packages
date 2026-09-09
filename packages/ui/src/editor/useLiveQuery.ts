@@ -56,6 +56,11 @@ export function useLiveQueryHandle<T>(
       loaded.value = true
     },
     error: (err) => {
+      // `loaded` deliberately stays false. A failed query leaves us with the
+      // seed value, and flipping the flag would tell callers to trust it —
+      // which for scene availability means classifying every scene against an
+      // empty library and offering to delete them. Failing closed here keeps
+      // the caller in its "assert nothing" branch.
       // eslint-disable-next-line no-console
       console.error('[useLiveQuery] error:', err)
     },
