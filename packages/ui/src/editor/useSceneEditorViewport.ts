@@ -173,6 +173,8 @@ function liveTransformOf(o: THREE.Object3D): PlacedTransform {
 
 export interface SceneEditorViewportReturn {
   isReady: Readonly<Ref<boolean>>
+  /** Fatal viewport-init failure message (e.g. WebGL unavailable), else null. */
+  initError: Readonly<Ref<string | null>>
   statusMessage: Readonly<Ref<string>>
   selection: Readonly<Ref<EditorSelection>>
   transformMode: Readonly<Ref<TransformMode>>
@@ -285,7 +287,15 @@ export function useSceneEditorViewport(opts: {
   // Mutable config — updated by reinitScene
   let config: SceneEditorConfig = opts.config
 
+  /**
+   * True once the viewport has stopped loading. **Not** a promise that the
+   * renderer exists — check `initError` for that. A fatal init failure leaves
+   * this false, but callers building custom layouts should gate usability on
+   * `isReady && !initError`.
+   */
   const isReady = ref(false)
+  /** Non-null when the viewport could not start at all (e.g. no WebGL). */
+  const initError = ref<string | null>(null)
   const statusMessage = ref('Initializing…')
   const selection = ref<EditorSelection>(null)
   const transformMode = ref<TransformMode>('translate')
@@ -406,7 +416,28 @@ export function useSceneEditorViewport(opts: {
     const canvas = canvasRef.value
     if (!canvas) return
 
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+    // A machine with WebGL disabled (hardware acceleration off, a GPU
+    // blocklist entry, a sandboxed context) throws here — on the FIRST
+    // statement of init, before the grid, lights or `loadScene()` exist. The
+    // loading overlay is gated on `isReady`, which then never leaves its
+    // initial false, so the author sees "Loading scene…" forever with an empty
+    // viewport and no way to tell a dead renderer from a broken scene.
+    // Catch it and report the real cause instead of hanging on a lie.
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+    } catch (e) {
+      console.error('[SceneEditor] WebGL context creation failed:', e)
+      initError.value =
+        'WebGL is unavailable in this browser, so the editor viewport cannot start. ' +
+        'Check chrome://gpu — hardware acceleration is usually the cause.'
+      // `isReady` is deliberately left false. The overlay renders on
+      // `!isReady || initError`, so the message is already visible — and
+      // flipping it true would claim a usable viewport when `renderer`,
+      // `scene`, `camera` and `controls` were never assigned. `isReady` is
+      // public API, so a consumer enabling a toolbar on it must not be told
+      // "ready" about a dead renderer.
+      return
+    }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.setSize(canvas.clientWidth, canvas.clientHeight)
 
@@ -517,36 +548,51 @@ export function useSceneEditorViewport(opts: {
     pathEditActive = false
     onFloorHitCb = undefined
 
-    if (cfg.floorGlbUrl) {
-      await loadGLB(cfg.floorGlbUrl, /* isFloor */ true)
-    } else {
-      // Sandbox / procedural scene — use a large invisible plane as the raycast surface
-      const planeGeo = new THREE.PlaneGeometry(200, 200)
-      planeGeo.rotateX(-Math.PI / 2)
-      const planeMesh = new THREE.Mesh(
-        planeGeo,
-        new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }),
-      )
-      planeMesh.position.set(0, 0, 0)
-      scene.add(planeMesh)
-      floorMeshes.push(planeMesh)
-      sceneObjects.push(planeMesh)
-    }
+    // `isReady` gates a FULLY OPAQUE loading overlay, so anything that throws
+    // between here and the end of this function leaves the editor permanently
+    // wedged behind it — grid, lights and markers all render underneath but are
+    // invisible, which reads to the author as "stuck on Loading scene…" plus
+    // "the grid never appeared". `loadGLB` swallows its own failures, but the
+    // marker builders and scene mutations below do not, so the flag is released
+    // in `finally` and the failure is surfaced in the status bar instead.
+    try {
+      if (cfg.floorGlbUrl) {
+        await loadGLB(cfg.floorGlbUrl, /* isFloor */ true)
+      } else {
+        // Sandbox / procedural scene — use a large invisible plane as the raycast surface
+        const planeGeo = new THREE.PlaneGeometry(200, 200)
+        planeGeo.rotateX(-Math.PI / 2)
+        const planeMesh = new THREE.Mesh(
+          planeGeo,
+          new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }),
+        )
+        planeMesh.position.set(0, 0, 0)
+        scene.add(planeMesh)
+        floorMeshes.push(planeMesh)
+        sceneObjects.push(planeMesh)
+      }
 
-    for (const url of cfg.contextGlbUrls ?? []) {
-      await loadGLB(url, false)
-    }
+      for (const url of cfg.contextGlbUrls ?? []) {
+        await loadGLB(url, false)
+      }
 
-    npcLivePositions.value = markers.buildNpcs(cfg)
-    zoneLivePositions.value = markers.buildZones(cfg)
-    const spawnMesh = markers.buildSpawnMesh(cfg)
-    if (spawnMesh) {
-      scene.add(spawnMesh)
-      sceneObjects.push(spawnMesh)
-    }
+      npcLivePositions.value = markers.buildNpcs(cfg)
+      zoneLivePositions.value = markers.buildZones(cfg)
+      const spawnMesh = markers.buildSpawnMesh(cfg)
+      if (spawnMesh) {
+        scene.add(spawnMesh)
+        sceneObjects.push(spawnMesh)
+      }
 
-    isReady.value = true
-    statusMessage.value = sceneStatus(cfg)
+      statusMessage.value = sceneStatus(cfg)
+    } catch (e) {
+      console.error('[SceneEditor] loadScene failed:', e)
+      statusMessage.value = 'Scene load failed — see console'
+    } finally {
+      // Always reveal the viewport. A partially-built scene over the grid is
+      // recoverable (switch scene, load another); an opaque overlay is not.
+      isReady.value = true
+    }
   }
 
   // ─── Scene clearing (before scene switch) ────────────────────────────────────
@@ -697,6 +743,10 @@ export function useSceneEditorViewport(opts: {
   // ─── reinitScene — public API for scene switcher ──────────────────────────────
 
   async function reinitScene(newConfig: SceneEditorConfig): Promise<void> {
+    // A viewport that never initialised has no scene to clear or reload; every
+    // call below would deref an undefined THREE handle. Fail here, at one
+    // named place, rather than at a random property access.
+    if (initError.value) return
     config = newConfig
     _disposePlayCharacter()
     detachPoseNpc()
@@ -1975,6 +2025,7 @@ export function useSceneEditorViewport(opts: {
 
   return {
     isReady: shallowReadonly(isReady),
+    initError: shallowReadonly(initError),
     statusMessage: shallowReadonly(statusMessage),
     selection: shallowReadonly(selection),
     transformMode: shallowReadonly(transformMode),

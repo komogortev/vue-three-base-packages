@@ -1,5 +1,5 @@
 import { liveQuery, type Subscription } from 'dexie'
-import { onScopeDispose, shallowRef, type ShallowRef } from 'vue'
+import { onScopeDispose, ref, shallowRef, type Ref, type ShallowRef } from 'vue'
 
 /**
  * Vue composable wrapping Dexie `liveQuery` — reactive shallow ref that
@@ -20,10 +20,40 @@ export function useLiveQuery<T>(
   query: () => T | Promise<T>,
   initial: T,
 ): ShallowRef<T> {
+  return useLiveQueryHandle(query, initial).data
+}
+
+export interface LiveQueryHandle<T> {
+  data: ShallowRef<T>
+  /**
+   * False until the first Dexie emission arrives.
+   *
+   * **The seed value is indistinguishable from a real result**, so any caller
+   * that draws a conclusion from *absence* — "no assets, therefore this scene
+   * is broken" — must gate on this flag, or it will act on the empty seed.
+   * The window is normally milliseconds but is unbounded when Dexie blocks
+   * (e.g. a `versionchange` held open by a second tab), so it is not safe to
+   * treat as a render-frame race.
+   */
+  loaded: Ref<boolean>
+}
+
+/**
+ * {@link useLiveQuery} plus an explicit "has the first result arrived" flag.
+ *
+ * Use this whenever an empty result would drive a destructive or hiding
+ * decision; use the plain `useLiveQuery` when rendering the rows is all you do.
+ */
+export function useLiveQueryHandle<T>(
+  query: () => T | Promise<T>,
+  initial: T,
+): LiveQueryHandle<T> {
   const state = shallowRef(initial) as ShallowRef<T>
+  const loaded = ref(false)
   const sub: Subscription = liveQuery(query).subscribe({
     next: (value) => {
       state.value = value
+      loaded.value = true
     },
     error: (err) => {
       // eslint-disable-next-line no-console
@@ -31,5 +61,5 @@ export function useLiveQuery<T>(
     },
   })
   onScopeDispose(() => sub.unsubscribe())
-  return state
+  return { data: state, loaded }
 }

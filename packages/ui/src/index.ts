@@ -79,6 +79,19 @@ export { default as AssetPicker } from './editor/AssetPicker.vue'
 export type { SavedPlacedObject, SandboxSceneSave } from './editor/sandboxSceneSchema'
 export type { PlacedAttachment, ContactType } from './editor/sandboxSceneSchema'
 
+// ── Saved-scene availability ─────────────────────────────────────────────────
+// Classifies a saved SceneRow against the asset library so the switcher can
+// hide rows that would open to nothing. Pure — no Dexie/Three dependency.
+export {
+  collectSceneAssetIds,
+  classifyScene,
+  isSceneLoadable,
+} from './editor/scenes/sceneAvailability'
+export type {
+  SceneAvailability,
+  SceneAvailabilityStatus,
+} from './editor/scenes/sceneAvailability'
+
 // ── L0 Asset Gate ────────────────────────────────────────────────────────────
 // Deterministic placement/attachment validator (F-G2) + two-tier gate summary.
 // Engine-agnostic pure TS — geometry arrives as plain numbers so the same code

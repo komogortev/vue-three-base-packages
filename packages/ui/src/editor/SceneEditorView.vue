@@ -46,8 +46,8 @@
     <div class="viewport-wrap">
       <canvas ref="canvasRef" class="editor-canvas" />
 
-      <div v-if="!isReady" class="loading-overlay">
-        Loading scene…
+      <div v-if="!isReady || initError" class="loading-overlay" :class="{ 'is-error': initError }">
+        {{ initError ?? 'Loading scene…' }}
       </div>
 
       <!-- Status bar -->
@@ -309,6 +309,7 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 
 const {
   isReady,
+  initError,
   statusMessage,
   selection: viewportSelection,
   transformMode,
@@ -1290,6 +1291,15 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.loading-overlay.is-error {
+  color: #e08a8a;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  padding: 0 14%;
+  max-width: 100%;
 }
 
 .loading-overlay {

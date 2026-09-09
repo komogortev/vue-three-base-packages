@@ -4,7 +4,7 @@ import * as THREE from 'three'
 
 import { assetDb, type AssetRow, type AssetKind } from './assetDb'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
-import { useLiveQuery } from './useLiveQuery'
+import { useLiveQueryHandle } from './useLiveQuery'
 import { generateThumbnail } from './thumbnailGenerator'
 
 /**
@@ -53,7 +53,11 @@ function isSupported(ext: string): ext is SupportedExt {
 
 export const useAssetStore = defineStore('assets', () => {
   // Live-queried list. shallowRef under the hood (see useLiveQuery).
-  const assets = useLiveQuery<AssetRow[]>(
+  // `assetsLoaded` distinguishes "the library is empty" from "the first Dexie
+  // emission has not arrived yet" — the two are identical in `assets` itself,
+  // and callers that treat absence as evidence (scene availability, in
+  // particular, which gates a permanent delete) must not act on the seed.
+  const { data: assets, loaded: assetsLoaded } = useLiveQueryHandle<AssetRow[]>(
     () => assetDb.assets.orderBy('createdAt').reverse().toArray(),
     [],
   )
@@ -211,5 +215,5 @@ export const useAssetStore = defineStore('assets', () => {
     await assetDb.assets.delete(id)
   }
 
-  return { assets, upload, getById, resolveBlobUrl, appendToPack, remove }
+  return { assets, assetsLoaded, upload, getById, resolveBlobUrl, appendToPack, remove }
 })
