@@ -12,43 +12,102 @@
   <div class="section saved-scenes-section">
     <div class="section-header">
       <span>Saved Scenes</span>
-      <span class="section-count">{{ scenes.length }}</span>
+      <span class="section-count">{{ classified.length }}</span>
     </div>
 
-    <div v-for="scene in scenes" :key="scene.id" class="row scene-row">
+    <div v-for="entry in classified" :key="entry.scene.id" class="row scene-row">
       <div class="scene-info">
-        <div class="scene-name" :title="scene.name">{{ scene.name }}</div>
+        <div class="scene-name" :title="entry.scene.name">
+          {{ entry.scene.name }}
+          <span
+            v-if="entry.availability.status !== 'ok'"
+            class="avail-badge"
+            :class="entry.availability.status"
+            :title="missingTitle(entry.availability)"
+          >{{ entry.availability.status === 'partial' ? 'partial' : 'assets missing' }}</span>
+        </div>
         <div class="scene-meta">
-          <span class="obj-count">{{ scene.placedObjects.length }} obj</span>
-          <span class="save-date">{{ formatDate(scene.savedAt) }}</span>
+          <span class="obj-count">{{ entry.scene.placedObjects?.length ?? 0 }} obj</span>
+          <span class="save-date">{{ formatDate(entry.scene.savedAt) }}</span>
         </div>
       </div>
       <button
+        v-if="!loaded || entry.availability.status !== 'unloadable'"
         class="load-btn"
         type="button"
         title="Load this scene into the editor"
-        @click="emit('load-scene', scene.id)"
+        @click="emit('load-scene', entry.scene.id)"
       >
         Load
       </button>
+      <!-- Unloadable rows are hidden from the switcher, so removal has to be
+           reachable here or they become invisible clutter. Deletion is explicit
+           and confirmed — never automatic — because a missing blob is often
+           recoverable by re-uploading the asset. -->
+      <button
+        v-else
+        class="remove-btn"
+        type="button"
+        :title="`Delete this scene permanently — ${missingTitle(entry.availability)}`"
+        @click="onRemove(entry.scene)"
+      >
+        Remove
+      </button>
     </div>
 
-    <p v-if="scenes.length === 0" class="empty">No saved scenes yet.</p>
+    <p v-if="removeError" class="remove-error">{{ removeError }}</p>
+    <p v-if="classified.length === 0" class="empty">No saved scenes yet.</p>
   </div>
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import { assetDb, type SceneRow } from './assetDb'
-import { useLiveQuery } from './useLiveQuery'
+import { useSavedScenes } from './scenes/useSavedScenes'
+import type { SceneAvailability } from './scenes/sceneAvailability'
 
 const emit = defineEmits<{
   'load-scene': [sceneId: string]
 }>()
 
-const scenes = useLiveQuery<SceneRow[]>(
-  () => assetDb.scenes.orderBy('savedAt').reverse().toArray(),
-  [],
-)
+/**
+ * Shared with the switcher above so both surfaces agree on what "openable"
+ * means. `loaded` gates the destructive branch: until the asset library has
+ * actually emitted, every row classifies `ok` and shows Load, because an
+ * unloaded library is indistinguishable from an empty one and the pessimistic
+ * reading would offer Remove on perfectly intact scenes.
+ */
+const { classified, loaded } = useSavedScenes()
+
+function missingTitle(a: SceneAvailability): string {
+  return `${a.missing.length} of ${a.referenced.length} asset${a.referenced.length === 1 ? '' : 's'} missing`
+}
+
+const removeError = ref<string | null>(null)
+
+async function onRemove(scene: SceneRow): Promise<void> {
+  const ok = window.confirm(
+    `Delete saved scene "${scene.name}" permanently?
+
+` +
+    `Its asset blobs are missing from this browser, so it cannot be opened here. ` +
+    `If the assets were saved in a different browser or profile, the scene is still ` +
+    `intact there — deleting here does not affect it.
+
+This cannot be undone.`,
+  )
+  if (!ok) return
+  try {
+    await assetDb.scenes.delete(scene.id)
+    removeError.value = null
+  } catch (e) {
+    // A blocked DB or closed connection would otherwise become an unhandled
+    // rejection inside the click handler, leaving the row in place with no
+    // indication the click did anything.
+    console.error('[SavedScenes] delete failed:', e)
+    removeError.value = `Could not delete "${scene.name}" — see console.`
+  }
+}
 
 function formatDate(iso: string): string {
   try {
@@ -135,6 +194,51 @@ function formatDate(iso: string): string {
 .load-btn:hover {
   color: #b0c8e0;
   border-color: #5ab0f5;
+}
+
+.remove-btn {
+  flex-shrink: 0;
+  background: #3a1a1a;
+  border: 1px solid #5a2424;
+  color: #b06a6a;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.remove-btn:hover {
+  color: #f0b0b0;
+  border-color: #d05a5a;
+}
+
+.avail-badge {
+  margin-left: 6px;
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.avail-badge.partial {
+  background: #3a3018;
+  border: 1px solid #5a4a20;
+  color: #c8a860;
+}
+.avail-badge.unloadable {
+  background: #3a1a1a;
+  border: 1px solid #5a2424;
+  color: #c07070;
+}
+
+.remove-error {
+  margin: 4px 12px;
+  font-size: 9px;
+  color: #e08a8a;
+  line-height: 1.4;
 }
 
 .empty {

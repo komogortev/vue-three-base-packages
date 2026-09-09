@@ -79,6 +79,28 @@ export { default as AssetPicker } from './editor/AssetPicker.vue'
 export type { SavedPlacedObject, SandboxSceneSave } from './editor/sandboxSceneSchema'
 export type { PlacedAttachment, ContactType } from './editor/sandboxSceneSchema'
 
+// ── Saved-scene availability ─────────────────────────────────────────────────
+// Classifies a saved SceneRow against the asset library so the switcher can
+// hide rows that would open to nothing. Pure — no Dexie/Three dependency.
+// `classifyScenes` is the guarded list-level entry point and the one consumers
+// should reach for: it refuses to judge until the asset library has actually
+// loaded. The per-row `classifyScene` is exported too, but calling it against a
+// library that has not emitted yet marks every scene unloadable — the exact bug
+// this feature shipped with. `useSavedScenes()` wires both to Dexie.
+export {
+  collectSceneAssetIds,
+  classifyScene,
+  classifyScenes,
+  isSceneLoadable,
+} from './editor/scenes/sceneAvailability'
+export type {
+  SceneAvailability,
+  SceneAvailabilityStatus,
+  ClassifiedScene,
+} from './editor/scenes/sceneAvailability'
+export { useSavedScenes } from './editor/scenes/useSavedScenes'
+export type { SavedScenesReturn } from './editor/scenes/useSavedScenes'
+
 // ── L0 Asset Gate ────────────────────────────────────────────────────────────
 // Deterministic placement/attachment validator (F-G2) + two-tier gate summary.
 // Engine-agnostic pure TS — geometry arrives as plain numbers so the same code
