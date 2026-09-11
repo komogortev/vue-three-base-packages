@@ -75,7 +75,7 @@ describe('lintGlb — base-pivot-sanity', () => {
     expect(check.measured).toBeCloseTo(0.9, 6)
   })
 
-  it('flags a pivot sunk below the base (mesh embeds on placement)', () => {
+  it('flags a pivot sunk below the base (mesh hovers on placement)', () => {
     const sunk: Aabb = { min: { x: -0.5, y: 0.3, z: -0.5 }, max: { x: 0.5, y: 2, z: 0.5 } }
     const v = lintGlb(input({ localBounds: sunk }))
     const check = v.checks.find((c) => c.id === 'base-pivot-sanity')!
