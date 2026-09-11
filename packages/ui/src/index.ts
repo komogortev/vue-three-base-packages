@@ -106,3 +106,14 @@ export type {
   Aabb,
 } from './editor/gate/verdict'
 export { toMat4 } from './editor/gate/verdict'
+
+// ── L0 Asset Gate — GLB linter (F-G5) ───────────────────────────────────────
+// Action-ready preflight for an uploaded GLB's root node: stable named root,
+// base-pivot sanity, baked scale. Same engine-agnostic pure-TS shape as the
+// placement validator above.
+export {
+  lintGlb,
+  DEFAULT_LINT_PIVOT_EPSILON,
+  DEFAULT_LINT_SCALE_EPSILON,
+} from './editor/gate/glbLinter'
+export type { GlbLintInput, GlbLintVerdict } from './editor/gate/glbLinter'
