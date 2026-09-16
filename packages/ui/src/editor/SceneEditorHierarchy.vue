@@ -16,8 +16,8 @@
         @change="onDropdownChange"
       >
         <option v-for="s in scenes" :key="s.id" :value="s.id">{{ s.label }}</option>
-        <optgroup v-if="savedScenes.length > 0" label="Saved">
-          <option v-for="ss in savedScenes" :key="ss.id" :value="ss.id">{{ ss.name }}</option>
+        <optgroup v-if="loadableSavedScenes.length > 0" label="Saved">
+          <option v-for="ss in loadableSavedScenes" :key="ss.id" :value="ss.id">{{ ss.name }}</option>
         </optgroup>
       </select>
       <!-- Single-scene label badge (backward compat) -->
@@ -26,6 +26,11 @@
 
     <!-- Assets section (uploaded GLB/FBX registry) -->
     <SceneEditorAssetsSection @asset-picked="emit('asset-picked', $event)" />
+
+    <!-- Saved scenes — the management surface for Dexie scene rows. The
+         switcher above hides unloadable rows, so this panel is the only place
+         they remain visible and removable. -->
+    <SceneEditorSavedScenesSection @load-scene="emit('load-scene', $event)" />
 
     <!-- Player row — always present; click to enter follow-3p mode -->
     <div
@@ -116,8 +121,8 @@
 
 <script setup lang="ts">
 import SceneEditorAssetsSection from './SceneEditorAssetsSection.vue'
-import { useLiveQuery } from './useLiveQuery'
-import { assetDb, type SceneRow } from './assetDb'
+import SceneEditorSavedScenesSection from './SceneEditorSavedScenesSection.vue'
+import { useSavedScenes } from './scenes/useSavedScenes'
 import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry, EditorCamMode } from './sceneEditorTypes'
 
 const props = defineProps<{
@@ -151,11 +156,22 @@ const emit = defineEmits<{
   'remove-placed': [objectId: string]
 }>()
 
-// Live-queried saved scenes — most-recently-saved first.
-const savedScenes = useLiveQuery<SceneRow[]>(
-  () => assetDb.scenes.orderBy('savedAt').reverse().toArray(),
-  [],
-)
+/**
+ * Only scenes that would actually open are offered in the switcher — a row
+ * whose every asset blob is gone renders nothing but an empty grid, so listing
+ * it is an invitation to a dead end. `loadable` is unfiltered until the asset
+ * library has actually loaded, so a slow Dexie read never hides healthy scenes.
+ *
+ * Filtered for *display* only: `onDropdownChange` still tests against the full
+ * `savedScenes` list, so a selection that was valid a moment ago still routes to
+ * the loader rather than being mistaken for a static scene id.
+ *
+ * Unloadable rows are NOT deleted here. A missing blob is often temporary — the
+ * asset is re-uploadable, and Dexie is per-browser-profile, so a scene saved in
+ * one browser legitimately looks assetless in another. Pruning is offered
+ * explicitly in the Saved-scenes panel instead.
+ */
+const { rows: savedScenes, loadable: loadableSavedScenes } = useSavedScenes()
 
 function onDropdownChange(ev: Event): void {
   const value = (ev.target as HTMLSelectElement).value
