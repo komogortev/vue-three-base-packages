@@ -54,7 +54,11 @@ export function toMat4(elements: ArrayLike<number>): Mat4 {
   return Array.from(elements) as unknown as Mat4
 }
 
-/** Axis-aligned bounding box in a shared (world) frame. */
+/**
+ * Axis-aligned bounding box. The shape carries no frame, so the field holding one
+ * must name it: `attachmentValidator` passes world-frame bounds
+ * (`parentWorldBounds`), `glbLinter` passes root-local bounds (`localBounds`).
+ */
 export interface Aabb {
   min: Vec3
   max: Vec3
@@ -88,9 +92,14 @@ export interface GateCheck {
   severity: CheckSeverity
   /** Human-readable explanation, safe to surface in the editor. */
   message: string
-  /** Measured value (metres) when the check is quantitative. */
+  /**
+   * Measured value when the check is quantitative. The unit belongs to the check,
+   * not this field: metres for spatial checks (`pivot-at-start`, `contact-gap`,
+   * `base-pivot-sanity`), a unitless fractional deviation for `scale-sanity`.
+   * Do not append a unit without switching on `id`.
+   */
   measured?: number
-  /** Threshold the measurement was compared against (metres). */
+  /** Threshold the measurement was compared against, in the same unit as {@link measured}. */
   tolerance?: number
 }
 
@@ -109,4 +118,20 @@ export interface PlacementVerdict {
    * fast non-cryptographic hash; the VLM socket (F-G7) upgrades this to sha256.
    */
   hash: string
+}
+
+/**
+ * Deterministic 32-bit FNV-1a hash as an 8-char hex string.
+ *
+ * Shared by every gate validator (`attachmentValidator`, `glbLinter`, …) that
+ * binds a verdict to its inputs for no-op re-check idempotence — one
+ * implementation instead of a per-validator copy.
+ */
+export function hashKey(key: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
 }
