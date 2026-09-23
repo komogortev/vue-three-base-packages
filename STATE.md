@@ -1,5 +1,15 @@
 # STATE.md — SHARED (@base/* packages)
 
+## SNAPSHOT
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-09-16 — #50 (F-G5 GLB linter on upload, Q6 severity split) + #49 (saved-scene availability, editor init guards) merged; **200/200 vitest on `main`**.
+Working: all packages build; editor decomposition stages 1+2 merged (#45, #46: pure kernels + marker registry, feature folders `anim/ camera/ gate/ markers/ placement/ pose/ selection/`); L0 gate `editor/gate/` + F-G5 linter; S5 animation recorder; `@base/physics` (`addStaticMesh`, `shapeCastSphere`, `CharacterMover`).
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested (needs WebGL) · L0 gate is green **by construction** until a gesture authors `attachment` · the placed-object restore path has no unit test.
+Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
+Next: decomposition stage 2 — anim delegators (cheap check of the handles-only rule) → camera → input → pose/IK; then the `SceneEditorView.vue` script split. Oversized, baselined, unowned: `PlayerController.ts` 1,679 · `SceneBuilder.ts` 857 · `CharacterAnimationRig.ts` 767. Contract: `docs/PLAN-EDITOR-DECOMPOSITION-2026-08-31.md` (workspace). Never rebase `d3c5762` in.
+History: detail and prior status below; full history in git.
+
+---
+
 ## Status
 
 _Last updated: 2026-09-16_
