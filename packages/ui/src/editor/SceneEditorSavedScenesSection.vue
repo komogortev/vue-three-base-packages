@@ -10,11 +10,18 @@
 -->
 <template>
   <div class="section saved-scenes-section">
-    <div class="section-header">
-      <span>Saved Scenes</span>
+    <button
+      class="section-header"
+      type="button"
+      :aria-expanded="open"
+      :title="open ? 'Collapse' : 'Expand'"
+      @click="open = !open"
+    >
+      <span>{{ open ? '▾' : '▸' }} Saved Scenes</span>
       <span class="section-count">{{ classified.length }}</span>
-    </div>
+    </button>
 
+    <template v-if="open">
     <div v-for="entry in classified" :key="entry.scene.id" class="row scene-row">
       <div class="scene-info">
         <div class="scene-name" :title="entry.scene.name">
@@ -57,6 +64,7 @@
 
     <p v-if="removeError" class="remove-error">{{ removeError }}</p>
     <p v-if="classified.length === 0" class="empty">No saved scenes yet.</p>
+    </template>
   </div>
 </template>
 
@@ -82,6 +90,9 @@ const { classified, loaded } = useSavedScenes()
 function missingTitle(a: SceneAvailability): string {
   return `${a.missing.length} of ${a.referenced.length} asset${a.referenced.length === 1 ? '' : 's'} missing`
 }
+
+/** Collapsed by default — the switcher dropdown is the primary way to open a scene. */
+const open = ref(false)
 
 const removeError = ref<string | null>(null)
 
@@ -131,6 +142,11 @@ function formatDate(iso: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
+  background: none;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
   padding: 2px 12px 4px;
   font-size: 9px;
   font-weight: 700;
