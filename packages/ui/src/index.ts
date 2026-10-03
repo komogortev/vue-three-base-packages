@@ -32,6 +32,7 @@ export { default as WaypointEditorHUD } from './editor/WaypointEditorHUD.vue'
 export { default as SceneEditorView } from './editor/SceneEditorView.vue'
 export { useSceneEditorViewport } from './editor/useSceneEditorViewport'
 export type { SceneEditorViewportReturn } from './editor/useSceneEditorViewport'
+export type { NpcDisplayEntry, PoseOverrideEntry } from './editor/npc/npcDisplayRegistry'
 export type {
   SceneEditorConfig,
   SceneEditorEntry,
