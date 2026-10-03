@@ -887,6 +887,7 @@ async function ensurePoseMeshAttached(): Promise<boolean> {
   if (!assetStore.resolveBlobUrl(npc.assetId)) { flashStatus('Character mesh not in asset store'); return false }
   // The model is the NPC's persistent display mesh — attach waits for it if it is still loading.
   const boneNames = await attachPoseNpc(sel.entityId)
+  if (boneNames === null) return false // superseded by a newer attach, which reports for itself
   if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return false }
   setPoseBoneList(boneNames)
   poseMeshEntityId = sel.entityId

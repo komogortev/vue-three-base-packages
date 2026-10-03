@@ -234,9 +234,10 @@ export interface SceneEditorViewportReturn {
   /**
    * Start pose editing on an NPC's display model (it is NOT loaded a second time):
    * adds the SkeletonHelper + IK targets and returns the skeleton as a DFS-ordered
-   * bone tree. Waits for a model that is still loading; returns [] if none exists.
+   * bone tree. Waits for a model that is still loading; returns [] if none exists, or
+   * `null` when a newer attach superseded this one (the caller should do nothing).
    */
-  attachPoseNpc: (entityId: string) => Promise<PoseBoneNode[]>
+  attachPoseNpc: (entityId: string) => Promise<PoseBoneNode[] | null>
   /** Attach TransformControls in rotate mode to the named bone. */
   selectPoseBone: (boneName: string) => void
   /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
@@ -1066,7 +1067,7 @@ export function useSceneEditorViewport(opts: {
 
   let poseAttachToken = 0
 
-  async function attachPoseNpc(entityId: string): Promise<PoseBoneNode[]> {
+  async function attachPoseNpc(entityId: string): Promise<PoseBoneNode[] | null> {
     detachPoseNpc()
     const token = ++poseAttachToken
     // The model may still be loading (the asset was set a moment ago): wait for this
@@ -1075,7 +1076,7 @@ export function useSceneEditorViewport(opts: {
     await npcDisplay.settled(entityId)
     // A newer attach (Pose tab plus a quick audition) superseded this one while it
     // waited; running on would orphan the other call's SkeletonHelper.
-    if (token !== poseAttachToken) return []
+    if (token !== poseAttachToken) return null
     const display = npcDisplay.get(entityId)
     const sm = display?.skinned
     if (!display || !sm) return []

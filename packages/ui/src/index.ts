@@ -62,7 +62,7 @@ export { importRoomPackageToDb } from './editor/importRoomPackage'
 export type { ImportRoomPackageResult } from './editor/importRoomPackage'
 export type { RoomPackageManifest, RoomPackageScene } from './editor/roomPackageTypes'
 // NPC placement rule shared by the editor display model and the room player (E5).
-export { npcTransform, placementFor, baseScaleFor, entryScale, totalScale } from './editor/pose/npcPlacement'
+export { npcTransform, entryScale } from './editor/pose/npcPlacement'
 export type { NpcPlacementEntry, NpcTransform } from './editor/pose/npcPlacement'
 
 // ── Asset Pipeline ───────────────────────────────────────────────────────────
