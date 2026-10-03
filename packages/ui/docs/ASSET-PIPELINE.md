@@ -148,7 +148,7 @@ Internal-only (used by `SceneEditorHierarchy.vue` and host code, not exported):
 - `assetDb` singleton (callers go through the store)
 - `useLiveQuery` composable (utility for future stores)
 - `generateThumbnail` function
-- `SceneEditorAssetsSection.vue` component
+- `AssetLibraryDialog.vue` component (opened from the editor's Objects section)
 
 ### `useAssetStore` — setup-store, Pinia
 
