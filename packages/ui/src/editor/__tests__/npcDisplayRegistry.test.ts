@@ -138,6 +138,22 @@ describe('createNpcDisplayRegistry', () => {
     expect(d.root.scale.x).toBeCloseTo(1.7 / 180)
   })
 
+  it('re-applies a yaw cleanly after a gizmo wrote a quaternion past 90 degrees', async () => {
+    // A gizmo sets the quaternion; for a yaw of 150 deg three decomposes it to Euler
+    // (180, 30, 180). Setting only rotation.y on top of that would leave the model upside down.
+    const L = deferredLoader()
+    const reg = createNpcDisplayRegistry({ loadGltf: L.loadGltf })
+    const p = reg.reconcile([e('a', 'u1', { rotationY: 150 })])
+    L.resolve('u1'); await p
+    const root = reg.get('a')!.root
+    root.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (150 * Math.PI) / 180) // what the gizmo does
+    expect(Math.abs(root.rotation.x)).toBeCloseTo(Math.PI, 5) // the trap is real
+    await reg.reconcile([e('a', 'u1', { rotationY: 160 })])
+    expect(root.rotation.x).toBe(0)
+    expect(root.rotation.z).toBe(0)
+    expect(root.rotation.y).toBeCloseTo((160 * Math.PI) / 180, 6)
+  })
+
   it('does not reload or re-clone when nothing changed', async () => {
     const L = deferredLoader()
     const reg = createNpcDisplayRegistry({ loadGltf: L.loadGltf })
