@@ -922,7 +922,6 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Gesture revert (Ctrl+Z, single slot) ────────────────────────────────────
 
-  /** Mirror the TC-selected marker's transform into the live-position maps. */
   /**
    * Publish an NPC's live transform to the host (which writes it to the entry).
    * The model is the source of truth once it exists: the gizmo drives it, so its
@@ -1010,6 +1009,7 @@ export function useSceneEditorViewport(opts: {
     if (want && transformControls.object !== want) attachNpcGizmo(sel.entityId)
   }
 
+  /** Mirror the TC-selected object's transform into the live-position maps. */
   function syncSelectedLivePosition(): void {
     const sel = selection.value
     if (sel?.kind === 'npc') {
