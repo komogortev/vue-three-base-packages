@@ -1,8 +1,12 @@
 <!--
-  SceneEditorHierarchy — left panel, tree of scene objects.
+  SceneEditorHierarchy — left panel (E9).
 
-  Groups: Scene Settings | NPCs | Trigger Zones
-  Clicking a row emits 'select' to sync viewport selection.
+  Scene block (switcher + tool rows) above three identical collapsible sections:
+  NPCs · Objects · Zones. Each has a "+" in its header and its rows directly
+  beneath it, so adding and seeing the result happen in the same place.
+  Sections start collapsed and open when something of their kind is selected
+  (hierarchy/sectionForSelection.ts). Clicking a row emits 'update:modelValue'
+  to sync viewport selection.
 -->
 <template>
   <aside class="hierarchy">
@@ -24,42 +28,44 @@
       <span v-else-if="sceneLabel" class="scene-badge">{{ sceneLabel }}</span>
     </header>
 
-    <!-- Assets section (uploaded GLB/FBX registry) -->
-    <SceneEditorAssetsSection @asset-picked="emit('asset-picked', $event)" />
-
-    <!-- Saved scenes — the management surface for Dexie scene rows. The
-         switcher above hides unloadable rows, so this panel is the only place
-         they remain visible and removable. -->
-    <SceneEditorSavedScenesSection @load-scene="emit('load-scene', $event)" />
-
-    <!-- Player row — always present; click to enter follow-3p mode -->
-    <div
-      class="row row-group"
-      :class="{ active: modelValue?.kind === 'player' }"
-      @click="emit('update:modelValue', { kind: 'player' })"
-    >
-      <span class="row-icon player-icon">▶</span>
-      <span class="row-label">Player</span>
-      <span v-if="editorCamMode && editorCamMode !== 'orbit'" class="badge-cam">{{ editorCamMode }}</span>
+    <!-- Saved scenes that cannot open here (every asset blob missing). The switcher hides
+         them, so without this they would be invisible clutter with no way to remove them.
+         Shown only when there is something to act on. -->
+    <div v-if="unloadable.length > 0" class="unavailable">
+      <button class="unavailable-btn" type="button" :title="unloadableTitle" @click="onRemoveUnavailable">
+        ⚠ {{ unloadable.length }} saved scene{{ unloadable.length === 1 ? '' : 's' }} can't open — Remove…
+      </button>
+      <p v-if="removeError" class="unavailable-error">{{ removeError }}</p>
     </div>
 
-    <!-- Scene settings row -->
-    <div
-      class="row row-group"
-      :class="{ active: modelValue?.kind === 'scene' || !modelValue }"
-      @click="emit('update:modelValue', { kind: 'scene' })"
-    >
-      <span class="row-icon">⬡</span>
-      <span class="row-label">Scene Settings</span>
+    <!-- Scene tools: view / settings controls, styled as buttons so neither reads as
+         a heading for the sections below. -->
+    <div class="tools">
+      <button
+        class="tool"
+        type="button"
+        :class="{ active: modelValue?.kind === 'scene' || !modelValue }"
+        title="Scene-level settings (spawn, play character, ambient audio)"
+        @click="emit('update:modelValue', { kind: 'scene' })"
+      >
+        <span class="tool-icon">⬡</span>
+        <span class="tool-label">Scene Settings</span>
+      </button>
+      <button
+        class="tool"
+        type="button"
+        :class="{ active: modelValue?.kind === 'player' }"
+        title="Walk the scene as the player (visual validation)"
+        @click="emit('update:modelValue', { kind: 'player' })"
+      >
+        <span class="tool-icon player-icon">▶</span>
+        <span class="tool-label">Player View</span>
+        <span v-if="editorCamMode && editorCamMode !== 'orbit'" class="badge-cam">{{ editorCamMode }}</span>
+      </button>
     </div>
 
     <!-- NPCs -->
-    <div class="section">
-      <div class="section-header">
-        <span>NPCs</span>
-        <span class="section-count">{{ npcs.length }}</span>
-        <button class="btn-add" title="Add NPC" @click.stop="emit('add-npc')">+</button>
-      </div>
+    <HierarchySection v-model:open="open.npcs" title="NPCs" :count="npcs.length" add-title="Add NPC" @add="emit('add-npc')">
       <div
         v-for="npc in npcs"
         :key="npc.entityId"
@@ -70,18 +76,34 @@
         <span class="row-icon npc-dot">●</span>
         <span class="row-label">{{ npc.label ?? npc.entityId }}</span>
         <span v-if="npcHasPath(npc.entityId)" class="badge-path" title="Has waypoint path">path</span>
-        <button class="btn-remove" title="Remove NPC" @click.stop="emit('remove-npc', npc.entityId)">×</button>
+        <button class="btn-remove" type="button" title="Remove NPC" @click.stop="emit('remove-npc', npc.entityId)">×</button>
       </div>
-      <p v-if="npcs.length === 0" class="section-empty">None</p>
-    </div>
+    </HierarchySection>
+
+    <!-- Objects: placed instances. "+" opens the asset library (upload, browse, use);
+         choosing an asset starts place mode, and the placed object lands here. -->
+    <HierarchySection
+      v-model:open="open.objects"
+      title="Objects"
+      :count="placedObjects.length"
+      add-title="Add object — opens the asset library"
+      @add="libraryOpen = true"
+    >
+      <div
+        v-for="obj in placedObjects"
+        :key="obj.id"
+        class="row"
+        :class="{ active: modelValue?.kind === 'placed' && modelValue.objectId === obj.id }"
+        @click="emit('update:modelValue', { kind: 'placed', objectId: obj.id })"
+      >
+        <span class="row-icon placed-dot">◈</span>
+        <span class="row-label">{{ obj.label }}</span>
+        <button class="btn-remove" type="button" title="Remove" @click.stop="emit('remove-placed', obj.id)">×</button>
+      </div>
+    </HierarchySection>
 
     <!-- Trigger Zones -->
-    <div class="section">
-      <div class="section-header">
-        <span>Zones</span>
-        <span class="section-count">{{ zones.length }}</span>
-        <button class="btn-add" title="Add zone" @click.stop="emit('add-zone')">+</button>
-      </div>
+    <HierarchySection v-model:open="open.zones" title="Zones" :count="zones.length" add-title="Add zone" @add="emit('add-zone')">
       <div
         v-for="zone in zones"
         :key="zone.id"
@@ -92,36 +114,24 @@
         <span class="row-icon" :class="zone.type === 'exit' ? 'exit-dot' : 'prox-dot'">◆</span>
         <span class="row-label">{{ zone.label ?? zone.id }}</span>
         <span class="badge-type">{{ zone.type }}</span>
-        <button class="btn-remove" title="Remove zone" @click.stop="emit('remove-zone', zone.id)">×</button>
+        <button class="btn-remove" type="button" title="Remove zone" @click.stop="emit('remove-zone', zone.id)">×</button>
       </div>
-      <p v-if="zones.length === 0" class="section-empty">None</p>
-    </div>
+    </HierarchySection>
 
-    <!-- Placed Objects -->
-    <div v-if="placedObjects.length > 0" class="section">
-      <div class="section-header">
-        <span>Placed Objects</span>
-        <span class="section-count">{{ placedObjects.length }}</span>
-      </div>
-      <div
-        v-for="obj in placedObjects"
-        :key="obj.id"
-        class="row"
-        :class="{ active: modelValue?.kind === 'placed' && modelValue.objectId === obj.id }"
-        @click="emit('update:modelValue', { kind: 'placed', objectId: obj.id })"
-      >
-        <span class="row-icon placed-dot">◈</span>
-        <span class="row-label">{{ obj.label }}</span>
-        <button class="btn-remove" title="Remove" @click.stop="emit('remove-placed', obj.id)">×</button>
-      </div>
-    </div>
-
+    <AssetLibraryDialog
+      :open="libraryOpen"
+      @close="libraryOpen = false"
+      @asset-picked="emit('asset-picked', $event)"
+    />
   </aside>
 </template>
 
 <script setup lang="ts">
-import SceneEditorAssetsSection from './SceneEditorAssetsSection.vue'
-import SceneEditorSavedScenesSection from './SceneEditorSavedScenesSection.vue'
+import { computed, reactive, ref, watch } from 'vue'
+import AssetLibraryDialog from './AssetLibraryDialog.vue'
+import HierarchySection from './hierarchy/HierarchySection.vue'
+import { sectionForSelection, selectionKey, type HierarchySectionId } from './hierarchy/sectionForSelection'
+import { assetDb } from './assetDb'
 import { useSavedScenes } from './scenes/useSavedScenes'
 import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry, EditorCamMode } from './sceneEditorTypes'
 
@@ -140,7 +150,7 @@ const props = defineProps<{
   activeSceneId?: string
   /** ID of the currently loaded Dexie saved scene, or null/undefined when none is active. */
   activeSavedSceneId?: string | null
-  /** Current editor camera mode — shown as a badge on the Player row. */
+  /** Current editor camera mode — shown as a badge on the Player View row. */
   editorCamMode?: EditorCamMode
 }>()
 
@@ -157,6 +167,25 @@ const emit = defineEmits<{
 }>()
 
 /**
+ * Collapsed on a fresh load. A section opens when the selection changes to one of
+ * its kind (row click, viewport click, or after an add, which auto-selects), and is
+ * not forced open again while the user holds that same selection and has collapsed
+ * it: the watch fires on a changed selection key, never on a re-announce.
+ * Not persisted — it is derived from the selection on mount.
+ */
+const open = reactive<Record<HierarchySectionId, boolean>>({ npcs: false, objects: false, zones: false })
+watch(
+  () => selectionKey(props.modelValue),
+  () => {
+    const id = sectionForSelection(props.modelValue)
+    if (id) open[id] = true
+  },
+  { immediate: true },
+)
+
+const libraryOpen = ref(false)
+
+/**
  * Only scenes that would actually open are offered in the switcher — a row
  * whose every asset blob is gone renders nothing but an empty grid, so listing
  * it is an invitation to a dead end. `loadable` is unfiltered until the asset
@@ -168,10 +197,53 @@ const emit = defineEmits<{
  *
  * Unloadable rows are NOT deleted here. A missing blob is often temporary — the
  * asset is re-uploadable, and Dexie is per-browser-profile, so a scene saved in
- * one browser legitimately looks assetless in another. Pruning is offered
- * explicitly in the Saved-scenes panel instead.
+ * one browser legitimately looks assetless in another. Removal is offered
+ * explicitly below (`onRemoveUnavailable`), behind a per-scene confirm.
  */
-const { rows: savedScenes, loadable: loadableSavedScenes } = useSavedScenes()
+const { rows: savedScenes, loadable: loadableSavedScenes, classified, loaded } = useSavedScenes()
+
+/**
+ * Rows that cannot open. Empty until the asset library has actually loaded:
+ * before that every row classifies `ok`, but an unloaded library is also
+ * indistinguishable from an empty one, and the pessimistic reading would offer to
+ * delete perfectly intact scenes. (Same guard as `useSavedScenes`' own `loaded`.)
+ */
+const unloadable = computed(() =>
+  loaded.value ? classified.value.filter(e => e.availability.status === 'unloadable') : [],
+)
+const unloadableTitle = computed(() =>
+  `Every asset these scenes use is missing in this browser: ${unloadable.value.map(e => e.scene.name).join(', ')}`,
+)
+const removeError = ref<string | null>(null)
+
+/**
+ * Explicit, confirmed, one scene at a time — never automatic. A missing blob is often
+ * recoverable by re-uploading the asset, and Dexie is per browser profile, so a scene
+ * saved in another browser legitimately looks assetless here.
+ */
+async function onRemoveUnavailable(): Promise<void> {
+  removeError.value = null
+  for (const { scene } of unloadable.value) {
+    const ok = window.confirm(
+      `Delete saved scene "${scene.name}" permanently?
+
+` +
+      `Its asset blobs are missing from this browser, so it cannot be opened here. ` +
+      `If the assets were saved in a different browser or profile, the scene is still ` +
+      `intact there — deleting here does not affect it.
+
+This cannot be undone.`,
+    )
+    if (!ok) continue
+    try {
+      await assetDb.scenes.delete(scene.id)
+    } catch (e) {
+      console.error('[Hierarchy] delete failed:', e)
+      removeError.value = `Could not delete "${scene.name}" — see console.`
+      return
+    }
+  }
+}
 
 function onDropdownChange(ev: Event): void {
   const value = (ev.target as HTMLSelectElement).value
@@ -198,7 +270,10 @@ function npcHasPath(entityId: string): boolean {
   flex-direction: column;
   font-size: 12px;
   color: #b0bec5;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #182a40 transparent;
 }
 
 .hierarchy-header {
@@ -236,107 +311,66 @@ function npcHasPath(entityId: string): boolean {
   border: 1px solid #1e3a58;
   border-radius: 3px;
   font-family: monospace;
-  font-size: 9px;
-  padding: 2px 4px;
+  font-size: 10px;
+  padding: 4px 4px;
   outline: none;
   cursor: pointer;
 }
 .scene-select:hover { border-color: #2a5070; }
 .scene-select option { background: #0d1320; color: #a0b4c8; }
 
-/* ── Section ──────────────────────────────────────────────────────────────── */
-.section {
-  border-top: 1px solid #182a40;
-  padding: 4px 0 2px;
-}
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 12px 4px;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: #3a5060;
-}
-.section-count {
-  background: #18304a;
-  color: #3a6080;
-  font-family: monospace;
-  padding: 0 4px;
-  border-radius: 8px;
-  font-size: 9px;
-}
-.btn-add {
-  background: transparent;
-  border: 1px solid #1e3050;
-  border-radius: 3px;
-  color: #3a6080;
-  font-size: 12px;
-  font-weight: bold;
-  width: 16px;
-  height: 16px;
-  line-height: 1;
-  padding: 0;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: color 0.1s, border-color 0.1s;
-}
-.btn-add:hover {
-  color: #7ab0d8;
-  border-color: rgba(90, 176, 245, 0.3);
-}
-.section-empty {
-  margin: 0;
-  padding: 3px 12px 4px;
+/* ── Unavailable saved scenes ────────────────────────────────────────────── */
+.unavailable { padding: 8px 10px 0; flex-shrink: 0; }
+.unavailable-btn {
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  background: rgba(255, 190, 70, 0.08);
+  border: 1px solid rgba(255, 190, 70, 0.3);
+  border-radius: 5px;
+  color: #d8b060;
+  font-family: inherit;
   font-size: 10px;
-  color: #1e3040;
+  text-align: left;
+  cursor: pointer;
 }
+.unavailable-btn:hover { background: rgba(255, 190, 70, 0.16); }
+.unavailable-error { margin: 4px 0 0; font-size: 10px; color: #ff8a80; }
 
-/* ── Rows ─────────────────────────────────────────────────────────────────── */
-.row {
+/* ── Scene tools ──────────────────────────────────────────────────────────── */
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  flex-shrink: 0;
+}
+.tool {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 10px;
+  background: #101a2a;
+  border: 1px solid #1a2d44;
+  border-radius: 5px;
+  color: #8aa4bc;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
   cursor: pointer;
-  border-radius: 0;
-  transition: background 0.1s;
-  user-select: none;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
 }
-.row:hover { background: rgba(255,255,255,0.04); }
-.row.active { background: rgba(0, 140, 255, 0.12); }
-.row-group { border-top: 1px solid #182a40; margin-top: 2px; }
-
-.row-icon {
-  font-size: 9px;
-  flex-shrink: 0;
-  color: #3a5060;
+.tool:hover { background: #142238; border-color: #2a4a6a; color: #b8d0e4; }
+.tool.active {
+  background: rgba(0, 140, 255, 0.14);
+  border-color: rgba(0, 140, 255, 0.45);
+  color: #d0e4f8;
 }
-.row-icon.npc-dot { color: #00aaff; }
-.row-icon.exit-dot { color: #ffdd44; }
-.row-icon.prox-dot { color: #44ff88; }
-.row-icon.placed-dot { color: #c099ff; }
-
-.btn-remove {
-  background: transparent;
-  border: none;
-  color: #3a5060;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 2px;
-  cursor: pointer;
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.1s, color 0.1s;
-}
-.row:hover .btn-remove { opacity: 1; }
-.btn-remove:hover { color: #ff6060; }
-.row-icon.player-icon { color: #00d4aa; }
+.tool-icon { font-size: 10px; flex-shrink: 0; color: #4a6a80; }
+.tool-icon.player-icon { color: #00d4aa; }
+.tool-label { flex: 1; min-width: 0; }
 
 .badge-cam {
   font-family: monospace;
@@ -349,6 +383,30 @@ function npcHasPath(entityId: string): boolean {
   flex-shrink: 0;
 }
 
+/* ── Rows (slotted into HierarchySection) ─────────────────────────────────── */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px 0 26px;
+  cursor: pointer;
+  transition: background 0.1s;
+  user-select: none;
+}
+.row:hover { background: rgba(255, 255, 255, 0.04); }
+.row.active { background: rgba(0, 140, 255, 0.12); }
+
+.row-icon {
+  font-size: 9px;
+  flex-shrink: 0;
+  color: #3a5060;
+}
+.row-icon.npc-dot { color: #00aaff; }
+.row-icon.exit-dot { color: #ffdd44; }
+.row-icon.prox-dot { color: #44ff88; }
+.row-icon.placed-dot { color: #c099ff; }
+
 .row-label {
   flex: 1;
   overflow: hidden;
@@ -358,6 +416,29 @@ function npcHasPath(entityId: string): boolean {
   color: #a0b4c8;
 }
 .row.active .row-label { color: #d0e4f8; }
+
+/* Visible at rest (dimmed) so it is findable, a real target (22 px) rather than a
+   14 px glyph that only appears on hover. */
+.btn-remove {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #3a5060;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity 0.1s, color 0.1s, background 0.1s;
+}
+.row:hover .btn-remove { opacity: 1; }
+.btn-remove:hover { color: #ff6060; background: rgba(255, 96, 96, 0.1); }
 
 .badge-path {
   font-family: monospace;
@@ -376,12 +457,5 @@ function npcHasPath(entityId: string): boolean {
   padding: 1px 4px;
   border-radius: 2px;
   flex-shrink: 0;
-}
-
-.empty {
-  margin: 24px 12px 0;
-  font-size: 11px;
-  color: #2a3a4a;
-  line-height: 1.6;
 }
 </style>

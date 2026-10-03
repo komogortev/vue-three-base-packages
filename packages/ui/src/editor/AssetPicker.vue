@@ -169,7 +169,7 @@ function onRowClick(id: string): void {
 }
 
 // ── Thumbnail URL cache (component-scoped) ───────────────────────────────
-// Distinct from SceneEditorAssetsSection's own cache; each component owns
+// Distinct from AssetLibraryDialog's own cache; each component owns
 // its own object URLs and revokes them independently.
 const thumbnailUrls = ref<Map<string, string>>(new Map())
 
