@@ -60,6 +60,9 @@ export type { LoadedRoomPackage } from './editor/loadRoomPackage'
 export { importRoomPackageToDb } from './editor/importRoomPackage'
 export type { ImportRoomPackageResult } from './editor/importRoomPackage'
 export type { RoomPackageManifest, RoomPackageScene } from './editor/roomPackageTypes'
+// NPC placement rule shared by the editor display model and the room player (E5).
+export { npcTransform, placementFor, baseScaleFor, entryScale, totalScale } from './editor/pose/npcPlacement'
+export type { NpcPlacementEntry, NpcTransform } from './editor/pose/npcPlacement'
 
 // ── Asset Pipeline ───────────────────────────────────────────────────────────
 // Editor asset registry (IndexedDB) — see docs/ASSET-PIPELINE.md.

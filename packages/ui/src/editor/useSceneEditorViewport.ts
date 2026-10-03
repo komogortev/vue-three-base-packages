@@ -18,6 +18,7 @@ import { describeSelection as describeSelectionText, sceneStatus as sceneStatusT
 import { fitScaleFor } from './pose/characterFit'
 import { nextCamMode } from './camera/camModes'
 import { createMarkerRegistry } from './markers/markerRegistry'
+import { createNpcDisplayRegistry, type NpcDisplayEntry } from './npc/npcDisplayRegistry'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
@@ -223,17 +224,29 @@ export interface SceneEditorViewportReturn {
    */
   setPlayCharacterAsset: (charBlobUrl: string | null, animPackBlobUrl?: string | null) => Promise<void>
   // ─── Pose editor ─────────────────────────────────────────────────────────
-  /** Load a character GLB for pose editing; returns the skeleton as a DFS-ordered bone tree. */
-  attachPoseNpc: (entityId: string, blobUrl: string, npcScale?: number) => Promise<PoseBoneNode[]>
-  /** Live-update the attached pose mesh's uniform scale (NPC `scale` × fit base). */
-  setPoseMeshScale: (npcScale: number) => void
+  /**
+   * Make the NPCs shown in the viewport match `entries` (one persistent model per
+   * NPC with a resolvable character asset). The one mutation path: asset set, NPC
+   * add/remove, scene load and the asset library finishing its load all go through
+   * here. Resolves when the loads it depends on have settled.
+   */
+  setNpcDisplayEntries: (entries: NpcDisplayEntry[]) => Promise<void>
+  /**
+   * Start pose editing on an NPC's display model (it is NOT loaded a second time):
+   * adds the SkeletonHelper + IK targets and returns the skeleton as a DFS-ordered
+   * bone tree. Waits for a model that is still loading; returns [] if none exists.
+   */
+  attachPoseNpc: (entityId: string) => Promise<PoseBoneNode[]>
   /** Attach TransformControls in rotate mode to the named bone. */
   selectPoseBone: (boneName: string) => void
   /** Snapshot current skeleton quaternions — serializes to poseOverride format. */
   capturePoseSnapshot: () => PoseBoneSample[]
   /** Reset all skeleton bones to bind pose and detach TC from any active bone/IK target. */
   resetPoseBones: () => void
-  /** Remove the pose mesh + SkeletonHelper from the scene and release TC. */
+  /**
+   * Stop pose editing: remove the SkeletonHelper + IK targets, release TC, and put the
+   * model back to its authored pose (un-captured bone edits are discarded). The model stays.
+   */
   detachPoseNpc: () => void
   /** IK chain names available for the loaded pose mesh (e.g. 'rightArm', 'leftLeg'). */
   ikChainNames: Readonly<Ref<string[]>>
@@ -281,6 +294,12 @@ export function useSceneEditorViewport(opts: {
   config: SceneEditorConfig
   /** Called when Esc cancels path-edit mode from inside the viewport. */
   onPathEditCancel?: () => void
+  /**
+   * Called after the pose editor was detached because the display model it borrowed
+   * went away (its asset vanished from the library). The host resets its own pose,
+   * animation and bone-list state, as it does for an NPC removal.
+   */
+  onPoseMeshLost?: () => void
 }): SceneEditorViewportReturn {
   const { canvas: canvasRef } = opts
 
@@ -317,6 +336,12 @@ export function useSceneEditorViewport(opts: {
 
   // NPC / zone marker meshes + their lookup maps (decomposition stage 2).
   const markers = createMarkerRegistry()
+  // Always-on NPC models. Takes the loader at construction (testable without WebGL).
+  const npcDisplay = createNpcDisplayRegistry({
+    loadGltf: url => createEditorGltfLoader().loadAsync(url),
+  })
+  /** Last entries handed to `setNpcDisplayEntries`; re-applied after every scene (re)load. */
+  let npcDisplayDesired: NpcDisplayEntry[] = []
   const pathGroup = new THREE.Group()
 
   // Placed objects group — persistent container, children cleared on scene switch
@@ -368,12 +393,11 @@ export function useSceneEditorViewport(opts: {
   let pendingAnimBlobUrl: string | null = null
 
   // ─── Pose editor Three.js state ──────────────────────────────────────────────
+  // The model belongs to `npcDisplay`; the pose editor borrows it and adds decorations.
   let poseMeshRoot: THREE.Object3D | null = null
   let poseSkinnedMesh: THREE.SkinnedMesh | null = null
+  let poseAttachedEntityId: string | null = null
   let poseHelper: THREE.SkeletonHelper | null = null
-  // Fit-normalization scale of the attached pose mesh (before the NPC's own
-  // `scale` multiplier), so setPoseMeshScale can recompute total = base × npc.
-  let poseBaseScale = 1
   let poseHasBoneAttached = false  // true when TC is attached to a bone via selectPoseBone
 
   // IK state — persistent group added to scene in init(); children managed by attachPoseNpc/detachPoseNpc
@@ -520,6 +544,7 @@ export function useSceneEditorViewport(opts: {
     // Marker groups are persistent containers — their children are rebuilt per scene
     scene.add(markers.npcGroup)
     scene.add(markers.zoneGroup)
+    scene.add(npcDisplay.group)
     scene.add(pathGroup)
     scene.add(placedGroup)
     scene.add(ikTargetGroup)
@@ -616,7 +641,9 @@ export function useSceneEditorViewport(opts: {
     sceneObjects = []
     floorMeshes = []
 
-    // Clear marker groups — disposal semantics live in the registry
+    // Clear marker groups — disposal semantics live in the registry. NPC models are
+    // NOT cleared here: they do not depend on scene geometry, and the host's watcher
+    // owns their list, so a scene switch only reparses what actually changed.
     markers.clear()
     npcLivePositions.value = new Map()
     zoneLivePositions.value = new Map()
@@ -991,18 +1018,15 @@ export function useSceneEditorViewport(opts: {
       poseHelper = null
     }
     if (poseMeshRoot) {
-      poseMeshRoot.traverse(obj => {
-        const m = obj as THREE.Mesh
-        if (m.isMesh) {
-          m.geometry?.dispose()
-          const mat = m.material
-          if (Array.isArray(mat)) mat.forEach(ma => ma.dispose())
-          else (mat as THREE.Material)?.dispose()
-        }
-      })
-      scene?.remove(poseMeshRoot)
+      // The model belongs to npcDisplay and stays on screen. Bone edits that were
+      // never captured must not linger as phantom state: restore the authored pose.
+      if (poseAttachedEntityId) {
+        const authored = npcDisplayDesired.find(n => n.entityId === poseAttachedEntityId)?.poseOverride
+        npcDisplay.restoreAuthoredPose(poseAttachedEntityId, authored)
+      }
       poseMeshRoot = null
       poseSkinnedMesh = null
+      poseAttachedEntityId = null
     }
   }
 
@@ -1024,51 +1048,40 @@ export function useSceneEditorViewport(opts: {
     return out
   }
 
-  /** Re-ground the pose mesh so its feet sit at y=0 after a scale change. */
-  function _groundPoseMesh(): void {
-    if (!poseMeshRoot) return
-    poseMeshRoot.updateMatrixWorld(true)
-    const bbox = new THREE.Box3().setFromObject(poseMeshRoot)
-    poseMeshRoot.position.y = -bbox.min.y
+  function setNpcDisplayEntries(entries: NpcDisplayEntry[]): Promise<void> {
+    npcDisplayDesired = entries
+    const done = npcDisplay.reconcile(entries)
+    // Reconcile has already moved existing models (its diff is synchronous). The IK
+    // spheres were placed in world space at attach, so follow the borrowed model.
+    if (poseAttachedEntityId) syncIkSpheres()
+    return done.then(() => {
+      // The borrowed model was removed or replaced (its asset left the library):
+      // every decoration and handle the pose editor holds now points off-scene.
+      if (poseAttachedEntityId && npcDisplay.get(poseAttachedEntityId)?.root !== poseMeshRoot) {
+        detachPoseNpc()
+        opts.onPoseMeshLost?.()
+      }
+    })
   }
 
-  /**
-   * Apply the NPC's uniform `scale` to the attached pose mesh, on top of the
-   * fit-normalization base scale, then re-ground. Mirrors the runtime
-   * (`RoomPlayerModule` does `root.scale.setScalar(npc.scale)`) so the editor
-   * preview matches the room player. No-op when no mesh is attached.
-   */
-  function setPoseMeshScale(npcScale: number): void {
-    if (!poseMeshRoot) return
-    poseMeshRoot.scale.setScalar(poseBaseScale * (npcScale || 1))
-    _groundPoseMesh()
-  }
+  let poseAttachToken = 0
 
-  async function attachPoseNpc(
-    entityId: string,
-    blobUrl: string,
-    npcScale = 1,
-  ): Promise<PoseBoneNode[]> {
+  async function attachPoseNpc(entityId: string): Promise<PoseBoneNode[]> {
     detachPoseNpc()
-    const loader = createEditorGltfLoader()
+    const token = ++poseAttachToken
+    // The model may still be loading (the asset was set a moment ago): wait for this
+    // NPC's load only, not every pending one.
+    void npcDisplay.reconcile(npcDisplayDesired)
+    await npcDisplay.settled(entityId)
+    // A newer attach (Pose tab plus a quick audition) superseded this one while it
+    // waited; running on would orphan the other call's SkeletonHelper.
+    if (token !== poseAttachToken) return []
+    const display = npcDisplay.get(entityId)
+    const sm = display?.skinned
+    if (!display || !sm) return []
     try {
-      const gltf = await loader.loadAsync(blobUrl)
-      const skinnedMeshes: THREE.SkinnedMesh[] = []
-      gltf.scene.traverse(obj => { if (obj instanceof THREE.SkinnedMesh) skinnedMeshes.push(obj) })
-      const sm = skinnedMeshes[0]
-      if (!sm) return []
-
-      // Fit-normalize, then apply the NPC's own uniform scale, then ground.
-      fitCharacterScale(gltf.scene)
-      poseBaseScale = gltf.scene.scale.x
-      if (npcScale !== 1) gltf.scene.scale.setScalar(poseBaseScale * npcScale)
-      gltf.scene.updateMatrixWorld(true)
-      const marker = markers.npcRoot(entityId)
-      const bbox = new THREE.Box3().setFromObject(gltf.scene)
-      gltf.scene.position.set(marker?.position.x ?? 0, -bbox.min.y, marker?.position.z ?? 0)
-
-      scene.add(gltf.scene)
-      poseMeshRoot = gltf.scene
+      poseAttachedEntityId = entityId
+      poseMeshRoot = display.root
       poseSkinnedMesh = sm
 
       poseHelper = new THREE.SkeletonHelper(sm)
@@ -1096,7 +1109,7 @@ export function useSceneEditorViewport(opts: {
 
       return buildBoneTree(sm.skeleton)
     } catch (e) {
-      console.warn('[PoseEditor] Failed to load character mesh:', e)
+      console.warn('[PoseEditor] Failed to attach pose editor:', e)
       return []
     }
   }
@@ -1202,6 +1215,8 @@ export function useSceneEditorViewport(opts: {
   // only), and the resulting Dexie row is self-contained.
   async function exportAnimClip(clips: THREE.AnimationClip[]): Promise<Blob | null> {
     if (!poseMeshRoot) return null
+    // The pack's scene node carries this NPC's placement (position, rotationY, scale).
+    // Pack consumers read only `animations`; a pack loaded as a *model* would inherit it.
     return exportAnimationGlb(poseMeshRoot, clips)
   }
 
@@ -1994,6 +2009,8 @@ export function useSceneEditorViewport(opts: {
     keyState.clear()
     _disposePlayCharacter()
     detachPoseNpc()
+    npcDisplay.dispose()
+    scene?.remove(npcDisplay.group)
     if (playerMesh) {
       playerMesh.geometry.dispose()
       ;(playerMesh.material as THREE.Material).dispose()
@@ -2054,8 +2071,8 @@ export function useSceneEditorViewport(opts: {
     removeZoneMarker,
     removePlacedObject,
     setPlayCharacterAsset,
+    setNpcDisplayEntries,
     attachPoseNpc,
-    setPoseMeshScale,
     selectPoseBone,
     capturePoseSnapshot,
     resetPoseBones,
