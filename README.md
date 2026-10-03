@@ -1,74 +1,59 @@
-# vue-three-base-packages (`@base/workspace`)
+# vue-three-base-packages
 
-pnpm monorepo of **shared libraries** for Vue + Three.js PWAs in the **@base** ecosystem. These packages are consumed from application repos (e.g. [threejs-engine-dev](https://github.com/komogortev/threejs-engine-dev)) via **`pnpm` `file:`/`link:`** during development or from **GitHub Packages** when published.
+Eleven reusable TypeScript packages for building Three.js games and tools in the browser: engine core,
+scene building, player and camera control, input, physics, audio, and a Vue editor UI. This is the shared
+layer under the `@base` platform; the apps built on it are
+[threejs-engine-dev](https://github.com/komogortev/threejs-engine-dev) (a scene editor and room player) and
+[three-dbox](https://github.com/komogortev/three-dbox) (a combat sandbox).
 
-**Repository:** [github.com/komogortev/vue-three-base-packages](https://github.com/komogortev/vue-three-base-packages)
-
----
+It is a pnpm workspace. All packages are `@base/*` at version 0.1.0, written in TypeScript, and built with `tsc`
+(Vite for `ui`).
 
 ## Packages
 
-| Package | Role |
-|--------|------|
-| `@base/engine-core` | `BaseModule`, `EventBus`, shell/engine mount contract |
-| `@base/threejs-engine` | Renderer, scene, camera, RAF loop, `ThreeModule`, assets |
-| `@base/input` | Keyboard/gamepad/touch → `input:axis` / `input:action` on the bus; 4-ability slots, mouse button rebinding, `mergeBindings` |
-| `@base/player-three` | `PlayerController`, terrain snap, animation helpers; carry impulse + vertical ability hooks (rocket punch, skim jump) |
-| `@base/scene-builder` | `SceneDescriptor`, `SceneBuilder`, `TerrainSampler`, `SwimmableVolume`; `animationPackUrls` + `NpcGltfEntry` for NPC animation packs |
-| `@base/camera-three` | `GameplayCameraController`, third-person presets, first-person eye offset; Phase 4C cinematic is additive |
-| `@base/gameplay` | `PlayerCameraCoordinator` — wires input→player→camera; `tickPlayer`/`tickCamera` split for host injection; `GameplaySceneModule` |
-| `@base/pwa-core` | PWA-oriented helpers (shell integration) |
-| `@base/audio` | Spatial audio, music layers, SFX; autoplay policy resume |
-| `@base/ui` | Vue UI kit: `SceneEditorView` (multi-scene switcher), `WaypointEditor` (composable + HUD + panel), input settings components |
+| Package | What it does |
+|--------|--------------|
+| `@base/engine-core` | Mount contract, `EventBus` and `BaseModule`: the interfaces every other package builds on |
+| `@base/threejs-engine` | Renderer, scene, camera, animation-frame loop, ECS entity manager and asset loader (including Draco) |
+| `@base/scene-builder` | `SceneDescriptor` to Three.js: terrain, scatter, GLB placement, NPC and character spawn |
+| `@base/player-three` | Third-person player locomotion, terrain snap, Mixamo animation helpers, skinned-mesh utilities |
+| `@base/camera-three` | Third-person follow presets, first-person eye offset, shared camera rig math |
+| `@base/gameplay` | `PlayerCameraCoordinator`: routes input to the player and camera, with per-frame `tickPlayer` / `tickCamera` hooks |
+| `@base/input` | Keyboard, gamepad and touch mapped to game-agnostic actions; ability slots and rebinding |
+| `@base/physics` | Rapier-backed queries: trimesh collision, sphere penetration, static map registration |
+| `@base/audio` | Web Audio spatial audio, music layers and crossfade, SFX |
+| `@base/pwa-core` | Service worker registration, offline handling, install prompt |
+| `@base/ui` | Vue 3 components: the scene editor (`SceneEditorView`), waypoint editor, input settings |
 
-Each package has its own `package.json`, `tsconfig`, and **`dist/`** produced by `tsc` (or Vite for `ui`). **`dist/` is gitignored** — run **`pnpm build`** before linking into apps.
+`dist/` is gitignored, so run `pnpm build` before linking the packages into an app.
 
----
+## Build and test
 
-## Requirements
-
-- **Node** ≥ 20  
-- **pnpm** ≥ 9  
-
----
-
-## Scripts (root)
+Needs Node 20 or newer and pnpm 9 or newer.
 
 ```bash
 pnpm install
-pnpm build      # pnpm -r --sort run build — topological order (engine-core before input, etc.)
-pnpm test       # where configured per package
+pnpm build        # topological order: engine-core before the packages that depend on it
 pnpm typecheck
+pnpm test         # in the packages that have tests
 ```
 
----
+CI (`.github/workflows/ci.yml`) runs install and build on every push and pull request to `main`.
 
-## GitHub configuration
+## Use the packages in an app
 
-| Concern | This repo |
-|--------|-----------|
-| **GitHub Pages** | **Not used** — libraries only, no static site. |
-| **GitHub Actions** | CI workflow runs **install + build** on push/PR to validate the workspace (see `.github/workflows/ci.yml`). Uses **GitHub-hosted** `ubuntu-latest` (no self-hosted runner required). Workflow sets `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` per [GitHub’s Node 20 deprecation on Actions](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/). |
-| **Publishing** | Use `pnpm publish` / GitHub Packages per package; bump versions and follow your release process. |
-
----
-
-## Consuming from an app repo
-
-**Development (recommended layout):**
+During development an app links the packages from a sibling checkout, which is how
+[threejs-engine-dev](https://github.com/komogortev/threejs-engine-dev) consumes them:
 
 ```text
 workspace/
-  vue-three-base-packages/   # this repo (clone as SHARED)
-  threejs-engine-dev/        # app with link:../vue-three-base-packages/packages/...
+  SHARED/              # this repo
+  threejs-engine-dev/  # app with link:../SHARED/packages/... dependencies
 ```
 
-Build **this** workspace first, then `pnpm install` in the app.
-
-**Published installs:** point `package.json` dependencies at the registry versions of `@base/*` once published (replace `link:` entries).
-
----
+Build this workspace first, then run `pnpm install` in the app. Each package declares a `publishConfig` for
+GitHub Packages, but nothing here depends on a published release.
 
 ## License
 
-As specified per package / repository owner (add root `LICENSE` if you want a public default).
+[MIT](./LICENSE).
