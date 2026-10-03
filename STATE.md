@@ -1,11 +1,11 @@
 # STATE.md — SHARED (@base/* packages)
 
 ## SNAPSHOT
-Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-09-16 — #50 (F-G5 GLB linter on upload, Q6 severity split) + #49 (saved-scene availability, editor init guards) merged; **200/200 vitest on `main`**.
-Working: all packages build; editor decomposition stages 1+2 merged (#45, #46: pure kernels + marker registry, feature folders `anim/ camera/ gate/ markers/ placement/ pose/ selection/`); L0 gate `editor/gate/` + F-G5 linter; S5 animation recorder; `@base/physics` (`addStaticMesh`, `shapeCastSphere`, `CharacterMover`).
-Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested (needs WebGL) · L0 gate is green **by construction** until a gesture authors `attachment` · the placed-object restore path has no unit test.
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-03 — #53 (import a scene package into the editor library; `openSceneId`) and #54 (persistent NPC display model; shared placement rule) merged; **262/262 vitest** in `@base/ui`.
+Working: all packages build; editor decomposition stages 1+2 merged plus an `npc/` L1 registry (`npcDisplayRegistry`, refcounted asset cache) and L0 `pose/npcPlacement`; the pose editor borrows the NPC display model; `importRoomPackageToDb`; L0 gate `editor/gate/` + F-G5 linter; S5 recorder; `@base/physics`.
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested (needs WebGL) · L0 gate green **by construction** until a gesture authors `attachment` · placed-object restore has no unit test · `resetPoseBones` still uses `Skeleton.pose()` (wrong under a scaled Armature parent) · importer's Dexie half untested (no `fake-indexeddb`).
 Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
-Next: decomposition stage 2 — anim delegators (cheap check of the handles-only rule) → camera → input → pose/IK; then the `SceneEditorView.vue` script split. Oversized, baselined, unowned: `PlayerController.ts` 1,679 · `SceneBuilder.ts` 857 · `CharacterAnimationRig.ts` 767. Contract: `docs/PLAN-EDITOR-DECOMPOSITION-2026-08-31.md` (workspace). Never rebase `d3c5762` in.
+Next: extract the **pose/IK cluster** from `useSceneEditorViewport.ts` (2,091 lines, +17 from E5), then camera → input; `SceneEditorView.vue` script (1,092 lines) after. Editor UX queue (engine-dev `docs/ISSUES-EDITOR-UX-2026-09-30.md`): E9 `HierarchySection`, E11 click reliability. Oversized, baselined, unowned: `PlayerController.ts` 1,679 · `SceneBuilder.ts` 857 · `CharacterAnimationRig.ts` 767. Contract: `docs/PLAN-EDITOR-DECOMPOSITION-2026-08-31.md` (workspace). Never rebase `d3c5762` in.
 History: detail and prior status below; full history in git.
 
 ---
@@ -47,6 +47,8 @@ They are **not the same problem**. **Start with `SceneEditorView.vue`** — its 
 
 <!-- Append-only. One line per decision, newest first. -->
 
+- **2026-10-03** — **The pose editor borrows the NPC display model instead of owning a mesh; rest pose comes from a load-time snapshot, not `Skeleton.pose()`** (#54). Why: two jobs (display, pose editing) shared one lifetime, which made "set a mesh, see nothing" structural. three 0.172 `pose()` copies the bind world matrix as the local one for a root bone under a non-bone parent, applying an Armature node's scale/rotation twice; the snapshot cannot disagree with the file. Cost: a public `SceneEditorViewportReturn` change (`attachPoseNpc(entityId)`, `setPoseMeshScale` removed, `setNpcDisplayEntries` added); no consumer called the changed members.
+
 - **2026-09-16** — **Rebuild a stale branch on `main` rather than rebase it, when the branch carries commits you must not keep.** `auto/f-g5-glb-linter` had sat unmerged since 08-28 and carried three things: the F-G5 code, two autonomous-worker state-doc commits already superseded on `main`, and **`d3c5762`, which reverts the self-hosted Draco decoder back to the gstatic CDN** — a regression the platform had deliberately fixed in `251a84a`. A rebase preserves all of it and turns dropping a commit into a conflict-resolution decision taken under pressure; cherry-picking the three code commits onto a fresh branch off `main` makes the exclusion explicit, reviewable in the PR body, and it applied with **zero conflicts** despite the #45/#46 feature-folder regroup landing in between. **Generalized: when the excluded commits are the point, re-apply rather than replay.** Also: a clean-worktree typecheck failure (`TS2307` on `@base/threejs-engine` in a file the branch never touched) was an **environment artefact** — sibling package `dist/` had not been built — not a regression; building `engine-core` + `threejs-engine` cleared it. Check what the failing file has to do with your diff before treating a red check as yours.
 - **2026-09-16** — **Three CI-review notes on #50 were all real, and all were about exported contracts rather than behaviour.** The reviewer raised them non-blocking and each was verified against the code before changing anything: `GateCheck.measured`/`.tolerance` were documented "(metres)" while `scale-sanity` stores a **unitless fractional deviation** in the same fields; `Aabb` was documented as "a shared (world) frame" while `glbLinter` passes **root-local** bounds; and a test title claimed a pivot below the bounds base makes the mesh embed, when that fixture (`min.y = +0.3`) makes it **hover**. All three ship from the package's public `index.ts`, so a consumer rendering checks generically would have appended "m" to a ratio. Fixed by moving the unit and the frame **to the use site** (the check id owns the unit; the field carrying the box names its frame) rather than widening the docs into vagueness. **A misleading doc on an exported type is a defect, not a nit** — it is the only contract a consumer has.
 
@@ -80,3 +82,18 @@ They are **not the same problem**. **Start with `SceneEditorView.vue`** — its 
 - **`@base/postfx`:** Not started. Trigger when a game requires bloom/DOF.
 - **Surface-normal API in `@base/scene-builder`:** Needed for uphill lean. Deferred until after swimming animation validation.
 - **`water__entry__fall.fbx` real animation:** Placeholder in place. Source from Mixamo when prioritized.
+
+---
+
+## Snapshot archive
+
+_Superseded SNAPSHOT bodies, verbatim, newest first. Not orientation material._
+
+### Pre-2026-10-03 (E5 / scene import)
+
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-09-16 — #50 (F-G5 GLB linter on upload, Q6 severity split) + #49 (saved-scene availability, editor init guards) merged; **200/200 vitest on `main`**.
+Working: all packages build; editor decomposition stages 1+2 merged (#45, #46: pure kernels + marker registry, feature folders `anim/ camera/ gate/ markers/ placement/ pose/ selection/`); L0 gate `editor/gate/` + F-G5 linter; S5 animation recorder; `@base/physics` (`addStaticMesh`, `shapeCastSphere`, `CharacterMover`).
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested (needs WebGL) · L0 gate is green **by construction** until a gesture authors `attachment` · the placed-object restore path has no unit test.
+Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
+Next: decomposition stage 2 — anim delegators (cheap check of the handles-only rule) → camera → input → pose/IK; then the `SceneEditorView.vue` script split. Oversized, baselined, unowned: `PlayerController.ts` 1,679 · `SceneBuilder.ts` 857 · `CharacterAnimationRig.ts` 767. Contract: `docs/PLAN-EDITOR-DECOMPOSITION-2026-08-31.md` (workspace). Never rebase `d3c5762` in.
+History: detail and prior status below; full history in git.
