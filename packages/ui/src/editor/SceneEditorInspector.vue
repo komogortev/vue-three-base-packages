@@ -933,7 +933,7 @@ const fmt = (n: number) => n.toFixed(2)
 }
 .tab {
   flex: 1;
-  padding: 6px 4px;
+  padding: 11px 4px;  /* ~40 px tall: a taller target than the old 6 px padding */
   font-size: 11px;
   font-weight: 600;
   background: transparent;
