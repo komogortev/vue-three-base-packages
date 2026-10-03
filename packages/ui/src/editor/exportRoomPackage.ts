@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid'
 import { strToU8, zipSync } from 'fflate'
-import type { RoomPackageManifest, RoomPackageScene } from './roomPackageTypes'
+import type { RoomPackageAssetMeta, RoomPackageManifest, RoomPackageScene } from './roomPackageTypes'
 import { assetDb } from './assetDb'
 
 /**
@@ -39,6 +39,9 @@ export async function exportRoomPackage(
   }
   if (scene.ambientAudioAssetId) assetIdSet.add(scene.ambientAudioAssetId)
 
+  // Sidecar so a re-import keeps filename / kind / clip names (importRoomPackage.ts).
+  const assetMeta: Record<string, RoomPackageAssetMeta> = {}
+
   // Resolve each asset from Dexie and bundle it.
   for (const assetId of assetIdSet) {
     const row = await assetDb.assets.get(assetId)
@@ -49,6 +52,7 @@ export async function exportRoomPackage(
     const ext = row.name.split('.').pop()?.trim() || 'bin'
     const buf = await row.blob.arrayBuffer()
     files[`assets/${assetId}.${ext}`] = new Uint8Array(buf)
+    assetMeta[assetId] = { name: row.name, kind: row.kind, clipNames: row.clipNames }
   }
 
   const manifest: RoomPackageManifest = {
@@ -60,6 +64,7 @@ export async function exportRoomPackage(
 
   files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2))
   files['scene.json'] = strToU8(JSON.stringify(scene, null, 2))
+  files['assets.json'] = strToU8(JSON.stringify(assetMeta, null, 2))
 
   const zipped = zipSync(files, { level: 0 })
   // zipSync always returns a Uint8Array backed by a plain ArrayBuffer (not SharedArrayBuffer).

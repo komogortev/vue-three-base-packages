@@ -57,6 +57,8 @@ export { serializeEditorConfigTS, buildRoomPackageScene } from './editor/SceneEd
 export { exportRoomPackage } from './editor/exportRoomPackage'
 export { loadRoomPackage, loadRoomFromDb } from './editor/loadRoomPackage'
 export type { LoadedRoomPackage } from './editor/loadRoomPackage'
+export { importRoomPackageToDb } from './editor/importRoomPackage'
+export type { ImportRoomPackageResult } from './editor/importRoomPackage'
 export type { RoomPackageManifest, RoomPackageScene } from './editor/roomPackageTypes'
 
 // ── Asset Pipeline ───────────────────────────────────────────────────────────

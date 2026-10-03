@@ -252,6 +252,12 @@ const props = defineProps<{
   config?: SceneEditorConfig
   /** Override label shown in hierarchy header (single-scene mode only). */
   sceneLabel?: string
+  /**
+   * Saved-scene (Dexie) id to open once the viewport and asset library are
+   * ready — the Scenes screen's "Edit". Applied once per mount; later changes
+   * are ignored so they cannot clobber unsaved work.
+   */
+  openSceneId?: string
 }>()
 
 // ─── Active scene ─────────────────────────────────────────────────────────────
@@ -1272,6 +1278,20 @@ onMounted(() => {
   initLocalEntries()
   setTimeout(restoreWaypoints, 100)
 })
+
+// `onLoadScene` resolves blob URLs from the asset library, which loads
+// asynchronously — opening before it emits would drop every object as
+// "unresolvable". Wait for both, and for a viewport that actually initialised.
+let openSceneDone = false
+watch(
+  () => [isReady.value, assetStore.assetsLoaded, initError.value] as const,
+  ([ready, assetsLoaded, err]) => {
+    if (openSceneDone || !props.openSceneId || err || !ready || !assetsLoaded) return
+    openSceneDone = true
+    void onLoadScene(props.openSceneId)
+  },
+  { immediate: true },
+)
 
 onUnmounted(() => {
   clearTimeout(flashTimer)
