@@ -32,6 +32,7 @@ export { default as WaypointEditorHUD } from './editor/WaypointEditorHUD.vue'
 export { default as SceneEditorView } from './editor/SceneEditorView.vue'
 export { useSceneEditorViewport } from './editor/useSceneEditorViewport'
 export type { SceneEditorViewportReturn } from './editor/useSceneEditorViewport'
+export type { NpcDisplayEntry, PoseOverrideEntry } from './editor/npc/npcDisplayRegistry'
 export type {
   SceneEditorConfig,
   SceneEditorEntry,
@@ -60,6 +61,9 @@ export type { LoadedRoomPackage } from './editor/loadRoomPackage'
 export { importRoomPackageToDb } from './editor/importRoomPackage'
 export type { ImportRoomPackageResult } from './editor/importRoomPackage'
 export type { RoomPackageManifest, RoomPackageScene } from './editor/roomPackageTypes'
+// NPC placement rule shared by the editor display model and the room player (E5).
+export { npcTransform, entryScale } from './editor/pose/npcPlacement'
+export type { NpcPlacementEntry, NpcTransform } from './editor/pose/npcPlacement'
 
 // ── Asset Pipeline ───────────────────────────────────────────────────────────
 // Editor asset registry (IndexedDB) — see docs/ASSET-PIPELINE.md.

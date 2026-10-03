@@ -226,6 +226,7 @@ import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExp
 import { exportRoomPackage } from './exportRoomPackage'
 import type { SandboxSceneSave } from './sandboxSceneSchema'
 import { assetDb, type AssetKind } from './assetDb'
+import { useNpcDisplaySync } from './npc/useNpcDisplaySync'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import AssetPicker from './AssetPicker.vue'
@@ -343,8 +344,8 @@ const {
   removeZoneMarker,
   removePlacedObject,
   setPlayCharacterAsset,
+  setNpcDisplayEntries,
   attachPoseNpc,
-  setPoseMeshScale,
   selectPoseBone,
   capturePoseSnapshot,
   resetPoseBones,
@@ -365,11 +366,21 @@ const {
   onPathEditCancel: () => {
     isPathEditing.value = false
   },
+  // The borrowed NPC model vanished: reset pose/anim state like an NPC removal does.
+  onPoseMeshLost: () => {
+    resetPoseEditor()
+    activeIkChainName.value = null
+    poseMeshEntityId = null
+    animClear()
+  },
 })
 
 // ─── Asset store (for place mode) ────────────────────────────────────────────
 
 const assetStore = useAssetStore()
+
+// NPC display models (E5): the viewport shows one persistent model per NPC with a resolvable asset.
+useNpcDisplaySync(localNpcs, assetStore, setNpcDisplayEntries)
 
 // ─── Pose editor reactive state (S4) ─────────────────────────────────────────
 
@@ -849,11 +860,6 @@ function onNpcChanged(entityId: string, patch: Partial<EditorNpcEntry>): void {
     poseMeshEntityId = null
     animClear()
   }
-  // Live-scale the attached character mesh so the Scale field drives the model,
-  // not just the persisted value (runtime already honors npc.scale).
-  if ('scale' in patch && poseMeshEntityId === entityId) {
-    setPoseMeshScale(npc.scale ?? 1)
-  }
 }
 
 function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
@@ -878,9 +884,10 @@ async function ensurePoseMeshAttached(): Promise<boolean> {
   if (poseMeshEntityId === sel.entityId && poseBoneList.value.length > 0) return true
   const npc = localNpcs.value.find(n => n.entityId === sel.entityId)
   if (!npc?.assetId) return false
-  const blobUrl = assetStore.resolveBlobUrl(npc.assetId)
-  if (!blobUrl) { flashStatus('Character mesh not in asset store'); return false }
-  const boneNames = await attachPoseNpc(sel.entityId, blobUrl, npc.scale ?? 1)
+  if (!assetStore.resolveBlobUrl(npc.assetId)) { flashStatus('Character mesh not in asset store'); return false }
+  // The model is the NPC's persistent display mesh — attach waits for it if it is still loading.
+  const boneNames = await attachPoseNpc(sel.entityId)
+  if (boneNames === null) return false // superseded by a newer attach, which reports for itself
   if (boneNames.length === 0) { flashStatus('No skeleton found in mesh'); return false }
   setPoseBoneList(boneNames)
   poseMeshEntityId = sel.entityId
