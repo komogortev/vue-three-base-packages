@@ -436,7 +436,7 @@
         :preview-playing="animPreviewPlaying"
         :has-character="hasPoseCharacter"
         :export-busy="animExportBusy"
-        :loadable-clips="availableClips"
+        :loadable-clips="loadableKitClips"
         @scrub="emit('anim-scrub', $event)"
         @key-capture="emit('anim-key-capture', $event)"
         @key-remove="emit('anim-key-remove', $event)"
@@ -444,7 +444,7 @@
         @duration-set="emit('anim-duration-set', $event)"
         @export-clip="emit('anim-export', $event)"
         @add-to-kit="emit('anim-add-to-kit', $event)"
-        @load-existing="emit('anim-load-existing', selectedNpc!.entityId, $event)"
+        @load-existing="(assetId, clipName) => emit('anim-load-existing', selectedNpc!.entityId, assetId, clipName)"
       />
     </div>
 
@@ -537,6 +537,7 @@ import { ref, computed, watch } from 'vue'
 import * as THREE from 'three'
 import { useAssetStore } from './useAssetStore'
 import AnimTimelinePanel from './anim/AnimTimelinePanel.vue'
+import { listLoadableClips } from './anim/loadableClips'
 import type { SceneEditorConfig, EditorSelection, EditorNpcEntry, EditorZoneEntry, PoseBoneNode } from './sceneEditorTypes'
 
 const props = defineProps<{
@@ -614,7 +615,7 @@ const emit = defineEmits<{
   'anim-preview-toggle': []
   'anim-duration-set': [seconds: number]
   'anim-export': [clipName: string]
-  'anim-load-existing': [entityId: string, clipName: string]
+  'anim-load-existing': [entityId: string, assetId: string, clipName: string]
   /** S5-d: append the recorded clip into an existing kit. */
   'anim-add-to-kit': [clipName: string]
   // ─── S5-d: clip audition ──────────────────────────────────────────────────
@@ -734,6 +735,11 @@ const availableClips = computed<string[]>(() => {
   if (!npc?.animationPackAssetId) return []
   return assetStore.getById(npc.animationPackAssetId)?.clipNames ?? []
 })
+
+/** Every animation kit's clips for the Anim tab's picker, the NPC's own pack first. */
+const loadableKitClips = computed(() =>
+  listLoadableClips(assetStore.assets, selectedNpc.value?.animationPackAssetId),
+)
 
 function onAuditionToggle(clip: string): void {
   const npc = selectedNpc.value

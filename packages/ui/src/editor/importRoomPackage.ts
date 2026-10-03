@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid'
 import { unzipSync, strFromU8 } from 'fflate'
 import type { RoomPackageAssetMeta, RoomPackageManifest, RoomPackageScene } from './roomPackageTypes'
 import { assetDb, type AssetKind, type AssetRow, type SceneRow } from './assetDb'
+import { glbAnimationNames } from './glbAnimationNames'
 
 /** One asset file found in a package, before it touches the database. */
 export interface ParsedPackageAsset {
@@ -110,12 +111,15 @@ export function parseRoomPackage(zipBytes: Uint8Array): ParsedRoomPackage {
     const id = basename.slice(0, dot)
     const ext = basename.slice(dot + 1).toLowerCase()
     const m = meta[id]
+    // No sidecar (an older package, or one built by hand): read the names from the GLB so the
+    // clips are visible in the editor. Without them an imported pack lists "No clips found".
+    const derived = m?.clipNames === undefined && ext === 'glb' ? glbAnimationNames(new Uint8Array(data)) : null
     assets.push({
       id,
       name: m?.name ?? basename,
       kind: m?.kind ?? inferred.get(id) ?? 'prop',
       contentType: MIME[ext] ?? 'application/octet-stream',
-      clipNames: m?.clipNames,
+      clipNames: m?.clipNames ?? (derived && derived.length > 0 ? derived : undefined),
       // Copy: unzipSync returns sub-views with a non-zero byteOffset.
       bytes: new Uint8Array(data),
     })

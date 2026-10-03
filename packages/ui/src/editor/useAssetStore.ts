@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { watch } from 'vue'
 import { nanoid } from 'nanoid'
 import * as THREE from 'three'
 
@@ -6,6 +7,7 @@ import { assetDb, type AssetRow, type AssetKind } from './assetDb'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
 import { useLiveQueryHandle } from './useLiveQuery'
 import { generateThumbnail } from './thumbnailGenerator'
+import { backfillClipNames } from './glbAnimationNames'
 import { lintGlb } from './gate/glbLinter'
 import { deriveGlbLintInput } from './glbLintAdapter'
 
@@ -66,6 +68,19 @@ export const useAssetStore = defineStore('assets', () => {
 
   // Session-scoped blob URL cache. Revoked on remove() + page unload.
   const blobUrlCache = new Map<string, string>()
+
+  // Animation packs that arrived without clip names (a scene package imported before the
+  // importer read them from the file) list as "No clips found" and cannot be loaded in the
+  // Anim tab. Repair them once, after the library has really loaded; the live query then
+  // re-emits the filled rows. Idempotent, and a failure only logs.
+  let clipNamesBackfilled = false
+  watch(assetsLoaded, (loaded) => {
+    if (!loaded || clipNamesBackfilled) return
+    clipNamesBackfilled = true
+    void backfillClipNames(assets.value, async (id, clipNames) => {
+      await assetDb.assets.update(id, { clipNames })
+    }).catch((err) => console.warn('[useAssetStore] clip-name backfill failed:', err))
+  }, { immediate: true })
 
   /**
    * Validate, infer kind, extract clip names + thumbnail, persist to Dexie.

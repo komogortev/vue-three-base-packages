@@ -66,6 +66,31 @@ describe('parseRoomPackage', () => {
     expect(prop).toMatchObject({ name: 'rock.glb', kind: 'environment', clipNames: ['a'] })
   })
 
+  it('reads clip names from the GLB when there is no sidecar (an imported pack must list its clips)', () => {
+    const jsonBody = new TextEncoder().encode(JSON.stringify({ asset: { version: '2.0' }, animations: [{ name: 's5c-wave' }, { name: 'idle' }] }))
+    const pad = (4 - (jsonBody.length % 4)) % 4
+    const jsonBytes = new Uint8Array(jsonBody.length + pad).fill(0x20); jsonBytes.set(jsonBody)
+    const glb = new Uint8Array(20 + jsonBytes.length)
+    const dv = new DataView(glb.buffer)
+    dv.setUint32(0, 0x46546c67, true); dv.setUint32(4, 2, true); dv.setUint32(8, glb.length, true)
+    dv.setUint32(12, jsonBytes.length, true); dv.setUint32(16, 0x4e4f534a, true)
+    glb.set(jsonBytes, 20)
+    const files: Record<string, Uint8Array> = {
+      'manifest.json': strToU8(JSON.stringify({ version: 1, sceneLabel: 'x' })),
+      'scene.json': strToU8(JSON.stringify(scene)),
+      'assets/asset-pack.glb': glb,
+      'assets/asset-body.glb': new Uint8Array([1, 2, 3]), // not a GLB: must stay without names, not throw
+    }
+    const p = parseRoomPackage(zipSync(files, { level: 0 }))
+    expect(p.assets.find(a => a.id === 'asset-pack')!.clipNames).toEqual(['s5c-wave', 'idle'])
+    expect(p.assets.find(a => a.id === 'asset-body')!.clipNames).toBeUndefined()
+  })
+
+  it('prefers the sidecar clip names over the file when both exist', () => {
+    const p = parseRoomPackage(makeZip({ sidecar: { 'asset-pack': { name: 'kit.glb', kind: 'animation-pack', clipNames: ['from-sidecar'] } } }))
+    expect(p.assets.find(a => a.id === 'asset-pack')!.clipNames).toEqual(['from-sidecar'])
+  })
+
   it('reports referenced assets the ZIP does not contain', () => {
     const p = parseRoomPackage(makeZip({ assetIds: ['asset-prop', 'asset-body'] }))
     expect(p.missingAssetIds.sort()).toEqual(['asset-audio', 'asset-pack'])
