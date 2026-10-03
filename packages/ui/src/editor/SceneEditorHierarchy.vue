@@ -28,6 +28,16 @@
       <span v-else-if="sceneLabel" class="scene-badge">{{ sceneLabel }}</span>
     </header>
 
+    <!-- Saved scenes that cannot open here (every asset blob missing). The switcher hides
+         them, so without this they would be invisible clutter with no way to remove them.
+         Shown only when there is something to act on. -->
+    <div v-if="unloadable.length > 0" class="unavailable">
+      <button class="unavailable-btn" type="button" :title="unloadableTitle" @click="onRemoveUnavailable">
+        ⚠ {{ unloadable.length }} saved scene{{ unloadable.length === 1 ? '' : 's' }} can't open — Remove…
+      </button>
+      <p v-if="removeError" class="unavailable-error">{{ removeError }}</p>
+    </div>
+
     <!-- Scene tools: view / settings controls, styled as buttons so neither reads as
          a heading for the sections below. -->
     <div class="tools">
@@ -117,10 +127,11 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import AssetLibraryDialog from './AssetLibraryDialog.vue'
 import HierarchySection from './hierarchy/HierarchySection.vue'
 import { sectionForSelection, selectionKey, type HierarchySectionId } from './hierarchy/sectionForSelection'
+import { assetDb } from './assetDb'
 import { useSavedScenes } from './scenes/useSavedScenes'
 import type { EditorNpcEntry, EditorZoneEntry, EditorSelection, EditorPlacedObject, SceneEditorEntry, EditorCamMode } from './sceneEditorTypes'
 
@@ -186,10 +197,53 @@ const libraryOpen = ref(false)
  *
  * Unloadable rows are NOT deleted here. A missing blob is often temporary — the
  * asset is re-uploadable, and Dexie is per-browser-profile, so a scene saved in
- * one browser legitimately looks assetless in another. Removal lives on the
- * Scenes screen (`/scenes`), behind an explicit confirm.
+ * one browser legitimately looks assetless in another. Removal is offered
+ * explicitly below (`onRemoveUnavailable`), behind a per-scene confirm.
  */
-const { rows: savedScenes, loadable: loadableSavedScenes } = useSavedScenes()
+const { rows: savedScenes, loadable: loadableSavedScenes, classified, loaded } = useSavedScenes()
+
+/**
+ * Rows that cannot open. Empty until the asset library has actually loaded:
+ * before that every row classifies `ok`, but an unloaded library is also
+ * indistinguishable from an empty one, and the pessimistic reading would offer to
+ * delete perfectly intact scenes. (Same guard as `useSavedScenes`' own `loaded`.)
+ */
+const unloadable = computed(() =>
+  loaded.value ? classified.value.filter(e => e.availability.status === 'unloadable') : [],
+)
+const unloadableTitle = computed(() =>
+  `Every asset these scenes use is missing in this browser: ${unloadable.value.map(e => e.scene.name).join(', ')}`,
+)
+const removeError = ref<string | null>(null)
+
+/**
+ * Explicit, confirmed, one scene at a time — never automatic. A missing blob is often
+ * recoverable by re-uploading the asset, and Dexie is per browser profile, so a scene
+ * saved in another browser legitimately looks assetless here.
+ */
+async function onRemoveUnavailable(): Promise<void> {
+  removeError.value = null
+  for (const { scene } of unloadable.value) {
+    const ok = window.confirm(
+      `Delete saved scene "${scene.name}" permanently?
+
+` +
+      `Its asset blobs are missing from this browser, so it cannot be opened here. ` +
+      `If the assets were saved in a different browser or profile, the scene is still ` +
+      `intact there — deleting here does not affect it.
+
+This cannot be undone.`,
+    )
+    if (!ok) continue
+    try {
+      await assetDb.scenes.delete(scene.id)
+    } catch (e) {
+      console.error('[Hierarchy] delete failed:', e)
+      removeError.value = `Could not delete "${scene.name}" — see console.`
+      return
+    }
+  }
+}
 
 function onDropdownChange(ev: Event): void {
   const value = (ev.target as HTMLSelectElement).value
@@ -264,6 +318,24 @@ function npcHasPath(entityId: string): boolean {
 }
 .scene-select:hover { border-color: #2a5070; }
 .scene-select option { background: #0d1320; color: #a0b4c8; }
+
+/* ── Unavailable saved scenes ────────────────────────────────────────────── */
+.unavailable { padding: 8px 10px 0; flex-shrink: 0; }
+.unavailable-btn {
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  background: rgba(255, 190, 70, 0.08);
+  border: 1px solid rgba(255, 190, 70, 0.3);
+  border-radius: 5px;
+  color: #d8b060;
+  font-family: inherit;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.unavailable-btn:hover { background: rgba(255, 190, 70, 0.16); }
+.unavailable-error { margin: 4px 0 0; font-size: 10px; color: #ff8a80; }
 
 /* ── Scene tools ──────────────────────────────────────────────────────────── */
 .tools {
