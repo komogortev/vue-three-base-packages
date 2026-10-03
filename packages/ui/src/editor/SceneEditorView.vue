@@ -220,6 +220,7 @@ import { usePoseEditor } from './usePoseEditor'
 import { useAnimRecorder } from './anim/useAnimRecorder'
 import type { PoseBoneSample } from './anim/animationRecorder'
 import { buildAnimPackRow } from './anim/exportAnimPack'
+import { bindNewKitPatch } from './anim/loadableClips'
 import { generateThumbnail } from './thumbnailGenerator'
 import { exportSandboxZip } from './exportSandboxZip'
 import { serializeEditorConfigTS, buildRoomPackageScene } from './SceneEditorExporter'
@@ -1041,8 +1042,19 @@ async function onAnimExport(clipName: string): Promise<void> {
     } catch (err) {
       console.warn('[onAnimExport] thumbnail generation failed:', err)
     }
-    await assetDb.assets.add(buildAnimPackRow(clipName, blob, thumbnail))
-    flashStatus(`Animation kit "${clipName}" saved (${(blob.size / (1024 * 1024)).toFixed(1)} MB)`)
+    const row = buildAnimPackRow(clipName, blob, thumbnail)
+    await assetDb.assets.add(row)
+    // The new kit is a separate library asset; bind it to the NPC it was recorded on when that
+    // NPC has no pack yet, so the clip shows up in its Asset tab and plays in the room player.
+    const sel = selection.value
+    const patch = sel?.kind === 'npc'
+      ? bindNewKitPatch(localNpcs.value.find(n => n.entityId === sel.entityId), row.id)
+      : null
+    if (patch && sel?.kind === 'npc') onNpcChanged(sel.entityId, patch)
+    flashStatus(
+      `Animation kit "${clipName}" saved (${(blob.size / (1024 * 1024)).toFixed(1)} MB)` +
+      (patch ? ' and bound to this NPC' : ''),
+    )
   } catch (err) {
     console.error('[onAnimExport] failed:', err)
     flashStatus('Export failed')

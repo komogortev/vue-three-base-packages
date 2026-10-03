@@ -26,6 +26,19 @@ interface KitLike {
   clipNames?: string[]
 }
 
+/**
+ * What saving a NEW kit should do to the NPC it was recorded on: bind it when the NPC has
+ * no animation pack yet, and leave an NPC that already has one alone (silently swapping a
+ * pack the author chose would change what that NPC plays). `null` = change nothing.
+ */
+export function bindNewKitPatch(
+  npc: { animationPackAssetId?: string } | undefined,
+  kitAssetId: string,
+): { animationPackAssetId: string } | null {
+  if (!npc || npc.animationPackAssetId) return null
+  return { animationPackAssetId: kitAssetId }
+}
+
 export function clipKey(assetId: string, clipName: string): string {
   return `${assetId}::${clipName}`
 }
