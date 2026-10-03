@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { glbAnimationNames, readGlbAnimationNames, backfillClipNames } from '../glbAnimationNames'
-import { listLoadableClips, splitClipKey, clipKey } from '../anim/loadableClips'
+import { listLoadableClips, splitClipKey, clipKey, bindNewKitPatch } from '../anim/loadableClips'
 
 /** A minimal GLB: header + JSON chunk (+ optional trailing bytes standing in for the BIN chunk). */
 function makeGlb(json: object, trailing = 0): Uint8Array {
@@ -125,5 +125,20 @@ describe('listLoadableClips', () => {
   it('round-trips a key, even when the clip name contains the separator', () => {
     expect(splitClipKey(clipKey('asset-1', 'a::b'))).toEqual({ assetId: 'asset-1', clipName: 'a::b' })
     expect(splitClipKey('no-separator')).toBeNull()
+  })
+})
+
+describe('bindNewKitPatch (saving a new kit)', () => {
+  it('binds the new kit to an NPC that has no animation pack', () => {
+    expect(bindNewKitPatch({}, 'asset-new')).toEqual({ animationPackAssetId: 'asset-new' })
+  })
+
+  // Negative controls: an NPC the author already set up must not be re-pointed silently.
+  it('leaves an NPC that already has a pack alone', () => {
+    expect(bindNewKitPatch({ animationPackAssetId: 'asset-chosen' }, 'asset-new')).toBeNull()
+  })
+
+  it('does nothing when there is no NPC to bind', () => {
+    expect(bindNewKitPatch(undefined, 'asset-new')).toBeNull()
   })
 })
