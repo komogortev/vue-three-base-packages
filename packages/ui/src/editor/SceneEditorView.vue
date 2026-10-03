@@ -1051,10 +1051,10 @@ async function onAnimExport(clipName: string): Promise<void> {
   }
 }
 
-async function onAnimLoadExisting(entityId: string, clipName: string): Promise<void> {
+async function onAnimLoadExisting(entityId: string, packAssetId: string, clipName: string): Promise<void> {
   if (animExportBusy.value) return
   const npc = localNpcs.value.find(n => n.entityId === entityId)
-  if (!npc?.animationPackAssetId) { flashStatus('No animation pack bound'); return }
+  if (!npc) return
   if (!npc.assetId) { flashStatus('Bind a character mesh to load a clip'); return }
   // Reuse the export-busy flag: it disables the Load button too, so a slow
   // first-load pack parse can't queue overlapping loads on rapid clicks.
@@ -1062,7 +1062,9 @@ async function onAnimLoadExisting(entityId: string, clipName: string): Promise<v
   try {
     // The pose mesh is what the loaded clip must resolve against + re-export from.
     if (!(await ensurePoseMeshAttached())) return
-    const url = assetStore.resolveBlobUrl(npc.animationPackAssetId)
+    // Any kit in the library, not only the NPC's bound pack: loading resolves the clip against
+    // this NPC's skeleton and refuses a kit authored for a different one.
+    const url = assetStore.resolveBlobUrl(packAssetId)
     if (!url) { flashStatus('Pack unavailable'); return }
     const result = await loadPackClipForEdit(url, clipName)
     if (!result.ok) { flashStatus(result.reason); return }
