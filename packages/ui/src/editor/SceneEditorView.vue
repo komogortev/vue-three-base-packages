@@ -1431,10 +1431,10 @@ kbd {
 /* ── Transform toolbar ────────────────────────────────────────────────────── */
 .transform-toolbar {
   position: absolute;
-  top: 38px;  /* shifted down to clear the camera buttons row */
+  top: 40px;  /* shifted down to clear the camera buttons row */
   right: 10px;
   display: flex;
-  gap: 4px;
+  gap: 6px;
 }
 
 .tb-btn {
@@ -1443,10 +1443,11 @@ kbd {
   border: 1px solid #1a3050;
   border-radius: 4px;
   font-family: monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: bold;
-  width: 24px;
-  height: 24px;
+  /* 32 px: 24 px was a small target to hit on the first try */
+  width: 32px;
+  height: 32px;
   cursor: pointer;
   display: flex;
   align-items: center;

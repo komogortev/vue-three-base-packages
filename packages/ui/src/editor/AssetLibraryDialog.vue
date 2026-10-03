@@ -260,8 +260,13 @@ function formatBytes(n: number): string {
   border: 1px solid #182a40;
   border-radius: 6px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.65);
-  display: flex;
   flex-direction: column;
+}
+/* Only while open. An unconditional `display: flex` here overrides the browser's
+   `dialog:not([open]) { display: none }`, so the closed dialog stayed laid out
+   (560 x 202 px) and swallowed clicks over the canvas and the inspector's edge. */
+.asset-lib-dialog[open] {
+  display: flex;
 }
 .asset-lib-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
