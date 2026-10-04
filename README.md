@@ -22,10 +22,10 @@ It is a pnpm workspace. All packages are `@base/*` at version 0.1.0, written in 
 | `@base/input` | Keyboard, gamepad and touch mapped to game-agnostic actions; ability slots and rebinding |
 | `@base/physics` | Rapier-backed queries: trimesh collision, sphere penetration, static map registration |
 | `@base/audio` | Web Audio spatial audio, music layers and crossfade, SFX |
-| `@base/pwa-core` | Service worker registration, offline handling, install prompt |
-| `@base/ui` | Vue 3 components: the scene editor (`SceneEditorView`), waypoint editor, input settings |
+| `@base/pwa-core` | Placeholder: exports nothing yet |
+| `@base/ui` | Vue 3 components: the scene editor (`SceneEditorView`), waypoint editor, asset library |
 
-`dist/` is gitignored, so run `pnpm build` before linking the packages into an app.
+Each package has its own README listing its exports. `dist/` is gitignored, so run `pnpm build` before linking the packages into an app.
 
 ## Build and test
 
