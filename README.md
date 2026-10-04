@@ -56,4 +56,6 @@ GitHub Packages, but nothing here depends on a published release.
 
 ## License
 
-[MIT](./LICENSE).
+The source code is [MIT](./LICENSE) licensed. The Mixamo animation files under
+`packages/player-three/assets/fbx/` (37 FBX files, about 150 MB) are third-party assets that keep their own
+terms and are not covered by it.
