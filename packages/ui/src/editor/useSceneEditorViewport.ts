@@ -186,6 +186,23 @@ function liveTransformOf(o: THREE.Object3D): PlacedTransform {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+/** The scene object a gizmo drag moved (PP-1). Bones and IK targets are not scene objects. */
+export type GestureTarget =
+  | { kind: 'placed'; objectId: string }
+  | { kind: 'npc'; entityId: string }
+  | { kind: 'zone'; id: string }
+
+/**
+ * A placed object taken out of the scene but kept whole (meshes not disposed), so an
+ * undo can put it back without reloading its GLB. Release it with `disposePlacedHandle`
+ * once nothing can bring it back.
+ */
+export interface PlacedHandle {
+  readonly id: string
+  /** The record with the transform it had when it was taken out. */
+  readonly record: EditorPlacedObject
+}
+
 export interface SceneEditorViewportReturn {
   isReady: Readonly<Ref<boolean>>
   /** Fatal viewport-init failure message (e.g. WebGL unavailable), else null. */
@@ -232,6 +249,19 @@ export interface SceneEditorViewportReturn {
   removeZoneMarker: (id: string) => void
   /** Remove a placed object from the scene and placedObjects list. */
   removePlacedObject: (objectId: string) => void
+  // ─── Scene commands (PP-1) ───────────────────────────────────────────────
+  /** A placed object's live transform, or null when it is not in the scene. */
+  getPlacedTransform: (objectId: string) => PlacedTransform | null
+  /** Set a placed object's transform (undo / redo of a move). */
+  setPlacedTransform: (objectId: string, t: PlacedTransform) => void
+  /** Take a placed object out of the scene without disposing it; null when absent. */
+  detachPlacedObject: (objectId: string) => PlacedHandle | null
+  /** Put a detached placed object back, at its old place in the list. False when its id is taken. */
+  reattachPlacedObject: (handle: PlacedHandle) => boolean
+  /** Dispose a detached placed object's meshes (it can no longer come back). */
+  disposePlacedHandle: (handle: PlacedHandle) => void
+  /** Forget a pending bone / IK Ctrl+Z slot (a newer scene edit was recorded). */
+  discardPoseGesture: () => void
   /**
    * D-5b: Set play-sim character GLB. Pass null blobUrl to revert to capsule proxy.
    * Call when user picks or clears the player character in the Scene inspector.
@@ -315,6 +345,21 @@ export function useSceneEditorViewport(opts: {
    * animation and bone-list state, as it does for an NPC removal.
    */
   onPoseMeshLost?: () => void
+  /**
+   * PP-1 routing. When given, a gizmo drag on a placed object, NPC or zone is reported
+   * here at its start and end (the host records it as a command) instead of filling
+   * the single Ctrl+Z slot, which then serves bone / IK drags only.
+   */
+  onGesture?: (phase: 'start' | 'end', target: GestureTarget) => void
+  /** Called once a dropped asset has been placed (the host records it). */
+  onPlaced?: (object: EditorPlacedObject) => void
+  /**
+   * Ctrl+Z / Ctrl+Shift+Z (or Ctrl+Y) when no bone / IK drag is pending. Without it,
+   * Ctrl+Z keeps reverting the last gizmo drag only.
+   */
+  onHistoryKey?: (action: 'undo' | 'redo') => void
+  /** Delete / Backspace on a placed object. Without it, the object is removed directly. */
+  onDeleteSelected?: (selection: EditorSelection) => void
 }): SceneEditorViewportReturn {
   const { canvas: canvasRef } = opts
 
@@ -435,6 +480,8 @@ export function useSceneEditorViewport(opts: {
   let lastGestureTarget: THREE.Object3D | null = null
   /** True while a gizmo drag is in progress — Ctrl+Z must not fire mid-drag. */
   let gizmoDragActive = false
+  /** The scene object of the drag in progress, when the host routes drags (PP-1). */
+  let activeGesture: GestureTarget | null = null
 
   // Delta time
   const clock = new THREE.Clock()
@@ -516,8 +563,21 @@ export function useSceneEditorViewport(opts: {
       if (dragging) {
         const o = transformControls.object
         if (o) gestureStartScale.copy(o.scale)
-        snapshotGesture()
+        const target = o && opts.onGesture ? gestureTargetOf(o) : null
+        if (target) {
+          // A scene object: the host records the drag as a command (PP-1).
+          activeGesture = target
+          discardPoseGesture()
+          opts.onGesture!('start', target)
+        } else {
+          snapshotGesture()
+        }
       } else {
+        if (activeGesture) {
+          const target = activeGesture
+          activeGesture = null
+          opts.onGesture!('end', target)
+        }
         // A model that finished loading mid-drag was skipped by the re-attach; retry now.
         ensureNpcGizmoTarget()
       }
@@ -768,35 +828,89 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  function removePlacedObject(objectId: string): void {
-    const root = placedMeshRoots.get(objectId)
-    if (root) {
-      // Invalidate a captured gesture that targets the object being destroyed
-      // (leave gestures on other objects intact)
-      if (lastGestureTarget === root) {
-        lastGestureRestore = null
-        lastGestureTarget = null
+  function disposePlacedRoot(root: THREE.Object3D): void {
+    root.traverse(child => {
+      const mesh = child as THREE.Mesh
+      if (mesh.isMesh) {
+        mesh.geometry?.dispose()
+        const mat = mesh.material
+        if (Array.isArray(mat)) mat.forEach(m => m.dispose())
+        else (mat as THREE.Material)?.dispose()
       }
-      root.traverse(child => {
-        const mesh = child as THREE.Mesh
-        if (mesh.isMesh) {
-          mesh.geometry?.dispose()
-          const mat = mesh.material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material)?.dispose()
-        }
-      })
-      placedGroup.remove(root)
+    })
+  }
+
+  /** Internal handle: the public one plus the THREE objects and list position. */
+  interface PlacedHandleImpl extends PlacedHandle {
+    root: THREE.Group
+    hitBox: THREE.Mesh | undefined
+    index: number
+  }
+
+  function detachPlacedObject(objectId: string): PlacedHandle | null {
+    const root = placedMeshRoots.get(objectId)
+    const index = placedObjects.value.findIndex(p => p.id === objectId)
+    if (!root || index < 0) return null
+    // Invalidate a captured gesture that targets the object being taken out
+    // (leave gestures on other objects intact)
+    if (lastGestureTarget === root) {
+      lastGestureRestore = null
+      lastGestureTarget = null
     }
+    const record = withTransform(placedObjects.value[index], liveTransformOf(root))
+    const handle: PlacedHandleImpl = { id: objectId, record, root, hitBox: placedHitBoxes.get(objectId), index }
+    placedGroup.remove(root)
     placedMeshRoots.delete(objectId)
     placedHitBoxes.delete(objectId)
     placedObjects.value = placedObjects.value.filter(p => p.id !== objectId)
     if (selection.value?.kind === 'placed' && selection.value.objectId === objectId) {
       setSelection({ kind: 'scene' })
-    } else if (root && transformControls.object === root) {
+    } else if (transformControls.object === root) {
       transformControls.detach()
       transformControls.enabled = false
     }
+    return handle
+  }
+
+  function reattachPlacedObject(handle: PlacedHandle): boolean {
+    const h = handle as PlacedHandleImpl
+    if (placedMeshRoots.has(h.id)) return false
+    applyPlacedTransform(h.root, transformOf(h.record))
+    placedGroup.add(h.root)
+    placedMeshRoots.set(h.id, h.root)
+    if (h.hitBox) placedHitBoxes.set(h.id, h.hitBox)
+    const list = [...placedObjects.value]
+    list.splice(Math.min(h.index, list.length), 0, h.record)
+    placedObjects.value = list
+    return true
+  }
+
+  function disposePlacedHandle(handle: PlacedHandle): void {
+    const h = handle as PlacedHandleImpl
+    // Still (or again) in the scene: not ours to dispose.
+    if (placedMeshRoots.get(h.id) === h.root) return
+    disposePlacedRoot(h.root)
+  }
+
+  function removePlacedObject(objectId: string): void {
+    const handle = detachPlacedObject(objectId) as PlacedHandleImpl | null
+    if (handle) disposePlacedRoot(handle.root)
+  }
+
+  function applyPlacedTransform(root: THREE.Object3D, t: PlacedTransform): void {
+    root.position.set(t.position.x, t.position.y, t.position.z)
+    root.rotation.set(t.rotation.x, t.rotation.y, t.rotation.z)
+    root.scale.set(t.scale.x, t.scale.y, t.scale.z)
+  }
+
+  function getPlacedTransform(objectId: string): PlacedTransform | null {
+    const root = placedMeshRoots.get(objectId)
+    return root ? liveTransformOf(root) : null
+  }
+
+  function setPlacedTransform(objectId: string, t: PlacedTransform): void {
+    const root = placedMeshRoots.get(objectId)
+    if (root) applyPlacedTransform(root, t)
   }
 
   // ─── reinitScene — public API for scene switcher ──────────────────────────────
@@ -1045,6 +1159,26 @@ export function useSceneEditorViewport(opts: {
         return
       }
     }
+  }
+
+  /** The scene object a gizmo drag on `obj` moves, or null for a bone / IK target. */
+  function gestureTargetOf(obj: THREE.Object3D): GestureTarget | null {
+    if (poseHasBoneAttached || ikActiveChainName !== null) return null
+    for (const [objectId, root] of placedMeshRoots) {
+      if (root === obj) return { kind: 'placed', objectId }
+    }
+    for (const [entityId, root] of markers.npcRootEntries()) {
+      if (root === obj || npcDisplay.get(entityId)?.root === obj) return { kind: 'npc', entityId }
+    }
+    for (const [id, root] of markers.zoneRootEntries()) {
+      if (root === obj) return { kind: 'zone', id }
+    }
+    return null
+  }
+
+  function discardPoseGesture(): void {
+    lastGestureRestore = null
+    lastGestureTarget = null
   }
 
   /** Capture the pre-drag state of whatever TC is about to mutate. */
@@ -1591,16 +1725,15 @@ export function useSceneEditorViewport(opts: {
     placedMeshRoots.set(objectId, root)
     placedHitBoxes.set(objectId, hitBox)
 
-    placedObjects.value = [
-      ...placedObjects.value,
-      makePlacedObject(
-        { id: objectId, assetId, label },
-        { ...IDENTITY_PLACED_TRANSFORM, position: { x: pos.x, y: pos.y, z: pos.z } },
-      ),
-    ]
+    const record = makePlacedObject(
+      { id: objectId, assetId, label },
+      { ...IDENTITY_PLACED_TRANSFORM, position: { x: pos.x, y: pos.y, z: pos.z } },
+    )
+    placedObjects.value = [...placedObjects.value, record]
 
     // Auto-select the freshly placed object
     setSelection({ kind: 'placed', objectId })
+    opts.onPlaced?.(record)
   }
 
   // ─── Restore placed objects (load saved scene) ───────────────────────────────
@@ -1986,8 +2119,17 @@ export function useSceneEditorViewport(opts: {
     // Ctrl+Z: revert the last gizmo drag. Orbit-only (same gate as T/R/S —
     // Ctrl is the descend key in free-float); path-edit mode owns its own
     // Ctrl+Z (waypoint pop in the inspector) — stay out of its way.
-    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !pathEditActive && editorCamMode.value === 'orbit') {
-      if (revertLastGesture()) e.preventDefault()
+    // Without `onHistoryKey` only Ctrl+Z exists (Shift ignored), exactly as before PP-1.
+    const routed = !!opts.onHistoryKey
+    const historyKey = (e.ctrlKey || e.metaKey) && (e.code === 'KeyZ' || (routed && e.code === 'KeyY'))
+    if (historyKey && !pathEditActive && editorCamMode.value === 'orbit') {
+      const redo = routed && (e.code === 'KeyY' || e.shiftKey)
+      // A pending bone / IK drag is the newest edit (any scene edit discards it).
+      if (!redo && revertLastGesture()) { e.preventDefault(); return }
+      if (opts.onHistoryKey && !gizmoDragActive) {
+        e.preventDefault()
+        opts.onHistoryKey(redo ? 'redo' : 'undo')
+      }
       return
     }
 
@@ -2020,9 +2162,10 @@ export function useSceneEditorViewport(opts: {
       if (e.code === 'KeyT') setTransformMode('translate')
       if (e.code === 'KeyR') setTransformMode('rotate')
       if (e.code === 'KeyS') setTransformMode('scale')
-      if (e.code === 'Delete' || e.code === 'Backspace') {
+      if ((e.code === 'Delete' || e.code === 'Backspace') && !gizmoDragActive) {
         if (selection.value?.kind === 'placed') {
-          removePlacedObject(selection.value.objectId)
+          if (opts.onDeleteSelected) opts.onDeleteSelected(selection.value)
+          else removePlacedObject(selection.value.objectId)
           return
         }
       }
@@ -2195,6 +2338,12 @@ export function useSceneEditorViewport(opts: {
     addZoneMarker,
     removeZoneMarker,
     removePlacedObject,
+    getPlacedTransform,
+    setPlacedTransform,
+    detachPlacedObject,
+    reattachPlacedObject,
+    disposePlacedHandle,
+    discardPoseGesture,
     setPlayCharacterAsset,
     setNpcDisplayEntries,
     attachPoseNpc,
