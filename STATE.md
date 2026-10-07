@@ -1,11 +1,11 @@
 # STATE.md — SHARED (@base/* packages)
 
 ## SNAPSHOT
-Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-07 — #57 (E12, gizmo drives the NPC model) merged `d658f67`; **PP-1 scene commands** on `feat/ui-scene-commands`: one routing point for NPC / zone / placed edits with multi-step undo/redo (Track P, `../docs/PLAN-EDITOR-PROMPT-PANEL-2026-10-07.md`); **345 vitest**.
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-07 — #57 (E12, gizmo drives the NPC model) merged `d658f67`; **PP-1 scene commands** (#63, open): one routing point for NPC / zone / placed edits with multi-step undo/redo (Track P); **placed-object cluster extracted** to L1 `placement/placedRegistry` (stacked on #63; composable 2,362 → 2,175); **359 vitest**.
 Working: all packages build; editor decomposition stages 1+2 plus `npc/` L1 registry, L0 `pose/npcPlacement` + `pose/npcGizmo`, `commands/` (L0 `sceneCommand` + `editorHistory`, `useSceneCommands`, `useEditorCommands`); `hierarchy/HierarchySection`; `importRoomPackageToDb`; L0 gate + F-G5 linter; S5 recorder; `@base/physics`.
 Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested · L0 gate green **by construction** until PP-3 authors `attachment` · `resetPoseBones` uses `Skeleton.pose()` · zone ring ignores a radius edit (pre-existing) · placing a dropped asset is recorded but not browser-verified (hidden pane).
 Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
-Next: merge PP-1, then **extract the placed-object cluster** from `useSceneEditorViewport.ts` (2,362 lines, +146 in PP-1; the gate's growth signal) **before PP-2** scene description. Then PP-3…PP-6. Never rebase `d3c5762` in.
+Next: owner pass + merge #63, then the extraction PR; then **PP-2** scene description → PP-3…PP-6. Gate baseline (2,023) predates #57; re-baselining is an owner call. Never rebase `d3c5762` in.
 History: detail and prior status below; full history in git.
 
 ---
