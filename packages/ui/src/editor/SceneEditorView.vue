@@ -214,7 +214,8 @@ import { ref, computed, watch, toRaw } from 'vue'
 import { onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
 import { nanoid } from 'nanoid'
-import { useSceneEditorViewport } from './useSceneEditorViewport'
+import { useSceneEditorViewport, type NpcLiveTransform } from './useSceneEditorViewport'
+import { entriesToApply } from './pose/npcGizmo'
 import { useAssetStore } from './useAssetStore'
 import { usePoseEditor } from './usePoseEditor'
 import { useAnimRecorder } from './anim/useAnimRecorder'
@@ -530,10 +531,19 @@ watch(selection, (s) => {
 
 // ─── TC drag → local NPC / zone position sync ────────────────────────────────
 
+// Only ids published since the last pass: the map is replaced wholesale on every publish,
+// and re-applying every entry would let a stale gizmo-published rotation/scale overwrite
+// a value typed in the inspector (see entriesToApply).
+const appliedNpcLive = new Map<string, NpcLiveTransform>()
 watch(npcLivePositions, (positions) => {
-  for (const [id, pos] of positions) {
+  for (const [id, pos] of entriesToApply(positions, appliedNpcLive)) {
     const npc = localNpcs.value.find(n => n.entityId === id)
-    if (npc) { npc.x = pos.x; npc.z = pos.z }
+    if (!npc) continue
+    npc.x = pos.x
+    npc.z = pos.z
+    // Present once the NPC has a model the gizmo is driving (E12).
+    if (pos.rotationY !== undefined) npc.rotationY = pos.rotationY
+    if (pos.scale !== undefined) npc.scale = pos.scale
   }
 }, { deep: false })
 

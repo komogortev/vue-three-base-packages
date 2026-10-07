@@ -185,7 +185,9 @@ function applyTransform(d: MutableDisplay, entry: NpcPlacementEntry): void {
   const t = placementFor(d.baseScale, entry)
   d.root.scale.setScalar(t.scale)
   d.root.position.set(t.position.x, t.position.y, t.position.z)
-  d.root.rotation.y = t.rotationY
+  // Full reset, not just `.y`: a gizmo writes the quaternion, and for a yaw past 90 deg the
+  // Euler it decomposes to has x = z = pi. Setting only `.y` would leave the model upside down.
+  d.root.rotation.set(0, t.rotationY, 0)
 }
 
 /** Every skinned mesh in a model: a character may be split into body / head / hair rigs. */

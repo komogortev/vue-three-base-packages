@@ -19,6 +19,7 @@ import { fitScaleFor } from './pose/characterFit'
 import { nextCamMode } from './camera/camModes'
 import { createMarkerRegistry } from './markers/markerRegistry'
 import { createNpcDisplayRegistry, type NpcDisplayEntry } from './npc/npcDisplayRegistry'
+import { gizmoAxes, yawDegrees, entryScaleFor, roundScale, changedYaw, changedScale, uniformScaleFrom, MIN_ENTRY_SCALE, type GizmoMode, type GizmoTarget } from './pose/npcGizmo'
 import { PosePreviewMixer } from './anim/posePreviewMixer'
 import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/exportAnimPack'
 import type { PoseBoneSample } from './anim/animationRecorder'
@@ -26,6 +27,19 @@ import { validatePlacement, summarizeVerdicts, type GateSummary } from './gate/a
 import { toMat4 } from './gate/verdict'
 import type { Aabb, Mat4, Vec3 } from './gate/verdict'
 export type { EditorCamMode } from './sceneEditorTypes'
+
+/**
+ * Live NPC transform published while the gizmo drags. `rotationY` (degrees) and
+ * `scale` are present once the NPC has a display model; the host writes whatever is
+ * present to the entry. Before a model exists only the marker position is known.
+ */
+export interface NpcLiveTransform {
+  x: number
+  y: number
+  z: number
+  rotationY?: number
+  scale?: number
+}
 
 /** A saved placed object with its blob URL resolved — input to restorePlacedObjects. */
 export type RestorableObject = SavedPlacedObject & { blobUrl: string }
@@ -186,7 +200,7 @@ export interface SceneEditorViewportReturn {
   /** True while waiting for a floor click to place an asset. */
   isInPlaceMode: Readonly<Ref<boolean>>
   /** Live NPC world positions — updated every TC objectChange tick. */
-  npcLivePositions: Readonly<Ref<Map<string, { x: number; y: number; z: number }>>>
+  npcLivePositions: Readonly<Ref<Map<string, NpcLiveTransform>>>
   /** Live zone world positions — updated every TC objectChange tick. */
   zoneLivePositions: Readonly<Ref<Map<string, { x: number; z: number }>>>
   /** Set selection from the hierarchy panel (bypasses click raycasting). */
@@ -356,7 +370,7 @@ export function useSceneEditorViewport(opts: {
   let placeMode: PlaceMode = { ...PLACE_MODE_IDLE }
 
   // Live positions — updated by TC objectChange; drives inspector two-way binding
-  const npcLivePositions = ref<Map<string, { x: number; y: number; z: number }>>(new Map())
+  const npcLivePositions = ref<Map<string, NpcLiveTransform>>(new Map())
   const zoneLivePositions = ref<Map<string, { x: number; z: number }>>(new Map())
 
   // Per-NPC path visualization
@@ -499,14 +513,31 @@ export function useSceneEditorViewport(opts: {
       const dragging = (e as unknown as { value: boolean }).value
       controls.enabled = !dragging
       gizmoDragActive = dragging
-      if (dragging) snapshotGesture()
+      if (dragging) {
+        const o = transformControls.object
+        if (o) gestureStartScale.copy(o.scale)
+        snapshotGesture()
+      } else {
+        // A model that finished loading mid-drag was skipped by the re-attach; retry now.
+        ensureNpcGizmoTarget()
+      }
     })
 
     // Enforce uniform scale in scale mode + sync live positions for inspector reactivity.
     transformControls.addEventListener('objectChange', () => {
       if (transformMode.value === 'scale') {
         const obj = transformControls.object
-        if (obj) { const s = obj.scale.x; obj.scale.set(s, s, s) }
+        if (obj) {
+          let s = uniformScaleFrom(obj.scale, gestureStartScale)
+          // On an NPC model the handle can cross the origin and go negative, which
+          // mirrors the mesh; keep the model itself above the authored minimum, so the
+          // model and the published entry cannot disagree.
+          const sel = selection.value
+          if (gizmoTarget === 'npc-model' && sel?.kind === 'npc') {
+            s = Math.max(s, MIN_ENTRY_SCALE * (npcDisplay.get(sel.entityId)?.baseScale ?? 1))
+          }
+          obj.scale.set(s, s, s)
+        }
       }
 
       // IK: TC is on an IK target sphere — run solver to update bone chain
@@ -891,16 +922,98 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Gesture revert (Ctrl+Z, single slot) ────────────────────────────────────
 
-  /** Mirror the TC-selected marker's transform into the live-position maps. */
+  /**
+   * Publish an NPC's live transform to the host (which writes it to the entry).
+   * The model is the source of truth once it exists: the gizmo drives it, so its
+   * position, yaw and scale are what the author authored. The marker is an
+   * identification pin: it follows the model's XZ and is never rotated or scaled.
+   */
+  function publishNpcLive(entityId: string): void {
+    const marker = markers.npcRoot(entityId)
+    const model = npcDisplay.get(entityId)
+    let live: NpcLiveTransform
+    if (model) {
+      const r = model.root
+      // Only what the gesture changed: a translate-only drag must not rewrite an authored
+      // rotationY / scale as a rounded or normalised value.
+      const entry = npcDisplayDesired.find(n => n.entityId === entityId)
+      live = {
+        x: r.position.x,
+        y: r.position.y,
+        z: r.position.z,
+        rotationY: changedYaw(yawDegrees(r.quaternion), entry?.rotationY),
+        scale: changedScale(entryScaleFor(r.scale.x, model.baseScale), entry?.scale),
+      }
+      marker?.position.set(r.position.x, marker.position.y, r.position.z)
+    } else if (marker) {
+      live = { x: marker.position.x, y: marker.position.y, z: marker.position.z }
+    } else {
+      return
+    }
+    const next = new Map(npcLivePositions.value)
+    next.set(entityId, live)
+    npcLivePositions.value = next
+  }
+
+  /** Scale of the gizmo target when the current drag began (see `uniformScaleFrom`). */
+  const gestureStartScale = new THREE.Vector3(1, 1, 1)
+
+  /** What the gizmo is currently attached to (restricts the handles). */
+  let gizmoTarget: GizmoTarget = 'other'
+
+  function applyGizmoAxes(): void {
+    // The TC's own mode, not `transformMode`: selecting a bone forces 'rotate' without
+    // touching `transformMode`, and the handles must follow what is on screen.
+    const a = gizmoAxes(transformControls.mode as GizmoMode, gizmoTarget)
+    transformControls.showX = a.x
+    transformControls.showY = a.y
+    transformControls.showZ = a.z
+  }
+
+  /**
+   * The one place the gizmo is attached to a scene object. `onNpcModel` limits the
+   * handles to what an NPC entry can store; every other target gets all three axes
+   * back, so selecting a bone or zone after an NPC never inherits the limits.
+   */
+  function attachGizmo(obj: THREE.Object3D, target: GizmoTarget = 'other'): void {
+    transformControls.attach(obj)
+    gizmoTarget = target
+    applyGizmoAxes()
+  }
+
+  /**
+   * Attach the gizmo for a selected NPC: its display model once loaded (so Move /
+   * Rotate / Scale act on what the author sees), else the marker pin as a fallback
+   * for an NPC with no model yet.
+   */
+  function attachNpcGizmo(entityId: string): boolean {
+    const model = npcDisplay.get(entityId)?.root
+    const target = model ?? markers.npcRoot(entityId)
+    if (!target) return false
+    // Follow the toolbar: a bone or IK edit may have left the TC in its own mode.
+    transformControls.setMode(transformMode.value)
+    attachGizmo(target, model ? 'npc-model' : 'npc-marker')
+    transformControls.enabled = true
+    return true
+  }
+
+  /**
+   * Put the gizmo where the selected NPC's handle belongs, if it is not already there:
+   * on a model that just loaded (it was on the marker pin) or after the model it was on
+   * was replaced. Not while a bone / IK target holds the gizmo or a drag is in progress.
+   */
+  function ensureNpcGizmoTarget(): void {
+    const sel = selection.value
+    if (sel?.kind !== 'npc' || poseHasBoneAttached || ikActiveChainName !== null || gizmoDragActive) return
+    const want = npcDisplay.get(sel.entityId)?.root ?? markers.npcRoot(sel.entityId)
+    if (want && transformControls.object !== want) attachNpcGizmo(sel.entityId)
+  }
+
+  /** Mirror the TC-selected object's transform into the live-position maps. */
   function syncSelectedLivePosition(): void {
     const sel = selection.value
     if (sel?.kind === 'npc') {
-      const root = markers.npcRoot(sel.entityId)
-      if (root) {
-        const next = new Map(npcLivePositions.value)
-        next.set(sel.entityId, { x: root.position.x, y: root.position.y, z: root.position.z })
-        npcLivePositions.value = next
-      }
+      publishNpcLive(sel.entityId)
     } else if (sel?.kind === 'zone') {
       const root = markers.zoneRoot(sel.id)
       if (root) {
@@ -919,10 +1032,8 @@ export function useSceneEditorViewport(opts: {
    */
   function syncLivePositionForRoot(root: THREE.Object3D): void {
     for (const [id, r] of markers.npcRootEntries()) {
-      if (r === root) {
-        const next = new Map(npcLivePositions.value)
-        next.set(id, { x: root.position.x, y: root.position.y, z: root.position.z })
-        npcLivePositions.value = next
+      if (r === root || npcDisplay.get(id)?.root === root) {
+        publishNpcLive(id)
         return
       }
     }
@@ -998,9 +1109,7 @@ export function useSceneEditorViewport(opts: {
       // Re-attach TC to the NPC marker if that NPC is still selected
       const sel = selection.value
       if (sel?.kind === 'npc') {
-        const root = markers.npcRoot(sel.entityId)
-        if (root) { transformControls.attach(root); transformControls.enabled = true }
-        else transformControls.enabled = false
+        if (!attachNpcGizmo(sel.entityId)) transformControls.enabled = false
       } else {
         transformControls.enabled = false
       }
@@ -1055,6 +1164,24 @@ export function useSceneEditorViewport(opts: {
     // Reconcile has already moved existing models (its diff is synchronous). The IK
     // spheres were placed in world space at attach, so follow the borrowed model.
     if (poseAttachedEntityId) syncIkSpheres()
+    // A model the gizmo was on may have just been removed (asset swap) while its
+    // replacement is still loading. Reconcile removes synchronously; waiting for the
+    // load would leave the gizmo on a root with no parent for the whole parse (three
+    // logs every frame, and grabbing a handle throws). Re-home it now, falling back to
+    // the marker, and drop a Ctrl+Z slot that points at the removed root.
+    // `transformControls` does not exist until init() runs: the host's immediate watcher
+    // calls this during component setup, before the viewport is mounted.
+    const held = transformControls?.object
+    if (held && !held.parent) {
+      if (lastGestureTarget === held) { lastGestureRestore = null; lastGestureTarget = null }
+      const sel = selection.value
+      if (sel?.kind === 'npc' && !poseHasBoneAttached && ikActiveChainName === null) {
+        if (!attachNpcGizmo(sel.entityId)) { transformControls.detach(); transformControls.enabled = false }
+      } else {
+        transformControls.detach()
+        transformControls.enabled = false
+      }
+    }
     return done.then(() => {
       // The borrowed model was removed or replaced (its asset left the library):
       // every decoration and handle the pose editor holds now points off-scene.
@@ -1062,6 +1189,8 @@ export function useSceneEditorViewport(opts: {
         detachPoseNpc()
         opts.onPoseMeshLost?.()
       }
+      // The selected NPC's model may have just loaded: move the gizmo off the marker pin.
+      ensureNpcGizmoTarget()
     })
   }
 
@@ -1121,7 +1250,7 @@ export function useSceneEditorViewport(opts: {
     if (!bone) return
     transformControls.detach()
     transformControls.setMode('rotate')
-    transformControls.attach(bone)
+    attachGizmo(bone)
     transformControls.enabled = true
     poseHasBoneAttached = true
     ikActiveChainName = null
@@ -1132,7 +1261,7 @@ export function useSceneEditorViewport(opts: {
     if (!sphere || !poseSkinnedMesh) return
     transformControls.detach()
     transformControls.setMode('translate')
-    transformControls.attach(sphere)
+    attachGizmo(sphere)
     transformControls.enabled = true
     poseHasBoneAttached = false
     ikActiveChainName = chainName
@@ -1170,9 +1299,7 @@ export function useSceneEditorViewport(opts: {
       transformControls.setMode(transformMode.value)
       const sel = selection.value
       if (sel?.kind === 'npc') {
-        const root = markers.npcRoot(sel.entityId)
-        if (root) { transformControls.attach(root); transformControls.enabled = true }
-        else transformControls.enabled = false
+        if (!attachNpcGizmo(sel.entityId)) transformControls.enabled = false
       } else {
         transformControls.enabled = false
       }
@@ -1344,18 +1471,14 @@ export function useSceneEditorViewport(opts: {
     // Attach TransformControls to the selected object's root group / pip.
     // Disabled when nothing is selected to avoid TC stealing pointer from OrbitControls.
     if (s?.kind === 'npc') {
-      const root = markers.npcRoot(s.entityId)
-      if (root) {
-        transformControls.attach(root)
-        transformControls.enabled = true
-      } else {
+      if (!attachNpcGizmo(s.entityId)) {
         transformControls.detach()
         transformControls.enabled = false
       }
     } else if (s?.kind === 'zone') {
       const root = markers.zoneRoot(s.id)
       if (root) {
-        transformControls.attach(root)
+        attachGizmo(root)
         transformControls.enabled = true
       } else {
         transformControls.detach()
@@ -1364,7 +1487,7 @@ export function useSceneEditorViewport(opts: {
     } else if (s?.kind === 'placed') {
       const root = placedMeshRoots.get(s.objectId)
       if (root) {
-        transformControls.attach(root)
+        attachGizmo(root)
         transformControls.enabled = true
       } else {
         transformControls.detach()
@@ -1401,6 +1524,7 @@ export function useSceneEditorViewport(opts: {
   function setTransformMode(mode: TransformMode): void {
     transformMode.value = mode
     transformControls.setMode(mode)
+    applyGizmoAxes()
   }
 
   // ─── Path edit mode ──────────────────────────────────────────────────────────
