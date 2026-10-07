@@ -229,6 +229,7 @@ import { exportRoomPackage } from './exportRoomPackage'
 import type { SandboxSceneSave } from './sandboxSceneSchema'
 import { assetDb, type AssetKind } from './assetDb'
 import { useNpcDisplaySync } from './npc/useNpcDisplaySync'
+import { useEditorCommands } from './commands/useEditorCommands'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import AssetPicker from './AssetPicker.vue'
@@ -314,6 +315,36 @@ const effectiveConfig = computed<SceneEditorConfig>(() => ({
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
+// ─── Scene commands (PP-1) ────────────────────────────────────────────────────
+// Every NPC / zone / placed-object edit goes through here, so each one is undoable.
+
+/** Release pose / anim state tied to an NPC (its model is going away or changing). */
+function releasePoseFor(entityId: string): void {
+  if (poseMeshEntityId !== entityId) return
+  detachPoseNpc()
+  resetPoseEditor()
+  activeIkChainName.value = null
+  poseMeshEntityId = null
+  animClear()
+}
+
+const editorCommands = useEditorCommands({
+  npcs: localNpcs,
+  zones: localZones,
+  hooks: {
+    // Removing the pose-attached NPC (or undoing its add) releases pose/anim state —
+    // the selection-sync watch chain also gets there, but don't depend on it.
+    beforeNpcRemove: releasePoseFor,
+    // Swapping the character asset invalidates the attached pose mesh AND any
+    // keyframes recorded against its skeleton — reset so the idempotence guard
+    // in ensurePoseMeshAttached can't hand back the old mesh.
+    afterNpcPatch: (entityId, fields) => { if ('assetId' in fields) releasePoseFor(entityId) },
+    onHistoryStep: (action, label) => {
+      flashStatus(label ? `${action === 'undo' ? 'Undo' : 'Redo'}: ${label}` : `Nothing to ${action}`)
+    },
+  },
+})
+
 // ─── Viewport ─────────────────────────────────────────────────────────────────
 
 const {
@@ -344,7 +375,12 @@ const {
   removeNpcMarker,
   addZoneMarker,
   removeZoneMarker,
-  removePlacedObject,
+  getPlacedTransform,
+  setPlacedTransform,
+  detachPlacedObject,
+  reattachPlacedObject,
+  disposePlacedHandle,
+  discardPoseGesture,
   setPlayCharacterAsset,
   setNpcDisplayEntries,
   attachPoseNpc,
@@ -375,6 +411,15 @@ const {
     poseMeshEntityId = null
     animClear()
   },
+  ...editorCommands.viewportOptions,
+})
+
+editorCommands.bindViewport({
+  addNpcMarker, removeNpcMarker, setNpcPosition,
+  addZoneMarker, removeZoneMarker, setZonePosition,
+  getPlacedTransform, setPlacedTransform, snapshotPlacedTransforms,
+  detachPlacedObject, reattachPlacedObject, disposePlacedHandle,
+  discardPoseGesture,
 })
 
 // ─── Asset store (for place mode) ────────────────────────────────────────────
@@ -423,6 +468,8 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   // then rewire save-tracking to a scene that was never loaded.
   if (initError.value) { flashStatus('Viewport unavailable — cannot switch scene'); return }
   activeSceneId.value = sceneId
+  // The steps name objects of the scene being left
+  editorCommands.clear()
   // Reset local NPC/zone state to new scene's prop config
   initLocalEntries()
   // Reset saved-scene tracking so the next save creates a new Dexie row for this scene.
@@ -460,6 +507,8 @@ async function onLoadScene(sceneId: string): Promise<void> {
   try {
     const row = await assetDb.scenes.get(sceneId)
     if (!row) { flashStatus('Scene not found'); return }
+    // The steps name objects of the scene being replaced
+    editorCommands.clear()
 
     // Restore NPC/zone state from saved config BEFORE reinitScene so effectiveConfig
     // reflects the saved entries when the viewport rebuilds markers.
@@ -814,72 +863,36 @@ async function onExportRoomPackage(): Promise<void> {
 
 // ─── NPC / zone mutations (F-11) ─────────────────────────────────────────────
 
-function onAddNpc(): void {
+async function onAddNpc(): Promise<void> {
   const entityId = `npc-${nanoid(6)}`
-  const npc: EditorNpcEntry = { entityId, label: entityId, x: 0, z: 0 }
-  localNpcs.value = [...localNpcs.value, npc]
-  addNpcMarker(npc)
+  await editorCommands.addNpc({ entityId, label: entityId, x: 0, z: 0 })
   setSelection({ kind: 'npc', entityId })
 }
 
 function onRemoveNpc(entityId: string): void {
-  // Explicitly release pose/anim state when the pose-attached NPC is removed —
-  // the selection-sync watch chain also gets there, but don't depend on it
-  // (same local-handling precedent as the asset-swap branch in onNpcChanged)
-  if (poseMeshEntityId === entityId) {
-    detachPoseNpc()
-    resetPoseEditor()
-    activeIkChainName.value = null
-    poseMeshEntityId = null
-    animClear()
-  }
-  localNpcs.value = localNpcs.value.filter(n => n.entityId !== entityId)
-  removeNpcMarker(entityId)
+  void editorCommands.removeNpc(entityId)
 }
 
-function onAddZone(): void {
+async function onAddZone(): Promise<void> {
   const id = `zone-${nanoid(6)}`
-  const zone: EditorZoneEntry = { id, type: 'proximity', label: id, x: 0, z: 0, radius: 3 }
-  localZones.value = [...localZones.value, zone]
-  addZoneMarker(zone)
+  await editorCommands.addZone({ id, type: 'proximity', label: id, x: 0, z: 0, radius: 3 })
   setSelection({ kind: 'zone', id })
 }
 
 function onRemoveZone(id: string): void {
-  localZones.value = localZones.value.filter(z => z.id !== id)
-  removeZoneMarker(id)
+  void editorCommands.removeZone(id)
 }
 
 function onRemovePlaced(objectId: string): void {
-  removePlacedObject(objectId)
+  void editorCommands.removePlaced(objectId)
 }
 
 function onNpcChanged(entityId: string, patch: Partial<EditorNpcEntry>): void {
-  const npc = localNpcs.value.find(n => n.entityId === entityId)
-  if (!npc) return
-  Object.assign(npc, patch)
-  if ('x' in patch || 'z' in patch) {
-    setNpcPosition(entityId, npc.x, npc.z)
-  }
-  // Swapping the character asset invalidates the attached pose mesh AND any
-  // keyframes recorded against its skeleton — reset so the idempotence guard
-  // in ensurePoseMeshAttached can't hand back the old mesh.
-  if ('assetId' in patch && poseMeshEntityId === entityId) {
-    detachPoseNpc()
-    resetPoseEditor()
-    activeIkChainName.value = null
-    poseMeshEntityId = null
-    animClear()
-  }
+  void editorCommands.patchNpc(entityId, patch)
 }
 
 function onZoneChanged(id: string, patch: Partial<EditorZoneEntry>): void {
-  const zone = localZones.value.find(z => z.id === id)
-  if (!zone) return
-  Object.assign(zone, patch)
-  if ('x' in patch || 'z' in patch) {
-    setZonePosition(id, zone.x, zone.z)
-  }
+  void editorCommands.patchZone(id, patch)
 }
 
 // ─── Pose editor event handlers (S4) ─────────────────────────────────────────
@@ -1325,6 +1338,8 @@ watch(
 )
 
 onUnmounted(() => {
+  // Parked (removed but undoable) placed objects are not in the scene graph.
+  editorCommands.clear()
   clearTimeout(flashTimer)
 })
 </script>

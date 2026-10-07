@@ -1,11 +1,11 @@
 # STATE.md — SHARED (@base/* packages)
 
 ## SNAPSHOT
-Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-03 — #53 (import a scene package into the editor library; `openSceneId`) and #54 (persistent NPC display model; shared placement rule) merged; **262/262 vitest** in `@base/ui`.
-Working: all packages build; editor decomposition stages 1+2 merged plus an `npc/` L1 registry (`npcDisplayRegistry`, refcounted asset cache) and L0 `pose/npcPlacement`; the pose editor borrows the NPC display model; `importRoomPackageToDb`; L0 gate `editor/gate/` + F-G5 linter; S5 recorder; `@base/physics`.
-Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested (needs WebGL) · L0 gate green **by construction** until a gesture authors `attachment` · placed-object restore has no unit test · `resetPoseBones` still uses `Skeleton.pose()` (wrong under a scaled Armature parent) · importer's Dexie half untested (no `fake-indexeddb`).
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-07 — #57 (E12, gizmo drives the NPC model) merged `d658f67`; **PP-1 scene commands** on `feat/ui-scene-commands`: one routing point for NPC / zone / placed edits with multi-step undo/redo (Track P, `../docs/PLAN-EDITOR-PROMPT-PANEL-2026-10-07.md`); **345 vitest**.
+Working: all packages build; editor decomposition stages 1+2 plus `npc/` L1 registry, L0 `pose/npcPlacement` + `pose/npcGizmo`, `commands/` (L0 `sceneCommand` + `editorHistory`, `useSceneCommands`, `useEditorCommands`); `hierarchy/HierarchySection`; `importRoomPackageToDb`; L0 gate + F-G5 linter; S5 recorder; `@base/physics`.
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested · L0 gate green **by construction** until PP-3 authors `attachment` · `resetPoseBones` uses `Skeleton.pose()` · zone ring ignores a radius edit (pre-existing) · placing a dropped asset is recorded but not browser-verified (hidden pane).
 Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
-Next: extract the **pose/IK cluster** from `useSceneEditorViewport.ts` (2,091 lines, +17 from E5), then camera → input; `SceneEditorView.vue` script (1,092 lines) after. Editor UX queue (engine-dev `docs/ISSUES-EDITOR-UX-2026-09-30.md`): E9 `HierarchySection`, E11 click reliability. Oversized, baselined, unowned: `PlayerController.ts` 1,679 · `SceneBuilder.ts` 857 · `CharacterAnimationRig.ts` 767. Contract: `docs/PLAN-EDITOR-DECOMPOSITION-2026-08-31.md` (workspace). Never rebase `d3c5762` in.
+Next: merge PP-1, then **extract the placed-object cluster** from `useSceneEditorViewport.ts` (2,362 lines, +146 in PP-1; the gate's growth signal) **before PP-2** scene description. Then PP-3…PP-6. Never rebase `d3c5762` in.
 History: detail and prior status below; full history in git.
 
 ---
@@ -46,6 +46,10 @@ They are **not the same problem**. **Start with `SceneEditorView.vue`** — its 
 ## Decision Log
 
 <!-- Append-only. One line per decision, newest first. -->
+
+- **2026-10-07** — **Every scene-object edit is a data command through one routing point; bone / IK drags keep the single slot** (PP-1, owner-queued Track P). Why: Claude's proposals (PP-4/PP-5) must be reviewable data, and undo needed one funnel across three state domains (the H-1 finding). Gizmo drags are *recorded* (start/end snapshot after `nextTick`), not replayed; a removed placed object is parked whole and disposed when no step names it. Review B1 (Ctrl+Shift+Z without the options) fixed; multi-command atomicity deferred to PP-4.
+
+- **2026-10-03** — **The gizmo acts on the NPC model through one `attachGizmo`; yaw comes from the quaternion; the live map is applied by identity** (#57). Why: `Euler.y` is wrong past 90 degrees, and re-applying every entry of the wholesale-replaced `npcLivePositions` let a stale gizmo rotation/scale overwrite a number typed in the inspector. A pre-init crash in my own patch (the host's immediate watcher calls `setNpcDisplayEntries` during setup, before `transformControls` exists) was caught by a live check, not by typecheck or tests: the glue has no unit test. Cost: `useSceneEditorViewport.ts` +125 lines; the gizmo cluster is the next L1 extraction.
 
 - **2026-10-03** — **The pose editor borrows the NPC display model instead of owning a mesh; rest pose comes from a load-time snapshot, not `Skeleton.pose()`** (#54). Why: two jobs (display, pose editing) shared one lifetime, which made "set a mesh, see nothing" structural. three 0.172 `pose()` copies the bind world matrix as the local one for a root bone under a non-bone parent, applying an Armature node's scale/rotation twice; the snapshot cannot disagree with the file. Cost: a public `SceneEditorViewportReturn` change (`attachPoseNpc(entityId)`, `setPoseMeshScale` removed, `setNpcDisplayEntries` added); no consumer called the changed members.
 
@@ -88,6 +92,23 @@ They are **not the same problem**. **Start with `SceneEditorView.vue`** — its 
 ## Snapshot archive
 
 _Superseded SNAPSHOT bodies, verbatim, newest first. Not orientation material._
+
+### Pre-2026-10-07 (PP-1)
+
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-03 — #53–#56, #58, #59 merged (scene import into the editor, persistent NPC display model + shared placement rule, closed-dialog click fix + bigger targets, left panel as 3 sections, Anim tab lists every kit, New Kit binds the NPC); **289 vitest** on `main`. **#57 (E12, gizmo drives the model) open; its `claude-review` job failed once with no output, re-run pending.**
+Working: all packages build; editor decomposition stages 1+2 plus an `npc/` L1 registry, L0 `pose/npcPlacement` + `pose/npcGizmo`; `hierarchy/HierarchySection`; `importRoomPackageToDb`; GLB clip-name reader + backfill; L0 gate `editor/gate/` + F-G5 linter; S5 recorder; `@base/physics`.
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested (needs WebGL) · L0 gate green **by construction** until a gesture authors `attachment` · placed-object restore has no unit test · `resetPoseBones` still uses `Skeleton.pose()` (wrong under a scaled Armature parent) · importer's Dexie half untested (no `fake-indexeddb`) · gizmo glue (`publishNpcLive`, re-attach tail) has no unit test.
+Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
+Next: merge #57 when green. Then extract the **gizmo + pose/IK cluster** from `useSceneEditorViewport.ts` (2,091 lines on `main`, 2,216 with #57), then camera → input; `SceneEditorView.vue` script (~1,100 lines) after. Editor UX queue (engine-dev `docs/ISSUES-EDITOR-UX-2026-09-30.md`): E11 click reliability (owner detail needed), E7/E8. Oversized, baselined, unowned: `PlayerController.ts` 1,679 · `SceneBuilder.ts` 857 · `CharacterAnimationRig.ts` 767. Contract: `docs/PLAN-EDITOR-DECOMPOSITION-2026-08-31.md` (workspace). Never rebase `d3c5762` in.
+
+### Pre-2026-10-03 close (mid-session)
+
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-03 — #53 (import a scene package into the editor library; `openSceneId`) and #54 (persistent NPC display model; shared placement rule) merged; **262/262 vitest** in `@base/ui`.
+Working: all packages build; editor decomposition stages 1+2 merged plus an `npc/` L1 registry (`npcDisplayRegistry`, refcounted asset cache) and L0 `pose/npcPlacement`; the pose editor borrows the NPC display model; `importRoomPackageToDb`; L0 gate `editor/gate/` + F-G5 linter; S5 recorder; `@base/physics`.
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested (needs WebGL) · L0 gate green **by construction** until a gesture authors `attachment` · placed-object restore has no unit test · `resetPoseBones` still uses `Skeleton.pose()` (wrong under a scaled Armature parent) · importer's Dexie half untested (no `fake-indexeddb`).
+Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
+Next: extract the **pose/IK cluster** from `useSceneEditorViewport.ts` (2,091 lines, +17 from E5), then camera → input; `SceneEditorView.vue` script (1,092 lines) after. Editor UX queue (engine-dev `docs/ISSUES-EDITOR-UX-2026-09-30.md`): E9 `HierarchySection`, E11 click reliability. Oversized, baselined, unowned: `PlayerController.ts` 1,679 · `SceneBuilder.ts` 857 · `CharacterAnimationRig.ts` 767. Contract: `docs/PLAN-EDITOR-DECOMPOSITION-2026-08-31.md` (workspace). Never rebase `d3c5762` in.
+History: detail and prior status below; full history in git.
 
 ### Pre-2026-10-03 (E5 / scene import)
 
