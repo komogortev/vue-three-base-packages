@@ -6,14 +6,12 @@ import type { SceneEditorConfig, EditorSelection, EditorPlacedObject, EditorCamM
 import type { SavedPlacedObject } from './sandboxSceneSchema'
 import { createEditorGltfLoader } from './gltfLoaderFactory'
 import {
-  hitBoxDims,
   makePlacedObject,
-  resolveLocalBbox,
   transformOf,
-  withTransform,
   IDENTITY_PLACED_TRANSFORM,
   type PlacedTransform,
 } from './placement/placedObjectModel'
+import { createPlacedRegistry, type PlacedHandle } from './placement/placedRegistry'
 import { describeSelection as describeSelectionText, sceneStatus as sceneStatusText } from './selection/selectionText'
 import { fitScaleFor } from './pose/characterFit'
 import { nextCamMode } from './camera/camModes'
@@ -25,7 +23,7 @@ import { exportAnimationGlb, validateKitAppend, resolveClipBones } from './anim/
 import type { PoseBoneSample } from './anim/animationRecorder'
 import { validatePlacement, summarizeVerdicts, type GateSummary } from './gate/attachmentValidator'
 import { toMat4 } from './gate/verdict'
-import type { Aabb, Mat4, Vec3 } from './gate/verdict'
+import type { Aabb, Mat4 } from './gate/verdict'
 export type { EditorCamMode } from './sceneEditorTypes'
 
 /**
@@ -150,40 +148,6 @@ function runCcdIk(
   }
 }
 
-// ─── THREE ↔ pure-kernel boundary ─────────────────────────────────────────────
-// The placement record shape and its bbox arithmetic live in `placedObjectModel`
-// (engine-agnostic, unit-tested). These two adapters are the only places THREE
-// objects are translated into that vocabulary.
-
-/** Plain-number bounds from a Box3, or null when the box is empty. */
-function aabbFromBox3(b: THREE.Box3): Aabb | null {
-  if (b.isEmpty()) return null
-  return {
-    min: { x: b.min.x, y: b.min.y, z: b.min.z },
-    max: { x: b.max.x, y: b.max.y, z: b.max.z },
-  }
-}
-
-/** Invisible padded hit box for raycast selection of a placed GLB. */
-function buildHitBox(localBbox: THREE.Box3): THREE.Mesh {
-  const { size, center } = hitBoxDims(resolveLocalBbox(aabbFromBox3(localBbox)))
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(size.x, size.y, size.z),
-    new THREE.MeshBasicMaterial({ visible: false }),
-  )
-  mesh.position.set(center.x, center.y, center.z)
-  return mesh
-}
-
-/** Read an object's live transform into the kernel's plain-number form. */
-function liveTransformOf(o: THREE.Object3D): PlacedTransform {
-  return {
-    position: { x: o.position.x, y: o.position.y, z: o.position.z },
-    rotation: { x: o.rotation.x, y: o.rotation.y, z: o.rotation.z },
-    scale: { x: o.scale.x, y: o.scale.y, z: o.scale.z },
-  }
-}
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /** The scene object a gizmo drag moved (PP-1). Bones and IK targets are not scene objects. */
@@ -192,16 +156,7 @@ export type GestureTarget =
   | { kind: 'npc'; entityId: string }
   | { kind: 'zone'; id: string }
 
-/**
- * A placed object taken out of the scene but kept whole (meshes not disposed), so an
- * undo can put it back without reloading its GLB. Release it with `disposePlacedHandle`
- * once nothing can bring it back.
- */
-export interface PlacedHandle {
-  readonly id: string
-  /** The record with the transform it had when it was taken out. */
-  readonly record: EditorPlacedObject
-}
+export type { PlacedHandle } from './placement/placedRegistry'
 
 export interface SceneEditorViewportReturn {
   isReady: Readonly<Ref<boolean>>
@@ -233,7 +188,8 @@ export interface SceneEditorViewportReturn {
   snapshotPlacedTransforms: () => EditorPlacedObject[]
   /** Run the L0 placement gate over live placements (F-G3). Consumed two-tier. */
   runPlacementGate: () => GateSummary
-  restorePlacedObjects: (objects: RestorableObject[]) => Promise<void>
+  /** Resolves false when a scene switch overtook the load (nothing of it remains). */
+  restorePlacedObjects: (objects: RestorableObject[]) => Promise<boolean>
   setCamMode: (mode: EditorCamMode) => void
   /** Move an NPC marker programmatically (from inspector inputs). */
   setNpcPosition: (entityId: string, x: number, z: number) => void
@@ -404,12 +360,12 @@ export function useSceneEditorViewport(opts: {
   let npcDisplayDesired: NpcDisplayEntry[] = []
   const pathGroup = new THREE.Group()
 
-  // Placed objects group — persistent container, children cleared on scene switch
-  const placedGroup = new THREE.Group()
-  // objectId → Three.js root group (for TC attachment)
-  const placedMeshRoots = new Map<string, THREE.Group>()
-  // objectId → invisible hit box mesh (for raycasting)
-  const placedHitBoxes = new Map<string, THREE.Mesh>()
+  // Placed GLBs (L1): roots, pick hit boxes, the record list. Every list change is
+  // mirrored into the reactive `placedObjects`.
+  const placed = createPlacedRegistry({
+    loadGltf: url => createEditorGltfLoader().loadAsync(url),
+    onChange: records => { placedObjects.value = records },
+  })
 
   // Place mode state — plain object (not reactive; status + isInPlaceMode carry the UI signal)
   let placeMode: PlaceMode = { ...PLACE_MODE_IDLE }
@@ -621,7 +577,7 @@ export function useSceneEditorViewport(opts: {
     // (import.meta.env.DEV compiles to false in dist) — same pattern as
     // dbox's ?perf handle. Must sit AFTER TransformControls creation.
     if (new URLSearchParams(window.location.search).has('editordebug')) {
-      ;(window as unknown as Record<string, unknown>).__editorViewport = { scene, camera, renderer, placedMeshRoots, transformControls }
+      ;(window as unknown as Record<string, unknown>).__editorViewport = { scene, camera, renderer, placed, transformControls }
     }
 
     // Lighting — editor-neutral, persistent across scene switches
@@ -638,7 +594,7 @@ export function useSceneEditorViewport(opts: {
     scene.add(markers.zoneGroup)
     scene.add(npcDisplay.group)
     scene.add(pathGroup)
-    scene.add(placedGroup)
+    scene.add(placed.group)
     scene.add(ikTargetGroup)
 
     canvas.addEventListener('mousedown', onMouseDown)
@@ -740,22 +696,8 @@ export function useSceneEditorViewport(opts: {
     npcLivePositions.value = new Map()
     zoneLivePositions.value = new Map()
 
-    // Clear placed objects — dispose geometries/materials before removing from scene
-    for (const root of placedMeshRoots.values()) {
-      root.traverse(child => {
-        const mesh = child as THREE.Mesh
-        if (mesh.isMesh) {
-          mesh.geometry?.dispose()
-          const mat = mesh.material
-          if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-          else (mat as THREE.Material)?.dispose()
-        }
-      })
-    }
-    placedGroup.clear()
-    placedMeshRoots.clear()
-    placedHitBoxes.clear()
-    placedObjects.value = []
+    // Placed objects: disposed, and any load still in flight is discarded
+    placed.clear()
 
     // Clear all path visualizations — dispose line + dot materials
     for (const [, viz] of npcPathViz) {
@@ -828,41 +770,16 @@ export function useSceneEditorViewport(opts: {
     }
   }
 
-  function disposePlacedRoot(root: THREE.Object3D): void {
-    root.traverse(child => {
-      const mesh = child as THREE.Mesh
-      if (mesh.isMesh) {
-        mesh.geometry?.dispose()
-        const mat = mesh.material
-        if (Array.isArray(mat)) mat.forEach(m => m.dispose())
-        else (mat as THREE.Material)?.dispose()
-      }
-    })
-  }
-
-  /** Internal handle: the public one plus the THREE objects and list position. */
-  interface PlacedHandleImpl extends PlacedHandle {
-    root: THREE.Group
-    hitBox: THREE.Mesh | undefined
-    index: number
-  }
-
   function detachPlacedObject(objectId: string): PlacedHandle | null {
-    const root = placedMeshRoots.get(objectId)
-    const index = placedObjects.value.findIndex(p => p.id === objectId)
-    if (!root || index < 0) return null
+    const root = placed.root(objectId)
+    if (!root) return null
     // Invalidate a captured gesture that targets the object being taken out
     // (leave gestures on other objects intact)
     if (lastGestureTarget === root) {
       lastGestureRestore = null
       lastGestureTarget = null
     }
-    const record = withTransform(placedObjects.value[index], liveTransformOf(root))
-    const handle: PlacedHandleImpl = { id: objectId, record, root, hitBox: placedHitBoxes.get(objectId), index }
-    placedGroup.remove(root)
-    placedMeshRoots.delete(objectId)
-    placedHitBoxes.delete(objectId)
-    placedObjects.value = placedObjects.value.filter(p => p.id !== objectId)
+    const handle = placed.detach(objectId)
     if (selection.value?.kind === 'placed' && selection.value.objectId === objectId) {
       setSelection({ kind: 'scene' })
     } else if (transformControls.object === root) {
@@ -873,44 +790,24 @@ export function useSceneEditorViewport(opts: {
   }
 
   function reattachPlacedObject(handle: PlacedHandle): boolean {
-    const h = handle as PlacedHandleImpl
-    if (placedMeshRoots.has(h.id)) return false
-    applyPlacedTransform(h.root, transformOf(h.record))
-    placedGroup.add(h.root)
-    placedMeshRoots.set(h.id, h.root)
-    if (h.hitBox) placedHitBoxes.set(h.id, h.hitBox)
-    const list = [...placedObjects.value]
-    list.splice(Math.min(h.index, list.length), 0, h.record)
-    placedObjects.value = list
-    return true
+    return placed.reattach(handle)
   }
 
   function disposePlacedHandle(handle: PlacedHandle): void {
-    const h = handle as PlacedHandleImpl
-    // Still (or again) in the scene: not ours to dispose.
-    if (placedMeshRoots.get(h.id) === h.root) return
-    disposePlacedRoot(h.root)
+    placed.disposeHandle(handle)
   }
 
   function removePlacedObject(objectId: string): void {
-    const handle = detachPlacedObject(objectId) as PlacedHandleImpl | null
-    if (handle) disposePlacedRoot(handle.root)
-  }
-
-  function applyPlacedTransform(root: THREE.Object3D, t: PlacedTransform): void {
-    root.position.set(t.position.x, t.position.y, t.position.z)
-    root.rotation.set(t.rotation.x, t.rotation.y, t.rotation.z)
-    root.scale.set(t.scale.x, t.scale.y, t.scale.z)
+    const handle = detachPlacedObject(objectId)
+    if (handle) placed.disposeHandle(handle)
   }
 
   function getPlacedTransform(objectId: string): PlacedTransform | null {
-    const root = placedMeshRoots.get(objectId)
-    return root ? liveTransformOf(root) : null
+    return placed.transformOf(objectId)
   }
 
   function setPlacedTransform(objectId: string, t: PlacedTransform): void {
-    const root = placedMeshRoots.get(objectId)
-    if (root) applyPlacedTransform(root, t)
+    placed.setTransform(objectId, t)
   }
 
   // ─── reinitScene — public API for scene switcher ──────────────────────────────
@@ -1164,7 +1061,7 @@ export function useSceneEditorViewport(opts: {
   /** The scene object a gizmo drag on `obj` moves, or null for a bone / IK target. */
   function gestureTargetOf(obj: THREE.Object3D): GestureTarget | null {
     if (poseHasBoneAttached || ikActiveChainName !== null) return null
-    for (const [objectId, root] of placedMeshRoots) {
+    for (const [objectId, root] of placed.rootEntries()) {
       if (root === obj) return { kind: 'placed', objectId }
     }
     for (const [entityId, root] of markers.npcRootEntries()) {
@@ -1619,7 +1516,7 @@ export function useSceneEditorViewport(opts: {
         transformControls.enabled = false
       }
     } else if (s?.kind === 'placed') {
-      const root = placedMeshRoots.get(s.objectId)
+      const root = placed.root(s.objectId)
       if (root) {
         attachGizmo(root)
         transformControls.enabled = true
@@ -1692,44 +1589,12 @@ export function useSceneEditorViewport(opts: {
     isInPlaceMode.value = false
     statusMessage.value = `Placing "${label}"…`
 
-    const root = new THREE.Group()
-    root.position.copy(pos)
-
-    const loader = createEditorGltfLoader()
-    let localBbox = new THREE.Box3()
-
-    try {
-      const gltf = await loader.loadAsync(blobUrl)
-      // Compute bbox in GLB's own local space before parenting
-      localBbox.setFromObject(gltf.scene)
-      root.add(gltf.scene)
-    } catch (e) {
-      console.warn('[SceneEditor] Could not load placed GLB:', e)
-      // Fallback proxy so placement is still visible
-      const proxy = new THREE.Mesh(
-        new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshBasicMaterial({ color: '#c099ff', wireframe: true }),
-      )
-      proxy.position.set(0, 0.5, 0)
-      root.add(proxy)
-      localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
-    }
-
-    // Invisible hit box sized to the GLB bbox — used for raycasting / selection
-    const hitBox = buildHitBox(localBbox)
-    root.add(hitBox)
-
-    placedGroup.add(root)
-    // Also track in sceneObjects so clearScene removes it from the group
-    // (clearScene calls placedGroup.clear() directly — no need to add to sceneObjects)
-    placedMeshRoots.set(objectId, root)
-    placedHitBoxes.set(objectId, hitBox)
-
     const record = makePlacedObject(
       { id: objectId, assetId, label },
       { ...IDENTITY_PLACED_TRANSFORM, position: { x: pos.x, y: pos.y, z: pos.z } },
     )
-    placedObjects.value = [...placedObjects.value, record]
+    // False when a scene switch overtook the load: nothing was placed.
+    if (!(await placed.add(record, blobUrl))) return
 
     // Auto-select the freshly placed object
     setSelection({ kind: 'placed', objectId })
@@ -1738,52 +1603,19 @@ export function useSceneEditorViewport(opts: {
 
   // ─── Restore placed objects (load saved scene) ───────────────────────────────
 
-  async function restorePlacedObjects(objects: RestorableObject[]): Promise<void> {
-    const loader = createEditorGltfLoader()
-    const restored: EditorPlacedObject[] = []
-
-    for (const obj of objects) {
-      const root = new THREE.Group()
-      root.position.set(obj.x, obj.y, obj.z)
-      root.rotation.set(obj.rotationX, obj.rotationY, obj.rotationZ)
-      root.scale.set(obj.scaleX, obj.scaleY, obj.scaleZ)
-
-      let localBbox = new THREE.Box3()
-      try {
-        const gltf = await loader.loadAsync(obj.blobUrl)
-        localBbox.setFromObject(gltf.scene)
-        root.add(gltf.scene)
-      } catch (e) {
-        console.warn('[restorePlacedObjects] GLB load failed for', obj.id, e)
-        const proxy = new THREE.Mesh(
-          new THREE.BoxGeometry(1, 1, 1),
-          new THREE.MeshBasicMaterial({ color: '#c099ff', wireframe: true }),
-        )
-        proxy.position.set(0, 0.5, 0)
-        root.add(proxy)
-        localBbox.set(new THREE.Vector3(-0.5, 0, -0.5), new THREE.Vector3(0.5, 1, 0.5))
-      }
-
-      const hitBox = buildHitBox(localBbox)
-      root.add(hitBox)
-
-      placedGroup.add(root)
-      placedMeshRoots.set(obj.id, root)
-      placedHitBoxes.set(obj.id, hitBox)
-
-      // Attachment metadata rides through makePlacedObject (F-G1/F-G3) — the
-      // record is built in exactly one place so a field cannot be dropped here.
-      restored.push(
-        makePlacedObject(
-          { id: obj.id, assetId: obj.assetId, label: obj.label },
-          transformOf(obj),
-          obj.attachment,
-        ),
-      )
-    }
-
-    placedObjects.value = restored
-    setSelection({ kind: 'scene' })
+  async function restorePlacedObjects(objects: RestorableObject[]): Promise<boolean> {
+    // Attachment metadata rides through makePlacedObject (F-G1/F-G3) — the
+    // record is built in exactly one place so a field cannot be dropped here.
+    const done = await placed.restore(objects.map(obj => ({
+      record: makePlacedObject(
+        { id: obj.id, assetId: obj.assetId, label: obj.label },
+        transformOf(obj),
+        obj.attachment,
+      ),
+      blobUrl: obj.blobUrl,
+    })))
+    if (done) setSelection({ kind: 'scene' })
+    return done
   }
 
   // ─── Path visualization ──────────────────────────────────────────────────────
@@ -2089,12 +1921,10 @@ export function useSceneEditorViewport(opts: {
     }
 
     // 3. Placed object hit?
-    const placedHits = raycaster.intersectObjects([...placedHitBoxes.values()])
+    const placedHits = raycaster.intersectObjects(placed.hitBoxMeshes())
     if (placedHits.length > 0) {
-      const hit = placedHits[0].object as THREE.Mesh
-      for (const [id, m] of placedHitBoxes) {
-        if (m === hit) { setSelection({ kind: 'placed', objectId: id }); return }
-      }
+      const id = placed.idForHit(placedHits[0].object)
+      if (id) { setSelection({ kind: 'placed', objectId: id }); return }
     }
 
     // 4. Floor hit (GLB mesh or invisible plane)
@@ -2204,11 +2034,7 @@ export function useSceneEditorViewport(opts: {
   // ─── Snapshot ────────────────────────────────────────────────────────────────
 
   function snapshotPlacedTransforms(): EditorPlacedObject[] {
-    return placedObjects.value.map(obj => {
-      const root = placedMeshRoots.get(obj.id)
-      if (!root) return { ...obj }
-      return withTransform(obj, liveTransformOf(root))
-    })
+    return placed.snapshot()
   }
 
   // ─── L0 Asset Gate (F-G3) ────────────────────────────────────────────────────
@@ -2224,8 +2050,7 @@ export function useSceneEditorViewport(opts: {
    * Consumed two-tier: export hard-blocks on `blocked` (any veto), drop/save warn.
    */
   function runPlacementGate(): GateSummary {
-    placedGroup.updateMatrixWorld(true)
-    const _box = new THREE.Box3()
+    placed.group.updateMatrixWorld(true)
     const verdicts = snapshotPlacedTransforms()
       .filter((o) => o.attachment)
       .map((child) => {
@@ -2235,25 +2060,13 @@ export function useSceneEditorViewport(opts: {
         // Sentinel parents (room-root / terrain) sit at world origin → identity;
         // their surface bounds are not tracked at L0, so contact-gap is advisory.
         if (att.parentId !== 'room-root' && att.parentId !== 'terrain') {
-          const parentRoot = placedMeshRoots.get(att.parentId)
+          const parentRoot = placed.root(att.parentId)
           if (parentRoot) {
             parentRoot.updateWorldMatrix(true, false)
             parentWorldMatrix = toMat4(parentRoot.matrixWorld.elements)
-            // Bounds must reflect the visible mesh only. The placed root also holds
-            // an invisible, oversized (bbox + 0.2 m) pick hit-box; Box3.setFromObject
-            // would union it and inflate the AABB by 0.1 m/side, making the
-            // contact-gap veto too lenient. Expand over non-hit-box children instead.
-            const hitBox = placedHitBoxes.get(att.parentId)
-            _box.makeEmpty()
-            for (const child of parentRoot.children) {
-              if (child === hitBox) continue
-              _box.expandByObject(child)
-            }
-            if (!_box.isEmpty()) {
-              const min: Vec3 = { x: _box.min.x, y: _box.min.y, z: _box.min.z }
-              const max: Vec3 = { x: _box.max.x, y: _box.max.y, z: _box.max.z }
-              parentWorldBounds = { min, max }
-            }
+            // Bounds of what is drawn only: the registry leaves out the oversized pick
+            // hit box, which would inflate the AABB and weaken the contact-gap veto.
+            parentWorldBounds = placed.visibleWorldBounds(att.parentId) ?? undefined
           }
         }
         return validatePlacement({ child, parentWorldMatrix, parentWorldBounds })
@@ -2297,8 +2110,7 @@ export function useSceneEditorViewport(opts: {
     floorMeshes = []
     sceneObjects = []
     npcPathViz.clear()
-    placedMeshRoots.clear()
-    placedHitBoxes.clear()
+    placed.dispose()
     // Drop the ?editordebug handle — it holds scene/camera/renderer/
     // transformControls, so leaving it set keeps every disposed object
     // reachable across a remount (CI review 2026-08-30).

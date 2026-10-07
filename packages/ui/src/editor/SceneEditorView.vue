@@ -467,6 +467,9 @@ async function onSwitchScene(sceneId: string): Promise<void> {
   // can still arrive here. `reinitScene` would no-op and every line below would
   // then rewire save-tracking to a scene that was never loaded.
   if (initError.value) { flashStatus('Viewport unavailable — cannot switch scene'); return }
+  // A switch mid-load would leave save tracking on the loading row with this scene's
+  // contents, so the next Save would overwrite that row (its placed objects lost).
+  if (isLoading.value) { flashStatus('Still loading a scene — try again in a moment'); return }
   activeSceneId.value = sceneId
   // The steps name objects of the scene being left
   editorCommands.clear()
@@ -538,7 +541,8 @@ async function onLoadScene(sceneId: string): Promise<void> {
       return blobUrl ? [{ ...obj, blobUrl }] : []
     })
 
-    await restorePlacedObjects(resolvable)
+    // Overtaken (a newer scene took the viewport): don't point save tracking at this row.
+    if (!(await restorePlacedObjects(resolvable))) return
 
     // Wire save tracking so subsequent "Save Scene" overwrites this row
     currentSceneId.value = row.id
