@@ -1,11 +1,11 @@
 # STATE.md — SHARED (@base/* packages)
 
 ## SNAPSHOT
-Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-07 — merged #57 (gizmo drives the NPC model), **#63 PP-1** (one routing point for NPC / zone / placed edits, multi-step undo/redo; Track P) and **#64** (placed-object cluster → L1 `placement/placedRegistry`, composable 2,362 → 2,175); **359 vitest**.
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-07 — merged #57 (gizmo drives the NPC model), **#63 PP-1** (one routing point for NPC / zone / placed edits, multi-step undo/redo; Track P) and **#64** (placed-object cluster → L1 `placement/placedRegistry`, composable 2,365 → 2,177); **359 vitest**.
 Working: all packages build; editor decomposition stages 1+2 plus `npc/` L1 registry, L0 `pose/npcPlacement` + `pose/npcGizmo`, `commands/` (L0 `sceneCommand` + `editorHistory`, `useSceneCommands`, `useEditorCommands`), `placement/placedRegistry` (L1); `hierarchy/HierarchySection`; `importRoomPackageToDb`; L0 gate + F-G5 linter; S5 recorder; `@base/physics`.
 Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested · L0 gate green **by construction** until PP-3 authors `attachment` · `resetPoseBones` uses `Skeleton.pose()` · zone ring ignores a radius edit (pre-existing) · placed disposal frees geometry/materials, not textures (measure before PP-5).
 Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
-Next: **PP-2** scene description (compact JSON of the scene + asset catalog) → PP-3 placement words → PP-4…PP-6. Gate baseline (2,023) predates #57; re-baseline at 2,175 is an owner call. Never rebase `d3c5762` in.
+Next: **PP-2** scene description (compact JSON of the scene + asset catalog) → PP-3 placement words → PP-4…PP-6. Gate baseline re-set 2,023 → 2,177 (owner-approved 2026-11-15; komogortev/Projects#112). SceneEditorView.vue script 1,136 vs gate baseline 1,057 (+79, unapproved growth). Owner 2026-11-15: split, not re-baseline. Re-entry = the next editor slice that touches this file (PP-2 or later) splits it first. Never rebase `d3c5762` in.
 History: detail and prior status below; full history in git.
 
 ---
