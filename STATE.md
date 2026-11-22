@@ -1,11 +1,11 @@
 # STATE.md — SHARED (@base/* packages)
 
 ## SNAPSHOT
-Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-10-07 — merged #57 (gizmo drives the NPC model), **#63 PP-1** (one routing point for NPC / zone / placed edits, multi-step undo/redo; Track P) and **#64** (placed-object cluster → L1 `placement/placedRegistry`, composable 2,365 → 2,177); **359 vitest**.
-Working: all packages build; editor decomposition stages 1+2 plus `npc/` L1 registry, L0 `pose/npcPlacement` + `pose/npcGizmo`, `commands/` (L0 `sceneCommand` + `editorHistory`, `useSceneCommands`, `useEditorCommands`), `placement/placedRegistry` (L1); `hierarchy/HierarchySection`; `importRoomPackageToDb`; L0 gate + F-G5 linter; S5 recorder; `@base/physics`.
-Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested · L0 gate green **by construction** until PP-3 authors `attachment` · `resetPoseBones` uses `Skeleton.pose()` · zone ring ignores a radius edit (pre-existing) · placed disposal frees geometry/materials, not textures (measure before PP-5).
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-11-21 — **#67 PP-2** scene description (`describe/`: L0 `sceneDescription`, L1 `assetBoundsCache`, stateless `readScene`); before it #63 PP-1, #64 placed registry; **382 vitest**.
+Working: all packages build; editor decomposition stages 1+2, `npc/` L1, `pose/` L0s, `commands/` (PP-1 undo/redo), `placement/placedRegistry` (L1), `describe/` (PP-2: known positive = space-home seed, byte for byte; 200 objects ≈ 38.4k chars ≈ 9.6–12.8k tokens); L0 gate + F-G5 linter; S5 recorder; `@base/physics`.
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested · L0 gate green **by construction** until PP-3 authors `attachment` · `resetPoseBones` uses `Skeleton.pose()` · zone ring ignores a radius edit · placed disposal frees no textures · PP-2 not wired to the host yet (no live NPC bounds).
 Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
-Next: **PP-2** scene description (compact JSON of the scene + asset catalog) → PP-3 placement words → PP-4…PP-6. Gate baseline re-set 2,023 → 2,177 (owner-approved 2026-11-15; komogortev/Projects#112). SceneEditorView.vue script 1,136 vs gate baseline 1,057 (+79, unapproved growth). Owner 2026-11-15: split, not re-baseline. Re-entry = the next editor slice that touches this file (PP-2 or later) splits it first. Never rebase `d3c5762` in.
+Next: **PP-3** placement words → PP-4…PP-6; PP-5 wires `describe/` into the host. SceneEditorView.vue script 1,136 vs baseline 1,057: owner 2026-11-15 split, not re-baseline — the first slice that touches it (PP-2 did not) splits it first. Never rebase `d3c5762` in.
 History: detail and prior status below; full history in git.
 
 ---
@@ -46,6 +46,8 @@ They are **not the same problem**. **Start with `SceneEditorView.vue`** — its 
 ## Decision Log
 
 <!-- Append-only. One line per decision, newest first. -->
+
+- **2026-11-21** — **The scene description is a pure L0 serializer over live registry reads; nothing is stored twice** (PP-2, #67). Why: it goes into a prompt, so the same scene must always give the same bytes (fixed key order; 1 cm positions; bounds rounded *outward* after a 1 µm snap, because naive `ceil(0.07*100)` gives 0.08). World bounds come from `placedRegistry.visibleWorldBounds` (hit box excluded); asset bounds come from an L1 cache that loads each GLB once (keyed by id+size, packs and audio skipped). The reader is stateless and depends on L1 modules by type only. The composable and View are untouched, and PP-5 wires the host after splitting the View.
 
 - **2026-10-07** — **Every scene-object edit is a data command through one routing point; bone / IK drags keep the single slot** (PP-1, owner-queued Track P). Why: Claude's proposals (PP-4/PP-5) must be reviewable data, and undo needed one funnel across three state domains (the H-1 finding). Gizmo drags are *recorded* (start/end snapshot after `nextTick`), not replayed; a removed placed object is parked whole and disposed when no step names it. Review B1 (Ctrl+Shift+Z without the options) fixed; multi-command atomicity deferred to PP-4.
 

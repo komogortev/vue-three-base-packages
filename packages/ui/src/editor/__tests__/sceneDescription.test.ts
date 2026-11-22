@@ -200,6 +200,25 @@ describe('assetBoundsCache', () => {
     expect(cache.get('a')).toBeUndefined()
   })
 
+  it('a load that finishes after clear() does not unregister the newer in-flight load', async () => {
+    const l = manualLoader()
+    const cache = createAssetBoundsCache({ loadGltf: l.load, urlFor: a => a.id })
+    const a = [{ id: 'a', kind: 'prop' as const, size: 1 }]
+    const first = cache.measureAll(a)
+    await flush()
+    cache.clear()
+    const second = cache.measureAll(a)
+    await flush()
+    l.pending[0].resolve()   // the pre-clear load finishes
+    await first
+    const third = cache.measureAll(a)   // must join the second load, not start a third
+    await flush()
+    expect(l.pending).toHaveLength(2)
+    l.pending[1].resolve()
+    await Promise.all([second, third])
+    expect(cache.get('a')).not.toBeUndefined()
+  })
+
   it('never loads animation packs, and loads at most MEASURE_CONCURRENCY at once', async () => {
     const l = manualLoader()
     const cache = createAssetBoundsCache({ loadGltf: l.load, urlFor: a => a.id })

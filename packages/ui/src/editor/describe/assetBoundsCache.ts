@@ -118,8 +118,12 @@ export function createAssetBoundsCache(opts: AssetBoundsCacheOptions): AssetBoun
         jobs.push(() => {
           let job = pending.get(key)
           if (!job) {
-            job = measure(a).finally(() => pending.delete(key))
-            pending.set(key, job)
+            // Delete only its own entry: after a clear() a newer job may hold the key.
+            const own: Promise<void> = measure(a).finally(() => {
+              if (pending.get(key) === own) pending.delete(key)
+            })
+            job = own
+            pending.set(key, own)
           }
           return job
         })
