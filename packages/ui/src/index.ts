@@ -145,3 +145,32 @@ export {
   DEFAULT_LINT_SCALE_EPSILON,
 } from './editor/gate/glbLinter'
 export type { GlbLintInput, GlbLintVerdict } from './editor/gate/glbLinter'
+
+// ── Scene description (Track P, PP-2) ───────────────────────────────────────
+// Compact, deterministic JSON of the scene and the asset library for a model
+// prompt. L0 serializer + L1 asset-bounds cache + a stateless reader over the
+// placed registry; the editor host wires it with the prompt panel (PP-5).
+export {
+  describeScene,
+  listAssets,
+  toPromptJson,
+  roundBounds,
+  roundLen,
+  roundDeg,
+  DESCRIPTION_VERSION,
+} from './editor/describe/sceneDescription'
+export type {
+  SceneDescription,
+  SceneDescriptionInput,
+  DescribedObject,
+  ObjectKind,
+  AssetCatalog,
+  DescribedAsset,
+  CatalogAssetInput,
+  PlacedInput,
+  NpcInput,
+} from './editor/describe/sceneDescription'
+export { readSceneDescription, describeAssets } from './editor/describe/readScene'
+export type { SceneSources } from './editor/describe/readScene'
+export { createAssetBoundsCache } from './editor/describe/assetBoundsCache'
+export type { AssetBoundsCache, AssetBoundsCacheOptions, MeasurableAsset } from './editor/describe/assetBoundsCache'
