@@ -1365,8 +1365,13 @@ const uninstallEditorApi = installEditorApi({
   getPlacedTransform,
   boundsCache: createAssetBoundsCache({ loadGltf: url => createEditorGltfLoader().loadAsync(url) }),
   async save(name) {
+    if (isSaving.value) return null
+    // Keep the old name if the save does not land, so the toolbar never names an unwritten row.
+    const prev = sceneName.value
     if (name !== undefined) sceneName.value = name
-    return (await saveScene()) ? currentSceneId.value : null
+    if (await saveScene()) return currentSceneId.value
+    sceneName.value = prev
+    return null
   },
 })
 
