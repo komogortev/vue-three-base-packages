@@ -230,6 +230,9 @@ import type { SandboxSceneSave } from './sandboxSceneSchema'
 import { assetDb, type AssetKind } from './assetDb'
 import { useNpcDisplaySync } from './npc/useNpcDisplaySync'
 import { useEditorCommands } from './commands/useEditorCommands'
+import { installEditorApi } from './debug/editorApi'
+import { createAssetBoundsCache } from './describe/assetBoundsCache'
+import { createEditorGltfLoader } from './gltfLoaderFactory'
 import SceneEditorHierarchy from './SceneEditorHierarchy.vue'
 import SceneEditorInspector from './SceneEditorInspector.vue'
 import AssetPicker from './AssetPicker.vue'
@@ -365,6 +368,8 @@ const {
   clearNpcPath,
   reinitScene,
   enterPlaceMode,
+  placeAsset,
+  placedReader,
   snapshotPlacedTransforms,
   runPlacementGate,
   restorePlacedObjects,
@@ -757,8 +762,9 @@ function buildSave(): SandboxSceneSave {
   }
 }
 
-async function saveScene(): Promise<void> {
-  if (isSaving.value) return
+/** Resolves true when the row was written (false: a save was running, or it failed). */
+async function saveScene(): Promise<boolean> {
+  if (isSaving.value) return false
   isSaving.value = true
   try {
     const save = buildSave()
@@ -791,9 +797,11 @@ async function saveScene(): Promise<void> {
       gateNote = ` — ${gate.advisoryCount} unmeasured contact${gate.advisoryCount !== 1 ? 's' : ''}`
     }
     flashStatus(`Saved "${save.name}" — ${n} object${n !== 1 ? 's' : ''}${gateNote}`)
+    return true
   } catch (err) {
     console.error('[saveScene] failed:', err)
     flashStatus('Save failed')
+    return false
   } finally {
     isSaving.value = false
   }
@@ -1341,7 +1349,29 @@ watch(
   { immediate: true },
 )
 
+// `?editordebug`: the editor driven from a console / browser-pane agent (Track P stand-in).
+const uninstallEditorApi = installEditorApi({
+  commands: editorCommands,
+  sources: () => ({
+    placed: placedReader,
+    npcs: localNpcs.value,
+    zones: localZones.value,
+    spawn: effectiveConfig.value.spawnPoint ?? null,
+    assetKind: id => assetStore.getById(id)?.kind,
+  }),
+  assets: () => assetStore.assets,
+  resolveBlobUrl: id => assetStore.resolveBlobUrl(id),
+  placeAsset,
+  getPlacedTransform,
+  boundsCache: createAssetBoundsCache({ loadGltf: url => createEditorGltfLoader().loadAsync(url) }),
+  async save(name) {
+    if (name !== undefined) sceneName.value = name
+    return (await saveScene()) ? currentSceneId.value : null
+  },
+})
+
 onUnmounted(() => {
+  uninstallEditorApi()
   // Parked (removed but undoable) placed objects are not in the scene graph.
   editorCommands.clear()
   clearTimeout(flashTimer)

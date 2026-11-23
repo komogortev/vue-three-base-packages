@@ -11,7 +11,7 @@ import {
   IDENTITY_PLACED_TRANSFORM,
   type PlacedTransform,
 } from './placement/placedObjectModel'
-import { createPlacedRegistry, type PlacedHandle } from './placement/placedRegistry'
+import { createPlacedRegistry, type PlacedHandle, type PlacedRegistry } from './placement/placedRegistry'
 import { describeSelection as describeSelectionText, sceneStatus as sceneStatusText } from './selection/selectionText'
 import { fitScaleFor } from './pose/characterFit'
 import { nextCamMode } from './camera/camModes'
@@ -184,6 +184,10 @@ export interface SceneEditorViewportReturn {
   clearNpcPath: (entityId: string) => void
   reinitScene: (newConfig: SceneEditorConfig) => Promise<void>
   enterPlaceMode: (objectId: string, assetId: string, blobUrl: string, label: string) => void
+  /** Place an asset at a transform without a floor click. False when a scene switch overtook the load. */
+  placeAsset: (objectId: string, assetId: string, blobUrl: string, label: string, t: PlacedTransform) => Promise<boolean>
+  /** Read-only placed-registry view for the scene description (PP-2). */
+  placedReader: Pick<PlacedRegistry, 'snapshot' | 'visibleWorldBounds'>
   exitPlaceMode: () => void
   snapshotPlacedTransforms: () => EditorPlacedObject[]
   /** Run the L0 placement gate over live placements (F-G3). Consumed two-tier. */
@@ -1587,18 +1591,19 @@ export function useSceneEditorViewport(opts: {
     const { objectId, assetId, blobUrl, label } = placeMode
     placeMode = { ...PLACE_MODE_IDLE }
     isInPlaceMode.value = false
+    await placeAsset(objectId, assetId, blobUrl, label,
+      { ...IDENTITY_PLACED_TRANSFORM, position: { x: pos.x, y: pos.y, z: pos.z } })
+  }
+
+  /** Place an asset at a full transform (floor click, or the `?editordebug` API). Reported through `onPlaced`. */
+  async function placeAsset(objectId: string, assetId: string, blobUrl: string, label: string, t: PlacedTransform): Promise<boolean> {
     statusMessage.value = `Placing "${label}"…`
-
-    const record = makePlacedObject(
-      { id: objectId, assetId, label },
-      { ...IDENTITY_PLACED_TRANSFORM, position: { x: pos.x, y: pos.y, z: pos.z } },
-    )
+    const record = makePlacedObject({ id: objectId, assetId, label }, t)
     // False when a scene switch overtook the load: nothing was placed.
-    if (!(await placed.add(record, blobUrl))) return
-
-    // Auto-select the freshly placed object
+    if (!(await placed.add(record, blobUrl))) return false
     setSelection({ kind: 'placed', objectId })
     opts.onPlaced?.(record)
+    return true
   }
 
   // ─── Restore placed objects (load saved scene) ───────────────────────────────
@@ -2128,6 +2133,8 @@ export function useSceneEditorViewport(opts: {
     transformMode: shallowReadonly(transformMode),
     editorCamMode: shallowReadonly(editorCamMode),
     placedObjects: shallowReadonly(placedObjects),
+    placedReader: { snapshot: placed.snapshot, visibleWorldBounds: placed.visibleWorldBounds },
+    placeAsset,
     isInPlaceMode: shallowReadonly(isInPlaceMode),
     npcLivePositions: shallowReadonly(npcLivePositions),
     zoneLivePositions: shallowReadonly(zoneLivePositions),
