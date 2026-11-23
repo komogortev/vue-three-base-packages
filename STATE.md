@@ -1,11 +1,11 @@
 # STATE.md — SHARED (@base/* packages)
 
 ## SNAPSHOT
-Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-11-21 — **#67 PP-2** scene description (`describe/`: L0 `sceneDescription`, L1 `assetBoundsCache`, stateless `readScene`); before it #63 PP-1, #64 placed registry; **382 vitest**.
-Working: all packages build; editor decomposition stages 1+2, `npc/` L1, `pose/` L0s, `commands/` (PP-1 undo/redo), `placement/placedRegistry` (L1), `describe/` (PP-2: known positive = space-home seed, byte for byte; 200 objects ≈ 38.4k chars ≈ 9.6–12.8k tokens); L0 gate + F-G5 linter; S5 recorder; `@base/physics`.
-Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested · L0 gate green **by construction** until PP-3 authors `attachment` · `resetPoseBones` uses `Skeleton.pose()` · zone ring ignores a radius edit · placed disposal frees no textures · PP-2 not wired to the host yet (no live NPC bounds).
+Phase: Maintained — 11 `@base/*` at 0.1.0 | Last: 2026-11-22 — **#68** `?editordebug` `__editorApi` (Claude drives the editor from a browser pane: describe, place/move/remove, NPC/zone, undo/redo, save, all through PP-1); before it #67 PP-2, #63 PP-1; **393 vitest**.
+Working: all packages build; editor decomposition stages 1+2, `npc/` L1, `pose/` L0s, `commands/` (PP-1), `placement/placedRegistry` (L1), `describe/` (PP-2), `debug/editorApi` (L2, opt-in); L0 gate + F-G5 linter; S5 recorder; `@base/physics`.
+Broken: `water__entry__fall.fbx` placeholder · `@base/pwa-core` stub · `retargetMixamoClipsToCharacter` untested · L0 gate green **by construction** until PP-3 authors `attachment` · `resetPoseBones` uses `Skeleton.pose()` · zone ring ignores a radius edit · placed disposal frees no textures · PP-2 wired only to the debug handle (no live NPC bounds).
 Blocker: terrain surface-normal API not exposed from `@base/scene-builder` (needs an API decision).
-Next: **PP-3** placement words → PP-4…PP-6; PP-5 wires `describe/` into the host. SceneEditorView.vue script 1,136 vs baseline 1,057: owner 2026-11-15 split, not re-baseline — the first slice that touches it (PP-2 did not) splits it first. Never rebase `d3c5762` in.
+Next: **split SceneEditorView.vue first** — #68 grew its script ~+35 without the split the owner set on 2026-11-15 (deviation). Then PP-3 placement words → PP-4…PP-6 (evidence: engine-dev `docs/TRIAL-PROMPT-BUILT-SCENE-2026-11-22.md`). Viewport 2,184 (+7). Never rebase `d3c5762` in.
 History: detail and prior status below; full history in git.
 
 ---
@@ -46,6 +46,8 @@ They are **not the same problem**. **Start with `SceneEditorView.vue`** — its 
 ## Decision Log
 
 <!-- Append-only. One line per decision, newest first. -->
+
+- **2026-11-22** — **An opt-in `?editordebug` `__editorApi` stands in for PP-5's tools** (#68). Why: owner builds worlds in bursts inside the editor; a Claude session in the browser pane can be the prompt loop today, with no panel or key. It is L2 glue over PP-1 + PP-2 (every write is one undo step; unknown ids and ambiguous names throw), the viewport only gained `placeAsset` + a read-only `placedReader`. The View wiring landed without the owed split — recorded as a deviation in Next.
 
 - **2026-11-21** — **The scene description is a pure L0 serializer over live registry reads; nothing is stored twice** (PP-2, #67). Why: it goes into a prompt, so the same scene must always give the same bytes (fixed key order; 1 cm positions; bounds rounded *outward* after a 1 µm snap, because naive `ceil(0.07*100)` gives 0.08). World bounds come from `placedRegistry.visibleWorldBounds` (hit box excluded); asset bounds come from an L1 cache that loads each GLB once (keyed by id+size, packs and audio skipped). The reader is stateless and depends on L1 modules by type only. The composable and View are untouched, and PP-5 wires the host after splitting the View.
 
